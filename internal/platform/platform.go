@@ -1,19 +1,21 @@
 package platform
 
 import (
+	"crypto/x509"
 	"errors"
-	"fmt"
 	"net"
 	"net/url"
 	"path"
-	"runtime"
 	"strings"
 	"time"
 )
 
 var ErrTrustApprovalDenied = errors.New("certificate trust approval denied")
 
-const PACFootprintFileName = "seamless-cors.pac"
+const (
+	PACFootprintFileName  = "seamless-cors.pac"
+	installedCACommonName = "seamless-cors Installed User CA"
+)
 
 type CapabilityStatus string
 
@@ -55,30 +57,7 @@ type Adapter interface {
 	RemoveCAs(fingerprints []string) error
 }
 
-type NoopAdapter struct{}
-
-func (NoopAdapter) Capabilities() CapabilityReport {
-	return CapabilityReport{
-		Platform:          runtime.GOOS + "/" + runtime.GOARCH,
-		Supported:         false,
-		PACManagement:     CapabilityUnsupported,
-		CATrustManagement: CapabilityUnsupported,
-		RuntimeCleanup:    CapabilityLimited,
-	}
-}
-func (NoopAdapter) InstallPAC(string, []string) ([]string, error) {
-	return nil, fmt.Errorf("managed PAC routing is unsupported on this platform")
-}
-func (NoopAdapter) RefreshPAC(string, []string) error {
-	return fmt.Errorf("managed PAC routing is unsupported on this platform")
-}
-func (NoopAdapter) CurrentPACState() ([]PACServiceState, error) { return nil, nil }
-func (NoopAdapter) ClearOwnedPAC() error                        { return nil }
-func (NoopAdapter) TrustedCAs() ([]CARecord, error)             { return nil, nil }
-func (NoopAdapter) TrustCA([]byte) error                        { return nil }
-func (NoopAdapter) RemoveCAs([]string) error                    { return nil }
-
-var CurrentAdapter Adapter = NoopAdapter{}
+var CurrentAdapter Adapter = currentAdapter()
 
 func IsManagedPACFootprint(raw string) bool {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -112,4 +91,17 @@ func HasForeignEnabledPACState(states []PACServiceState) bool {
 		}
 	}
 	return false
+}
+
+func isStrictCAFootprint(cert *x509.Certificate) bool {
+	if cert.Subject.CommonName != installedCACommonName {
+		return false
+	}
+	if !cert.IsCA || !cert.BasicConstraintsValid {
+		return false
+	}
+	if cert.KeyUsage&x509.KeyUsageCertSign == 0 || cert.KeyUsage&x509.KeyUsageCRLSign == 0 {
+		return false
+	}
+	return cert.CheckSignatureFrom(cert) == nil
 }

@@ -1,0 +1,52 @@
+//go:build !darwin && !windows
+
+package platform
+
+import (
+	"fmt"
+	"runtime"
+)
+
+type UnsupportedAdapter struct{}
+
+func currentAdapter() Adapter {
+	return UnsupportedAdapter{}
+}
+
+func (UnsupportedAdapter) Capabilities() CapabilityReport {
+	return CapabilityReport{
+		Platform:          runtime.GOOS + "/" + runtime.GOARCH,
+		Supported:         false,
+		PACManagement:     CapabilityUnsupported,
+		CATrustManagement: CapabilityUnsupported,
+		RuntimeCleanup:    CapabilityLimited,
+	}
+}
+
+func (UnsupportedAdapter) InstallPAC(string, []string) ([]string, error) {
+	return nil, fmt.Errorf("managed PAC routing is unsupported on this platform")
+}
+
+func (UnsupportedAdapter) RefreshPAC(string, []string) error {
+	return fmt.Errorf("managed PAC routing is unsupported on this platform")
+}
+
+func (UnsupportedAdapter) CurrentPACState() ([]PACServiceState, error) {
+	return nil, nil
+}
+
+func (UnsupportedAdapter) ClearOwnedPAC() error {
+	return nil
+}
+
+func (UnsupportedAdapter) TrustedCAs() ([]CARecord, error) {
+	return nil, nil
+}
+
+func (UnsupportedAdapter) TrustCA([]byte) error {
+	return nil
+}
+
+func (UnsupportedAdapter) RemoveCAs([]string) error {
+	return nil
+}

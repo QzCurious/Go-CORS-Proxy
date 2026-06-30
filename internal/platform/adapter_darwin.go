@@ -16,10 +16,8 @@ import (
 	"strings"
 )
 
-const installedCACommonName = "seamless-cors Installed User CA"
-
-func init() {
-	CurrentAdapter = NewDarwinAdapter()
+func currentAdapter() Adapter {
+	return NewDarwinAdapter()
 }
 
 type DarwinAdapter struct {
@@ -278,19 +276,6 @@ func caRecordFromFingerprint(fingerprint string, pemLines []string) (CARecord, b
 		return CARecord{}, false
 	}
 	return CARecord{SHA1: fingerprint, CertPEM: certPEM, NotAfter: cert.NotAfter}, true
-}
-
-func isStrictCAFootprint(cert *x509.Certificate) bool {
-	if cert.Subject.CommonName != installedCACommonName {
-		return false
-	}
-	if !cert.IsCA || !cert.BasicConstraintsValid {
-		return false
-	}
-	if cert.KeyUsage&x509.KeyUsageCertSign == 0 || cert.KeyUsage&x509.KeyUsageCRLSign == 0 {
-		return false
-	}
-	return cert.CheckSignatureFrom(cert) == nil
 }
 
 func (a *DarwinAdapter) networksetup(args ...string) ([]byte, error) {
