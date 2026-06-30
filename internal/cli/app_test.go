@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"seamless-cors/internal/config"
 	"seamless-cors/internal/platform"
 	"seamless-cors/internal/userca"
 )
@@ -141,7 +140,7 @@ func TestUninstallRefusesWhileManagedGatewayIsRunning(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  false,
 	})

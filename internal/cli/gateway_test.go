@@ -14,14 +14,27 @@ import (
 	"testing"
 	"time"
 
-	"seamless-cors/internal/config"
 	"seamless-cors/internal/gatewayclient"
 	"seamless-cors/internal/gatewaycoord"
 	"seamless-cors/internal/gatewayfacade"
+	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
 	"seamless-cors/internal/userca"
 )
+
+type testConfig struct {
+	DomainList string
+	CATrusted  bool
+	SourcePath string
+}
+
+func defaultTestConfig() testConfig {
+	return testConfig{
+		DomainList: "~/.seamless-cors/domains.txt",
+		CATrusted:  true,
+	}
+}
 
 type fakeAdapter struct {
 	installedPAC     string
@@ -190,7 +203,7 @@ func TestManagedGatewayUsesAdapterAndCleansUpLifecycleState(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  true,
 	})
@@ -228,7 +241,7 @@ func TestManagedGatewayPrintsCancelMessageWhenTrustApprovalDenied(t *testing.T) 
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  true,
 	})
@@ -261,7 +274,7 @@ func TestManagedGatewayWaitsForCATrustApprovalBeforeActivation(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  true,
 	})
@@ -337,7 +350,7 @@ func TestStartAllowsEmptyDomainListAndInstallsManagedPAC(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  false,
 	})
@@ -370,7 +383,7 @@ func TestStartCleansPartialPACInstallFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 	cfg.CATrusted = false
 
@@ -406,7 +419,7 @@ func TestStartDeclinedPACReplacementConsentDoesNotMutateOSOrRuntimeState(t *test
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  true,
 	})
@@ -446,7 +459,7 @@ func TestManagedGatewayLeaseChecksSelectedServiceAfterReappearance(t *testing.T)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 	cfg.CATrusted = false
 
@@ -489,7 +502,7 @@ func TestManagedGatewayLeaseChecksSelectedServiceAfterReappearance(t *testing.T)
 func TestStartWithVerifiedActiveGatewaySkipsCleanupAndConfigValidation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	firstAdapter := &fakeAdapter{}
 	configureGatewayForTest(t, cfg, "api.example.test\n")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -559,7 +572,7 @@ func TestRouterHostedStartOutlivesHTTPStartRequest(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  false,
 	})
@@ -664,7 +677,7 @@ func TestServeOwnerExitsWhenGatewayStateLeaseIsLost(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- ServeWithContext(ctx, io.Discard, &fakeAdapter{}) }()
 	waitForFile(t, filepath.Join(home, ".seamless-cors", "runtime", "gateway-state-cache.json"))
-	runtimeDir, err := config.RuntimeDir()
+	runtimeDir, err := liveconfig.RuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +705,7 @@ func TestRuntimeOwnerCleansUpWhenGatewayStateLeaseIsLost(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  false,
 	})
@@ -705,7 +718,7 @@ func TestRuntimeOwnerCleansUpWhenGatewayStateLeaseIsLost(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- StartWithContextAndInput(ctx, bytes.NewBufferString(""), io.Discard, fake) }()
 	waitForFile(t, filepath.Join(home, ".seamless-cors", "runtime", "gateway-state-cache.json"))
-	runtimeDir, err := config.RuntimeDir()
+	runtimeDir, err := liveconfig.RuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +749,7 @@ func TestStopReportsOwnerCleanupFailureAndKeepsOwnerForRetry(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), config.Config{
+	writeConfigForRuntime(t, filepath.Join(configDir, "config.yaml"), testConfig{
 		DomainList: domainPath,
 		CATrusted:  false,
 	})
@@ -853,7 +866,7 @@ func TestManagedGatewayReloadsDomainListIntoGeneratedPAC(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 
 	configureGatewayForTest(t, cfg, "api-one.example.test\n")
@@ -889,7 +902,7 @@ func TestManagedGatewayDoesNotRefreshPACForEquivalentDomainList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 
 	configureGatewayForTest(t, cfg, "api.example.test\n")
@@ -916,7 +929,7 @@ func TestManagedGatewayStopsWhenManagedPACLeaseIsLostAndPreservesUserPAC(t *test
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 
 	configureGatewayForTest(t, cfg, "api.example.test\n")
@@ -963,7 +976,7 @@ func TestManagedGatewayCleansAttemptedPACURLAfterPartialRefreshFailure(t *testin
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 
 	configureGatewayForTest(t, cfg, "api-one.example.test\n")
@@ -1016,7 +1029,7 @@ func TestManagedGatewayStopsOnInvalidLiveDomainList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 
 	configureGatewayForTest(t, cfg, "api-one.example.test\n")
@@ -1049,7 +1062,7 @@ func TestManagedGatewayAppliesEmptyLiveDomainList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 
 	configureGatewayForTest(t, cfg, "api-one.example.test\n")
@@ -1086,7 +1099,7 @@ func TestManagedGatewayLiveConfigFollowsConfigDomainList(t *testing.T) {
 	t.Setenv("HOME", home)
 	firstDomainPath := filepath.Join(home, "first-domains.txt")
 	secondDomainPath := filepath.Join(home, "second-domains.txt")
-	configPath, err := config.DefaultConfigPath()
+	configPath, err := liveconfig.DefaultConfigPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1096,7 +1109,7 @@ func TestManagedGatewayLiveConfigFollowsConfigDomainList(t *testing.T) {
 	if err := os.WriteFile(secondDomainPath, []byte("second-one.example.test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = firstDomainPath
 	cfg.SourcePath = configPath
 	cfg.CATrusted = false
@@ -1116,7 +1129,7 @@ func TestManagedGatewayLiveConfigFollowsConfigDomainList(t *testing.T) {
 	waitForHTTPBody(t, pacURL, "first.example.test")
 	waitForStatusOutput(t, "domain-list: "+firstDomainPath)
 
-	changed := config.Default()
+	changed := defaultTestConfig()
 	changed.DomainList = secondDomainPath
 	changed.SourcePath = configPath
 	changed.CATrusted = true
@@ -1147,7 +1160,7 @@ func TestManagedGatewayStopsOnInvalidLiveConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
-	configPath, err := config.DefaultConfigPath()
+	configPath, err := liveconfig.DefaultConfigPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,7 +1170,7 @@ func TestManagedGatewayStopsOnInvalidLiveConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Default()
+	cfg := defaultTestConfig()
 	cfg.DomainList = domainPath
 	cfg.SourcePath = configPath
 
@@ -1183,19 +1196,19 @@ func TestManagedGatewayStopsOnInvalidLiveConfig(t *testing.T) {
 	}
 }
 
-func configureGatewayForTest(t *testing.T, cfg config.Config, domainText string) {
+func configureGatewayForTest(t *testing.T, cfg testConfig, domainText string) {
 	t.Helper()
 	if cfg.SourcePath == "" {
-		configPath, err := config.DefaultConfigPath()
+		configPath, err := liveconfig.DefaultConfigPath()
 		if err != nil {
 			t.Fatal(err)
 		}
 		cfg.SourcePath = configPath
 	}
 	if cfg.DomainList == "" {
-		cfg.DomainList = config.Default().DomainList
+		cfg.DomainList = defaultTestConfig().DomainList
 	}
-	domainPath, err := config.ExpandPath(cfg.DomainList)
+	domainPath, err := liveconfig.ExpandPath(cfg.DomainList)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1215,7 +1228,7 @@ func configureGatewayForTest(t *testing.T, cfg config.Config, domainText string)
 	writeConfigForRuntime(t, cfg.SourcePath, cfg)
 }
 
-func writeConfigForRuntime(t *testing.T, path string, cfg config.Config) {
+func writeConfigForRuntime(t *testing.T, path string, cfg testConfig) {
 	t.Helper()
 	text := "domain-list: " + cfg.DomainList + "\n" +
 		"ca-trusted: " + map[bool]string{true: "true", false: "false"}[cfg.CATrusted] + "\n"
@@ -1235,7 +1248,7 @@ func restoreAdapter(t *testing.T, adapter platform.Adapter) {
 
 func writeStaleRuntimeState(t *testing.T) string {
 	t.Helper()
-	runtimeDir, err := config.RuntimeDir()
+	runtimeDir, err := liveconfig.RuntimeDir()
 	if err != nil {
 		t.Fatal(err)
 	}

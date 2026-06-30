@@ -1,6 +1,7 @@
 package liveconfig_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -49,9 +50,6 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if live.CATrusted() {
 		t.Fatal("restart-applied CA trust was hot-applied")
 	}
-	if live.Effective().CATrusted {
-		t.Fatal("effective config exposed desired CA trust")
-	}
 	if got := strings.Join(live.PendingLifecycle(), ","); got != "ca-trusted" {
 		t.Fatalf("pending lifecycle = %q", got)
 	}
@@ -69,9 +67,6 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	live = event.Config
 	if live.CATrusted() {
 		t.Fatal("Domain List reload hot-applied CA trust")
-	}
-	if live.Effective().CATrusted {
-		t.Fatal("Domain List reload exposed desired CA trust")
 	}
 	if got := strings.Join(live.PendingLifecycle(), ","); got != "ca-trusted" {
 		t.Fatalf("pending lifecycle after Domain List reload = %q", got)
@@ -158,6 +153,53 @@ func TestWatchTreatsUnreadableLiveConfigAsFatal(t *testing.T) {
 	event := waitForEvent(t, events)
 	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Config Error") {
 		t.Fatalf("event error = %v", event.Err)
+	}
+}
+
+func TestLoadIgnoresUnknownConfigKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, "config.yaml")
+	domainPath := filepath.Join(home, "domains.txt")
+	writeFile(t, domainPath, "api.example.test\n")
+	writeFile(t, configPath, "unknown-setting: ignored\ndomain-list: "+domainPath+"\n")
+
+	loaded, err := liveconfig.LoadExisting(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DomainListPath() != domainPath {
+		t.Fatalf("domain path = %q", loaded.DomainListPath())
+	}
+}
+
+func TestLoadOrBootstrapCreatesCommentedDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var out bytes.Buffer
+
+	_, loaded, err := liveconfig.LoadOrBootstrap("", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.CATrusted() {
+		t.Fatal("ca-trusted default should enable trusted HTTPS")
+	}
+	if loaded.DomainListPath() != filepath.Join(home, ".seamless-cors", "domains.txt") {
+		t.Fatalf("domain path = %q", loaded.DomainListPath())
+	}
+	configText, err := os.ReadFile(loaded.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(configText, []byte("# One domain or origin per line.")) {
+		t.Fatalf("generated config is not commented:\n%s", configText)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("Created:")) {
+		t.Fatalf("bootstrap output = %q", out.String())
+	}
+	if bytes.Contains(out.Bytes(), []byte("Add at least one domain")) {
+		t.Fatalf("bootstrap output treated empty Domain List as invalid: %q", out.String())
 	}
 }
 

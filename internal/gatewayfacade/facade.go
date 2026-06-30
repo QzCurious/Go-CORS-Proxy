@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"seamless-cors/internal/cleanup"
-	"seamless-cors/internal/config"
 	"seamless-cors/internal/gatewaycoord"
 	"seamless-cors/internal/gatewayruntime"
 	"seamless-cors/internal/liveconfig"
@@ -392,7 +391,7 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 }
 
 func (f *Facade) Install() (InstallResult, error) {
-	caDir, err := config.CADir()
+	caDir, err := liveconfig.CADir()
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -415,7 +414,7 @@ func (f *Facade) Uninstall() (UninstallResult, error) {
 	if f.RuntimeActive() {
 		return UninstallResult{Kind: UninstallResultBlockedRuntimeActive}, nil
 	}
-	caDir, err := config.CADir()
+	caDir, err := liveconfig.CADir()
 	if err != nil {
 		return UninstallResult{}, err
 	}
@@ -554,7 +553,7 @@ func (f *Facade) installedCAStatus() InstalledCAStatusDetail {
 	if f.adapter.Capabilities().CATrustManagement != platform.CapabilitySupported {
 		return InstalledCAStatusDetail{Health: CAHealthUnsupported}
 	}
-	caDir, err := config.CADir()
+	caDir, err := liveconfig.CADir()
 	if err != nil {
 		return InstalledCAStatusDetail{Health: CAHealthUnknown}
 	}
@@ -599,14 +598,14 @@ func pendingLifecycleKinds(values []string) []PendingLifecycleChangeKind {
 }
 
 func installAdvisories() []InstallAdvisory {
-	loaded, err := config.LoadExisting("")
-	if err != nil || loaded.Config.CATrusted {
+	loaded, err := liveconfig.LoadExisting("")
+	if err != nil || loaded.CATrusted() {
 		return nil
 	}
 	return []InstallAdvisory{{
 		Kind: InstallAdvisoryConfigCATrustedDisabled,
 		ConfigCATrustedDisabled: &ConfigCATrustedDisabledAdvisory{
-			ConfigPath:    loaded.ConfigPath,
+			ConfigPath:    loaded.ConfigPath(),
 			Setting:       "ca-trusted",
 			CurrentValue:  false,
 			RequiredValue: true,

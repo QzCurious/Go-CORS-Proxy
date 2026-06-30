@@ -14,4 +14,4 @@ This is a single-context repo using root-level `CONTEXT.md` and `docs/adr/`. See
 
 ---
 
-Consider it as a devlopment phase project, we prefer clean break then fallback and backward compatibility.
+The project is still in development, we prefer a clean break over adding fallbacks or preserving backward compatibility.

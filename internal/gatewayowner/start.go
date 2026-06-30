@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"seamless-cors/internal/cleanup"
-	"seamless-cors/internal/config"
 	"seamless-cors/internal/gatewaycoord"
 	"seamless-cors/internal/gatewayfacade"
+	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/platform"
 )
 
@@ -128,7 +128,7 @@ func planAndStart(ctx context.Context, facade *gatewayfacade.Facade, hooks Start
 }
 
 func cleanRuntime(adapter cleanup.Adapter) error {
-	runtimeDir, err := config.RuntimeDir()
+	runtimeDir, err := liveconfig.RuntimeDir()
 	if err != nil {
 		return err
 	}

@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"seamless-cors/internal/config"
 	"seamless-cors/internal/corsproxy"
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/pacrouting"
@@ -37,11 +36,7 @@ type serverError struct {
 }
 
 func New(source *liveconfig.Source, live liveconfig.Config) (*Runtime, error) {
-	cfg := live.Effective()
 	entries := live.Entries()
-	if err := config.Validate(cfg); err != nil {
-		return nil, err
-	}
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)

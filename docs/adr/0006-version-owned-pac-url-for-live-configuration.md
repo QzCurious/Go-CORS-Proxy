@@ -1,5 +1,0 @@
-# Version owned PAC URL for Live Configuration
-
-Live Configuration must be end-to-end for supported browser traffic, not only an in-process Generated PAC refresh. Chrome may continue using a cached PAC file or proxy decision when the PAC Endpoint URL is unchanged, so the Gateway Owner will refresh already-owned Managed PAC state by installing a new PAC URL Version such as `http://127.0.0.1:<pac-port>/seamless-cors.pac?v=<version>` after hot-applicable PAC Route Set changes.
-
-This chooses PAC URL Versioning over PAC Endpoint port rotation, cache headers alone, browser-specific control, or accepting stale PAC clients. Live refresh may mutate only seamless-cors-owned Managed PAC state; it must not overwrite foreign PAC settings or bypass PAC Replacement Consent. The Gateway Owner also holds a Managed PAC Lease: if supported platform inspection shows the installed owned PAC state was disabled, removed, or replaced outside the gateway, the owner shuts down, and Gateway Footprint Cleanup remains marker-based so user-made PAC settings are preserved.

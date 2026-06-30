@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"seamless-cors/internal/cleanup"
-	"seamless-cors/internal/config"
 	"seamless-cors/internal/gatewayruntime"
+	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
 	"seamless-cors/internal/userca"
@@ -36,7 +36,7 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 		return StartResult{}, err
 	}
 	if live.CATrusted() {
-		caDir, err := config.CADir()
+		caDir, err := liveconfig.CADir()
 		if err != nil {
 			return StartResult{}, err
 		}

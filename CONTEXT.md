@@ -73,7 +73,7 @@ A PAC Routing behavior where matched HTTPS traffic is routed through the gateway
 _Avoid_: routing unrepaired HTTPS, unnecessary HTTPS proxying
 
 **Generated PAC**:
-A runtime proxy auto-configuration artifact derived from Explicit Configuration and the Domain List, not edited directly by the user.
+A runtime proxy auto-configuration artifact derived from Live Configuration and the Domain List, not edited directly by the user.
 _Avoid_: user-authored PAC, manual PAC rules
 
 **PAC Route Set**:
@@ -197,8 +197,12 @@ A lifecycle default where generated configuration starts with `ca-trusted: true`
 _Avoid_: silent trust installation, disabled-by-default HTTPS interception, config-only trust
 
 **Live Configuration**:
-A gateway behavior where hot-applicable user request settings use the newest valid Explicit Configuration and Domain List in supported browser traffic without requiring the user to manually restart or reload the browser or gateway.
-_Avoid_: runtime-only reload, manual reload, restart requirement, stale configuration
+A gateway behavior and code boundary where user-editable configuration sources are resolved into the current runtime-effective configuration, and hot-applicable request settings use the newest valid Config File and Domain List in supported browser traffic without requiring the user to manually restart or reload the browser or gateway.
+_Avoid_: runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
+
+**Config File**:
+The user-editable YAML source read by Live Configuration for gateway settings such as Domain List location and Trusted HTTPS Interception intent; it is not a separate code boundary from Live Configuration.
+_Avoid_: Explicit Configuration package, public raw config model, config subsystem
 
 **All-Or-Nothing Config**:
 A configuration behavior where a valid config file is applied as a whole and an invalid config file is rejected without partially changing gateway behavior.
@@ -237,7 +241,7 @@ The gateway module behind the Proxy Listener that owns CORS repair, Local Prefli
 _Avoid_: Domain List admission module, PAC Routing module, generic proxy
 
 **Explicit Configuration**:
-The complete user-editable gateway configuration, including live request policy and lifecycle settings but excluding runtime-selected listener addresses.
+Deprecated term for Config File. Prefer Config File when referring to the user-editable YAML source and Live Configuration when referring to the resolved runtime-effective configuration.
 _Avoid_: hidden user settings, flag-only configuration, listener address configuration
 
 **Path Expansion**:
@@ -321,7 +325,7 @@ A First-Start Bootstrap behavior where generated configuration includes short co
 _Avoid_: opaque default config, verbose manual, runtime listener settings
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after required PAC Replacement Consent and platform approval have succeeded, pointing to the editable Explicit Configuration, Domain List, and managed PAC state instead of runtime listener endpoints.
+A start-time user-facing output behavior shown only after required PAC Replacement Consent and platform approval have succeeded, pointing to the editable Config File, Domain List, and managed PAC state instead of runtime listener endpoints.
 _Avoid_: pre-approval running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -349,7 +353,7 @@ A start execution outcome where required platform-owned trust approval is denied
 _Avoid_: consent-required start, infrastructure error, partial trusted start
 
 **Pending Lifecycle Change**:
-A restart-applied Explicit Configuration change detected while the gateway is running and reported to the user without being applied automatically.
+A restart-applied Config File change detected while the gateway is running and reported to the user without being applied automatically.
 _Avoid_: surprise permission prompt, implicit restart
 
 **Restart-Applied Lifecycle**:
@@ -393,7 +397,7 @@ Top-level user-facing commands that explicitly install, repair, or remove the In
 _Avoid_: nested CA command tree, hidden CA removal, per-start CA trust, config editing command, active-runtime CA removal, extra command confirmation
 
 **Config-Independent CA Install**:
-A CA lifecycle command boundary where installing or repairing the Installed User CA does not require, create, or modify Explicit Configuration, though existing configuration may be read for guidance.
+A CA lifecycle command boundary where installing or repairing the Installed User CA does not require, create, or modify the Config File, though existing configuration may be read for guidance.
 _Avoid_: install-time config bootstrap, install changing `ca-trusted`, config-required CA repair
 
 **Idempotent CA Install**:
@@ -401,7 +405,7 @@ A CA lifecycle command behavior where installing reports existing usable CA trus
 _Avoid_: reinstalling usable CA, noisy no-op install, repeated trust approval
 
 **Config-Independent CA Uninstall**:
-A CA lifecycle command boundary where removing the Installed User CA does not modify Explicit Configuration; future trusted starts may reinstall trust when configuration still requests it.
+A CA lifecycle command boundary where removing the Installed User CA does not modify the Config File; future trusted starts may reinstall trust when configuration still requests it.
 _Avoid_: uninstall changing `ca-trusted`, disabling desired HTTPS interception, config-coupled removal
 
 **Idempotent CA Uninstall**:
@@ -604,7 +608,7 @@ QA engineer: "No, Trust-Aware PAC Routing sends those HTTPS requests direct beca
 
 Developer: "Do I need to maintain the PAC file?"
 
-QA engineer: "No, Generated PAC is derived from Explicit Configuration and the Domain List."
+QA engineer: "No, Generated PAC is derived from Live Configuration and the Domain List."
 
 Developer: "How do Domain List changes reach the operating system proxy?"
 
@@ -696,7 +700,7 @@ QA engineer: "Read-Only Status reports that the gateway is not running and leave
 
 Developer: "Can editing configuration unexpectedly trigger an OS permission prompt?"
 
-QA engineer: "No, lifecycle settings live in Explicit Configuration but become a Pending Lifecycle Change while the gateway is running."
+QA engineer: "No, lifecycle settings live in the Config File but become a Pending Lifecycle Change while the gateway is running."
 
 Developer: "What happens if a default listener port is already in use?"
 
@@ -728,7 +732,7 @@ QA engineer: "PAC Replacement Consent shows the current managed PAC state and as
 
 Developer: "What do I need to configure before starting?"
 
-QA engineer: "Explicit Configuration contains the meaningful user settings, while the Domain List stays as the easy one-domain-per-line file."
+QA engineer: "The Config File contains the meaningful user settings, while the Domain List stays as the easy one-domain-per-line file."
 
 Developer: "Where do config files live by default?"
 

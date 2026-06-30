@@ -12,11 +12,11 @@ import (
 	"syscall"
 
 	"seamless-cors/internal/cleanup"
-	"seamless-cors/internal/config"
 	"seamless-cors/internal/gatewayclient"
 	"seamless-cors/internal/gatewaycoord"
 	"seamless-cors/internal/gatewayfacade"
 	"seamless-cors/internal/gatewayowner"
+	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/platform"
 )
 
@@ -216,7 +216,7 @@ func UninstallCA(stdout io.Writer, adapter platform.Adapter) error {
 }
 
 func cleanRuntime(adapter cleanup.Adapter) error {
-	runtimeDir, err := config.RuntimeDir()
+	runtimeDir, err := liveconfig.RuntimeDir()
 	if err != nil {
 		return err
 	}
