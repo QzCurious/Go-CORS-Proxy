@@ -37,9 +37,34 @@ func (f *appFakeAdapter) Capabilities() platform.CapabilityReport {
 }
 func (f *appFakeAdapter) InstallPAC(url string, services []string) ([]string, error) {
 	f.installedPAC = url
+	if len(f.pacStates) == 0 {
+		f.pacStates = []platform.PACServiceState{{Name: "Wi-Fi"}}
+	}
+	serviceSet := map[string]struct{}{}
+	for _, service := range services {
+		serviceSet[service] = struct{}{}
+	}
+	for idx := range f.pacStates {
+		if _, ok := serviceSet[f.pacStates[idx].Name]; ok {
+			f.pacStates[idx].URL = url
+			f.pacStates[idx].Enabled = true
+		}
+	}
 	return append([]string(nil), services...), nil
 }
-func (f *appFakeAdapter) RefreshPAC(string, []string) error { return nil }
+func (f *appFakeAdapter) RefreshPAC(url string, services []string) error {
+	serviceSet := map[string]struct{}{}
+	for _, service := range services {
+		serviceSet[service] = struct{}{}
+	}
+	for idx := range f.pacStates {
+		if _, ok := serviceSet[f.pacStates[idx].Name]; ok {
+			f.pacStates[idx].URL = url
+			f.pacStates[idx].Enabled = true
+		}
+	}
+	return nil
+}
 func (f *appFakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
 	if f.pacStates == nil {
 		f.pacStates = []platform.PACServiceState{{Name: "Wi-Fi"}}
@@ -156,6 +181,7 @@ func TestUninstallRefusesWhileManagedGatewayIsRunning(t *testing.T) {
 		done <- StartWithContextAndInput(ctx, bytes.NewBufferString(""), io.Discard, fake)
 	}()
 	waitForFile(t, filepath.Join(configDir, "runtime", "gateway-state-cache.json"))
+	waitForStatusOutput(t, "seamless-cors status: running")
 
 	var out bytes.Buffer
 	err := Uninstall(&out, &bytes.Buffer{})

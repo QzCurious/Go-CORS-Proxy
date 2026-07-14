@@ -11,6 +11,7 @@ import (
 
 	"seamless-cors/internal/gatewaycoord"
 	"seamless-cors/internal/gatewayfacade"
+	"seamless-cors/internal/managedpac"
 )
 
 const tokenHeader = "X-Seamless-CORS-Token"
@@ -121,7 +122,11 @@ func (c *Client) callJSON(method, path string, body any, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s returned %s: %s", path, resp.Status, strings.TrimSpace(string(data)))
+		text := strings.TrimSpace(string(data))
+		if strings.Contains(text, managedpac.ErrManagedPACLeaseLost.Error()) {
+			return managedpac.ErrManagedPACLeaseLost
+		}
+		return fmt.Errorf("%s returned %s: %s", path, resp.Status, text)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

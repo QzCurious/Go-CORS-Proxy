@@ -38,6 +38,7 @@ func New(token string, facade Facade) *Server {
 		shutdownCh: make(chan struct{}),
 	}
 	router := chi.NewMux()
+	router.Get("/health", s.health)
 	api := humachi.New(router, gatewayRouterConfig())
 	s.register(api)
 	s.server = &http.Server{Handler: router}
@@ -86,6 +87,14 @@ func (s *Server) authorize(api huma.API) func(huma.Context, func(huma.Context)) 
 		}
 		_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, "unauthorized")
 	}
+}
+
+func (s *Server) health(w http.ResponseWriter, req *http.Request) {
+	if s.token == "" || req.Header.Get(tokenHeader) != s.token {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) planStart(_ context.Context, _ *struct{}) (*startPlanOutput, error) {

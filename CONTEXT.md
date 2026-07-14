@@ -297,8 +297,8 @@ A Gateway Activation-scoped behavior that installs PAC Routing for the Managed P
 _Avoid_: runtime PAC state, PAC helper, cleanup owner, platform PAC wrapper, implicit refresh state
 
 **Managed PAC Lease**:
-A running Gateway Owner's ownership rule that treats the installed seamless-cors Managed PAC URL as live state for visible services in the Managed PAC Service Set, shutting down only when supported platform inspection shows that visible managed PAC state was disabled or replaced outside the gateway.
-_Avoid_: forced PAC restoration, foreign PAC cleanup, silent proxy escape, best-effort PAC ownership, missing-service failure
+A Gateway Owner's ownership rule that treats the installed seamless-cors Managed PAC URL as live state for visible services in the Managed PAC Service Set, evaluated at explicit lifecycle, PAC refresh, and status boundaries instead of by idle OS proxy polling.
+_Avoid_: forced PAC restoration, foreign PAC cleanup, silent proxy escape, best-effort PAC ownership, missing-service failure, continuous OS proxy polling, idle lease watcher
 
 **Managed PAC Lease Lost**:
 A user-facing fatal runtime condition where the gateway reports `managed-pac-lease-lost` when its managed PAC state was changed outside the gateway, then gives restart or cleanup guidance without restoring foreign PAC state.

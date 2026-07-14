@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ func defaultTestConfig() testConfig {
 }
 
 type fakeAdapter struct {
+	mu               sync.Mutex
 	installedPAC     string
 	pacStates        []platform.PACServiceState
 	clearedPAC       int
@@ -64,6 +66,8 @@ func (f *fakeAdapter) Capabilities() platform.CapabilityReport {
 	}
 }
 func (f *fakeAdapter) InstallPAC(url string, services []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.installedPAC = url
 	if len(f.pacStates) == 0 {
 		f.pacStates = []platform.PACServiceState{{Name: "Wi-Fi"}}
@@ -89,6 +93,8 @@ func (f *fakeAdapter) InstallPAC(url string, services []string) ([]string, error
 	return installed, f.installErr
 }
 func (f *fakeAdapter) RefreshPAC(url string, services []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.refreshedPAC = append(f.refreshedPAC, url)
 	serviceSet := map[string]struct{}{}
 	for _, service := range services {
@@ -108,12 +114,16 @@ func (f *fakeAdapter) RefreshPAC(url string, services []string) error {
 	return f.refreshErr
 }
 func (f *fakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.pacStates == nil {
 		f.pacStates = []platform.PACServiceState{{Name: "Wi-Fi"}}
 	}
-	return f.pacStates, nil
+	return append([]platform.PACServiceState(nil), f.pacStates...), nil
 }
 func (f *fakeAdapter) ClearOwnedPAC() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.clearedPAC++
 	for idx := range f.pacStates {
 		if f.pacStates[idx].Enabled && platform.IsManagedPACFootprint(f.pacStates[idx].URL) {
@@ -121,6 +131,36 @@ func (f *fakeAdapter) ClearOwnedPAC() error {
 		}
 	}
 	return f.clearErr
+}
+
+func (f *fakeAdapter) replacePACStates(states []platform.PACServiceState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pacStates = append([]platform.PACServiceState(nil), states...)
+}
+
+func (f *fakeAdapter) setPACState(index int, state platform.PACServiceState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pacStates[index] = state
+}
+
+func (f *fakeAdapter) appendPACState(state platform.PACServiceState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pacStates = append(f.pacStates, state)
+}
+
+func (f *fakeAdapter) installedPACSnapshot() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.installedPAC
+}
+
+func (f *fakeAdapter) refreshedPACSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.refreshedPAC...)
 }
 func (f *fakeAdapter) TrustedCAs() ([]platform.CARecord, error) {
 	return append([]platform.CARecord(nil), f.caRecords...), nil
@@ -455,7 +495,7 @@ func TestStartDeclinedPACReplacementConsentDoesNotMutateOSOrRuntimeState(t *test
 	}
 }
 
-func TestManagedGatewayLeaseChecksSelectedServiceAfterReappearance(t *testing.T) {
+func TestManagedGatewayLeaseChecksSelectedServiceAfterReappearanceAtRefreshBoundary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	domainPath := filepath.Join(home, "domains.txt")
@@ -475,27 +515,32 @@ func TestManagedGatewayLeaseChecksSelectedServiceAfterReappearance(t *testing.T)
 	done := make(chan error, 1)
 	go func() { done <- StartWithContextAndInput(ctx, bytes.NewBufferString(""), io.Discard, fake) }()
 	waitForFile(t, filepath.Join(home, ".seamless-cors", "runtime", "gateway-state-cache.json"))
-	waitForInstalledPAC(t, fake)
+	installedURL := waitForInstalledPAC(t, fake)
 
-	fake.pacStates = []platform.PACServiceState{{
+	fake.replacePACStates([]platform.PACServiceState{{
 		Name:    "Wi-Fi",
-		URL:     fake.installedPAC,
+		URL:     installedURL,
 		Enabled: true,
-	}}
+	}})
 	assertStillRunning(t, done)
 
-	fake.pacStates = append(fake.pacStates, platform.PACServiceState{
+	fake.appendPACState(platform.PACServiceState{
 		Name:    "USB LAN",
 		URL:     "http://user.example/proxy.pac",
 		Enabled: true,
 	})
+	assertStillRunning(t, done)
+
+	if err := os.WriteFile(domainPath, []byte("api-two.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case err := <-done:
 		if !errors.Is(err, managedpac.ErrManagedPACLeaseLost) {
 			t.Fatalf("serve error = %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("runtime owner did not exit after selected service reappeared with foreign PAC")
+		t.Fatal("runtime owner did not exit after PAC refresh found selected service with foreign PAC")
 	}
 }
 
@@ -946,8 +991,13 @@ func TestManagedGatewayStopsWhenManagedPACLeaseIsLostAndPreservesUserPAC(t *test
 	waitForFile(t, filepath.Join(home, ".seamless-cors", "runtime", "gateway-state-cache.json"))
 	installedURL := waitForInstalledPAC(t, fake)
 
-	fake.pacStates[0] = platform.PACServiceState{Name: "Wi-Fi", URL: "http://user.example/proxy.pac", Enabled: true}
-	fake.pacStates = append(fake.pacStates, platform.PACServiceState{Name: "New Service", URL: installedURL, Enabled: true})
+	fake.setPACState(0, platform.PACServiceState{Name: "Wi-Fi", URL: "http://user.example/proxy.pac", Enabled: true})
+	fake.appendPACState(platform.PACServiceState{Name: "New Service", URL: installedURL, Enabled: true})
+	assertStillRunning(t, done)
+
+	if err := os.WriteFile(domainPath, []byte("api-two.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case err := <-done:
@@ -969,6 +1019,44 @@ func TestManagedGatewayStopsWhenManagedPACLeaseIsLostAndPreservesUserPAC(t *test
 	}
 	if fake.clearedPAC == 0 {
 		t.Fatalf("marker-based PAC cleanup calls = %d", fake.clearedPAC)
+	}
+}
+
+func TestStatusStopsManagedGatewayWhenManagedPACLeaseIsLost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := defaultTestConfig()
+
+	configureGatewayForTest(t, cfg, "api.example.test\n")
+	fake := &fakeAdapter{
+		pacStates: []platform.PACServiceState{
+			{Name: "Wi-Fi"},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- StartWithContextAndInput(ctx, bytes.NewBufferString(""), io.Discard, fake) }()
+	waitForFile(t, filepath.Join(home, ".seamless-cors", "runtime", "gateway-state-cache.json"))
+	waitForInstalledPAC(t, fake)
+	waitForStatusOutput(t, "seamless-cors status: running")
+
+	fake.setPACState(0, platform.PACServiceState{Name: "Wi-Fi", URL: "http://user.example/proxy.pac", Enabled: true})
+	assertStillRunning(t, done)
+
+	var out bytes.Buffer
+	err := Status(&out, &bytes.Buffer{})
+	if !errors.Is(err, managedpac.ErrManagedPACLeaseLost) {
+		t.Fatalf("status error = %v; output:\n%s", err, out.String())
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, managedpac.ErrManagedPACLeaseLost) {
+			t.Fatalf("serve error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime owner did not exit after status found managed PAC lease loss")
 	}
 }
 
@@ -1279,8 +1367,8 @@ func waitForInstalledPAC(t *testing.T, fake *fakeAdapter) string {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if fake.installedPAC != "" {
-			return fake.installedPAC
+		if installedPAC := fake.installedPACSnapshot(); installedPAC != "" {
+			return installedPAC
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1292,8 +1380,9 @@ func waitForRefreshedPAC(t *testing.T, fake *fakeAdapter) string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(fake.refreshedPAC) > 0 {
-			return fake.refreshedPAC[len(fake.refreshedPAC)-1]
+		refreshedPAC := fake.refreshedPACSnapshot()
+		if len(refreshedPAC) > 0 {
+			return refreshedPAC[len(refreshedPAC)-1]
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1305,8 +1394,8 @@ func assertNoPACRefresh(t *testing.T, fake *fakeAdapter) {
 	t.Helper()
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(fake.refreshedPAC) > 0 {
-			t.Fatalf("unexpected PAC refresh: %v", fake.refreshedPAC)
+		if refreshedPAC := fake.refreshedPACSnapshot(); len(refreshedPAC) > 0 {
+			t.Fatalf("unexpected PAC refresh: %v", refreshedPAC)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

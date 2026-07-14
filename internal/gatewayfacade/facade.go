@@ -367,6 +367,10 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 		InstalledCA: f.installedCAStatus(),
 	}
 	if active != nil {
+		if err := active.pac.RequireLease(); err != nil {
+			f.reportFatalRuntimeError(active, err)
+			return StatusResult{}, err
+		}
 		state := active.engine.State()
 		result.Kind = GatewayStatusRunning
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
@@ -446,9 +450,7 @@ func (f *Facade) Check() CheckResult {
 	}
 }
 
-func (f *Facade) watchManagedPACLease(ctx context.Context, active *activeRuntime) {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
+func (f *Facade) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -459,11 +461,6 @@ func (f *Facade) watchManagedPACLease(ctx context.Context, active *activeRuntime
 				return
 			}
 			if err := active.pac.Refresh(nextURL); err != nil {
-				f.reportFatalRuntimeError(active, err)
-				return
-			}
-		case <-ticker.C:
-			if err := active.pac.RequireLease(); err != nil {
 				f.reportFatalRuntimeError(active, err)
 				return
 			}

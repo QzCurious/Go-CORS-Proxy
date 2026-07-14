@@ -86,7 +86,7 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 	a.facade.mu.Unlock()
 	cleanupEngine = false
 
-	go a.facade.watchManagedPACLease(runCtx, active)
+	go a.facade.watchPACRefreshes(runCtx, active)
 	go func() {
 		err := engine.Serve(runCtx)
 		done <- err

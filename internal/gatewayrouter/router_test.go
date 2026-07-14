@@ -42,6 +42,29 @@ func TestCommandRoutesRequireToken(t *testing.T) {
 	}
 }
 
+func TestHealthRequiresTokenAndDoesNotCallFacade(t *testing.T) {
+	facade := &fakeFacade{}
+	server := New("token", facade)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("health without token returned %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set(tokenHeader, "token")
+	rec = httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("health returned %d, want %d: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if facade.statusCalled {
+		t.Fatal("health should not call facade Status")
+	}
+}
+
 func TestStartAllowsEmptyBody(t *testing.T) {
 	facade := &fakeFacade{}
 	server := New("token", facade)

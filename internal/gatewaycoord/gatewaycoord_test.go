@@ -71,7 +71,7 @@ func TestVerifyDoesNotReadLegacyControlListenSchema(t *testing.T) {
 
 func TestVerifyReportsActiveWhenRouterResponds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/status" {
+		if req.URL.Path != "/health" {
 			http.NotFound(w, req)
 			return
 		}
@@ -79,8 +79,7 @@ func TestVerifyReportsActiveWhenRouterResponds(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"runtimeActive":false}`))
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 

@@ -214,13 +214,13 @@ func VerifyHTTPRouter(cache GatewayStateCache) bool {
 	deadline := time.Now().Add(500 * time.Millisecond)
 	client := http.Client{Timeout: 500 * time.Millisecond}
 	for {
-		req, err := http.NewRequest(http.MethodGet, "http://"+cache.HTTPRouterListen+"/status", nil)
+		req, err := http.NewRequest(http.MethodGet, "http://"+cache.HTTPRouterListen+"/health", nil)
 		if err == nil {
 			req.Header.Set("X-Seamless-CORS-Token", cache.Token)
 			resp, err := client.Do(req)
 			if err == nil {
 				_ = resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
+				if resp.StatusCode == http.StatusNoContent {
 					return true
 				}
 			}
