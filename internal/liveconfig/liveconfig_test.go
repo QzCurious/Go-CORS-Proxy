@@ -3,6 +3,7 @@ package liveconfig_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := source.Watch(ctx, 10*time.Millisecond)
+	events := source.Watch(ctx)
 
 	writeConfig(t, configPath, secondDomainPath, true)
 	event := waitForEvent(t, events)
@@ -82,6 +83,163 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	}
 }
 
+func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, domainPath, "api.example.test\n")
+	writeConfig(t, configPath, domainPath, false)
+
+	source, _, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := source.Watch(ctx)
+
+	writeFile(t, domainPath, "# same routes\nAPI.EXAMPLE.TEST\napi.example.test # duplicate\n")
+	assertNoEvent(t, events, 300*time.Millisecond)
+
+	writeFile(t, domainPath, "changed.example.test\n")
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	entries := event.Config.Entries()
+	if len(entries) != 1 || entries[0].Host != "changed.example.test" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestWatchConfirmsInvalidContentBeforeFailing(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, domainPath, "initial.example.test\n")
+	writeConfig(t, configPath, domainPath, false)
+
+	source, _, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := source.Watch(ctx)
+
+	writeFile(t, domainPath, "https://*.invalid.example.test\n")
+	time.Sleep(300 * time.Millisecond)
+	writeFile(t, domainPath, "recovered.example.test\n")
+
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatalf("transient invalid edit became fatal: %v", event.Err)
+	}
+	entries := event.Config.Entries()
+	if len(entries) != 1 || entries[0].Host != "recovered.example.test" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestWatchConfirmsInvalidSourcesIndependently(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, domainPath, "initial.example.test\n")
+	writeConfig(t, configPath, domainPath, false)
+
+	source, _, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := source.Watch(ctx)
+	writeFile(t, domainPath, "https://*.invalid.example.test\n")
+
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(1800 * time.Millisecond)
+	for edit := 0; ; edit++ {
+		select {
+		case event := <-events:
+			if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Domain List Error") {
+				t.Fatalf("event error = %v", event.Err)
+			}
+			return
+		case <-ticker.C:
+			writeFile(t, configPath, fmt.Sprintf("# edit %d\ndomain-list: %s\nca-trusted: false\n", edit, domainPath))
+		case <-deadline:
+			t.Fatal("Config File noise postponed invalid Domain List confirmation")
+		}
+	}
+}
+
+func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, domainPath, "initial.example.test\n")
+	writeConfig(t, configPath, domainPath, false)
+
+	source, _, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := source.Watch(ctx)
+
+	temporaryPath := filepath.Join(home, ".domains.txt.tmp")
+	writeFile(t, temporaryPath, "replacement.example.test\n")
+	assertNoEvent(t, events, 300*time.Millisecond)
+	if err := os.Remove(domainPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temporaryPath, domainPath); err != nil {
+		t.Fatal(err)
+	}
+
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	entries := event.Config.Entries()
+	if len(entries) != 1 || entries[0].Host != "replacement.example.test" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestWatchKeepsOnlyLatestUnconsumedSnapshot(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, domainPath, "initial.example.test\n")
+	writeConfig(t, configPath, domainPath, false)
+
+	source, _, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := source.Watch(ctx)
+
+	writeFile(t, domainPath, "first.example.test\n")
+	waitForCachedDomain(t, source, "first.example.test")
+	writeFile(t, domainPath, "latest.example.test\n")
+	waitForCachedDomain(t, source, "latest.example.test")
+
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	entries := event.Config.Entries()
+	if len(entries) != 1 || entries[0].Host != "latest.example.test" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func TestWatchEmitsErrorWithoutReplacingCachedConfig(t *testing.T) {
 	home := t.TempDir()
 	domainPath := filepath.Join(home, "domains.txt")
@@ -95,9 +253,10 @@ func TestWatchEmitsErrorWithoutReplacingCachedConfig(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := source.Watch(ctx, 10*time.Millisecond)
+	events := source.Watch(ctx)
 
 	writeFile(t, domainPath, "https://*.bad.example.test\n")
+	assertNoEvent(t, events, 500*time.Millisecond)
 	event := waitForEvent(t, events)
 	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Domain List Error") {
 		t.Fatalf("event error = %v", event.Err)
@@ -123,7 +282,7 @@ func TestWatchTreatsMissingLiveDomainListAsFatal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := source.Watch(ctx, 10*time.Millisecond)
+	events := source.Watch(ctx)
 
 	writeConfig(t, configPath, missingDomainPath, false)
 	event := waitForEvent(t, events)
@@ -145,7 +304,7 @@ func TestWatchTreatsUnreadableLiveConfigAsFatal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := source.Watch(ctx, 10*time.Millisecond)
+	events := source.Watch(ctx)
 
 	if err := os.Remove(configPath); err != nil {
 		t.Fatal(err)
@@ -170,6 +329,23 @@ func TestLoadIgnoresUnknownConfigKeys(t *testing.T) {
 	}
 	if loaded.DomainListPath() != domainPath {
 		t.Fatalf("domain path = %q", loaded.DomainListPath())
+	}
+}
+
+func TestLoadRejectsSymlinkedConfigFile(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "domains.txt")
+	realConfigPath := filepath.Join(home, "real-config.yaml")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, domainPath, "api.example.test\n")
+	writeConfig(t, realConfigPath, domainPath, false)
+	if err := os.Symlink(realConfigPath, configPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, err := liveconfig.LoadExisting(configPath)
+	if err == nil || !strings.Contains(err.Error(), "ordinary file") {
+		t.Fatalf("load error = %v", err)
 	}
 }
 
@@ -227,4 +403,29 @@ func waitForEvent(t *testing.T, events <-chan liveconfig.Event) liveconfig.Event
 		t.Fatal("timed out waiting for event")
 		return liveconfig.Event{}
 	}
+}
+
+func assertNoEvent(t *testing.T, events <-chan liveconfig.Event, duration time.Duration) {
+	t.Helper()
+	select {
+	case event, ok := <-events:
+		if !ok {
+			t.Fatal("event channel closed")
+		}
+		t.Fatalf("unexpected event: %#v", event)
+	case <-time.After(duration):
+	}
+}
+
+func waitForCachedDomain(t *testing.T, source *liveconfig.Source, host string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		entries := source.Config().Entries()
+		if len(entries) == 1 && entries[0].Host == host {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("cached Domain List did not become %q", host)
 }

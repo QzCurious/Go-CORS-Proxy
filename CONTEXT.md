@@ -197,12 +197,16 @@ A lifecycle default where generated configuration starts with `ca-trusted: true`
 _Avoid_: silent trust installation, disabled-by-default HTTPS interception, config-only trust
 
 **Live Configuration**:
-A gateway behavior and code boundary where user-editable configuration sources are resolved into the current runtime-effective configuration, and hot-applicable request settings use the newest valid Config File and Domain List in supported browser traffic without requiring the user to manually restart or reload the browser or gateway.
-_Avoid_: runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
+A gateway module and code boundary that owns observing, reading, and interpreting user-editable configuration sources and exposes only validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and Domain List without requiring the user to manually restart or reload the browser or gateway.
+_Avoid_: external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
+
+**Live Configuration Snapshot**:
+The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, pending lifecycle intent, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
+_Avoid_: configuration event history, raw YAML config, file-change event, content fingerprint, watcher notification
 
 **Config File**:
-The user-editable YAML source read by Live Configuration for gateway settings such as Domain List location and Trusted HTTPS Interception intent; it is not a separate code boundary from Live Configuration.
-_Avoid_: Explicit Configuration package, public raw config model, config subsystem
+The user-editable YAML source read by Live Configuration for gateway settings such as Domain List location and Trusted HTTPS Interception intent; it is an ordinary file addressed by a cleaned absolute path and is not a separate code boundary from Live Configuration. Live change observation is supported only when the file is hosted on a local filesystem.
+_Avoid_: symlinked config, network-filesystem observation guarantee, Explicit Configuration package, public raw config model, config subsystem
 
 **All-Or-Nothing Config**:
 A configuration behavior where a valid config file is applied as a whole and an invalid config file is rejected without partially changing gateway behavior.
@@ -457,8 +461,8 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Domain List**:
-The user-managed newline-delimited set of upstream hostnames or origins used by PAC Routing to decide which browser requests normally reach the Proxy Listener during DEV/QA work.
-_Avoid_: proxy admission list, interception rules, proxy rules
+The user-managed newline-delimited set of upstream hostnames or origins used by PAC Routing to decide which browser requests normally reach the Proxy Listener during DEV/QA work; its source is an ordinary file addressed by a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
+_Avoid_: symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
 **Domain List Comment**:
 A full-line or inline note in the Domain List that is ignored during matching.

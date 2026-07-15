@@ -2,13 +2,13 @@ package liveconfig
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"seamless-cors/internal/domain"
 
@@ -48,8 +48,9 @@ type Source struct {
 	config            Config
 	desiredConfig     fileConfig
 	baselineCATrusted bool
-	lastConfigText    string
-	lastDomainText    string
+	configFingerprint [sha256.Size]byte
+	domainFingerprint [sha256.Size]byte
+	watchStarted      bool
 }
 
 func HomeDir() (string, error) {
@@ -89,16 +90,16 @@ func LoadOrBootstrap(configPath string, stdout io.Writer) (*Source, Config, erro
 	if err != nil {
 		return nil, Config{}, err
 	}
-	entries, domainText, err := loadDomainList(loaded.DomainPath)
+	entries, domainData, err := loadDomainList(loaded.DomainPath)
 	if err != nil {
 		return nil, Config{}, err
 	}
-	configText, err := readText(loaded.ConfigPath)
+	configData, err := readRegularFile(loaded.ConfigPath)
 	if err != nil {
 		return nil, Config{}, err
 	}
 	live := configFromLoadResult(loaded, entries, nil, loaded.Config.CATrusted)
-	source := newSource(loaded.Config, live, configText, domainText)
+	source := newSource(loaded.Config, live, configData, domainData)
 	return source, live, nil
 }
 
@@ -114,110 +115,64 @@ func LoadExisting(configPath string) (Config, error) {
 	return configFromLoadResult(loaded, entries, nil, loaded.Config.CATrusted), nil
 }
 
-func newSource(desired fileConfig, live Config, configText, domainText string) *Source {
-	live = cloneConfig(live)
+func newSource(desired fileConfig, live Config, configData, domainData []byte) *Source {
 	return &Source{
 		config:            live,
 		desiredConfig:     desired,
 		baselineCATrusted: live.CATrusted(),
-		lastConfigText:    configText,
-		lastDomainText:    domainText,
+		configFingerprint: sha256.Sum256(configData),
+		domainFingerprint: sha256.Sum256(domainData),
 	}
 }
 
 func (s *Source) Config() Config {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return cloneConfig(s.config)
+	return s.config
 }
 
-func (s *Source) Watch(ctx context.Context, interval time.Duration) <-chan Event {
+func (s *Source) Watch(ctx context.Context) <-chan Event {
 	events := make(chan Event, 1)
-	live := s.Config()
-	if live.ConfigPath() == "" && live.DomainListPath() == "" {
-		close(events)
-		return events
-	}
-	go s.watch(ctx, interval, events)
+	go s.watch(ctx, events)
 	return events
 }
 
-func (s *Source) watch(ctx context.Context, interval time.Duration, events chan<- Event) {
-	defer close(events)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			event, changed := s.poll()
-			if !changed {
-				continue
-			}
-			select {
-			case events <- event:
-			case <-ctx.Done():
-				return
-			}
-			if event.Err != nil {
-				return
-			}
+func sameSemanticConfig(left, right Config) bool {
+	if left.caTrusted != right.caTrusted ||
+		left.configPath != right.configPath ||
+		left.domainListPath != right.domainListPath ||
+		!sameStrings(left.pendingLifecycle, right.pendingLifecycle) ||
+		len(left.entries) != len(right.entries) {
+		return false
+	}
+	type entryIdentity struct {
+		scheme   string
+		host     string
+		port     string
+		wildcard bool
+	}
+	entries := make(map[entryIdentity]struct{}, len(left.entries))
+	for _, entry := range left.entries {
+		entries[entryIdentity{entry.Scheme, entry.Host, entry.Port, entry.Wildcard}] = struct{}{}
+	}
+	for _, entry := range right.entries {
+		if _, ok := entries[entryIdentity{entry.Scheme, entry.Host, entry.Port, entry.Wildcard}]; !ok {
+			return false
 		}
 	}
+	return true
 }
 
-func (s *Source) poll() (Event, bool) {
-	current := s.Config()
-	var configText string
-	var configChanged bool
-	if current.ConfigPath() != "" {
-		var configErr error
-		configText, configErr = readText(current.ConfigPath())
-		if configErr != nil {
-			return Event{Err: fmt.Errorf("Fatal Config Error: %w", configErr)}, true
-		}
-		configChanged = configText != s.lastConfigText
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
 	}
-	domainPath := current.DomainListPath()
-	var loaded loadResult
-	if configChanged {
-		var err error
-		loaded, err = loadExisting(current.ConfigPath())
-		if err != nil {
-			return Event{Err: fmt.Errorf("Fatal Config Error: %w", err)}, true
-		}
-		domainPath = loaded.DomainPath
-	} else {
-		s.mu.RLock()
-		desired := s.desiredConfig
-		s.mu.RUnlock()
-		loaded = loadResult{
-			Config:     desired,
-			ConfigPath: current.ConfigPath(),
-			DomainPath: current.DomainListPath(),
+	for index := range left {
+		if left[index] != right[index] {
+			return false
 		}
 	}
-	domainText, domainErr := readText(domainPath)
-	if domainErr != nil {
-		return Event{Err: fmt.Errorf("Fatal Domain List Error: %w", domainErr)}, true
-	}
-	domainChanged := domainText != s.lastDomainText || domainPath != current.DomainListPath()
-	if !configChanged && !domainChanged {
-		return Event{}, false
-	}
-	entries, errs := domain.ParseList(domainText)
-	if len(errs) > 0 {
-		return Event{Err: fmt.Errorf("Fatal Domain List Error: invalid Domain List:\n%s", formatDomainErrors(errs))}, true
-	}
-	next := configFromLoadResult(loaded, entries, lifecycleChanges(loaded.Config.CATrusted, s.baselineCATrusted), s.baselineCATrusted)
-	s.mu.Lock()
-	s.config = next
-	s.desiredConfig = loaded.Config
-	s.lastConfigText = configText
-	s.lastDomainText = domainText
-	s.mu.Unlock()
-	return Event{Config: cloneConfig(next)}, true
+	return true
 }
 
 func configFromLoadResult(loaded loadResult, entries []domain.Entry, pending []string, activeCATrusted bool) Config {
@@ -237,6 +192,10 @@ func loadOrBootstrap(configPath string, stdout io.Writer) (loadResult, error) {
 		if err != nil {
 			return loadResult{}, err
 		}
+	}
+	configPath, err := absolutePath(configPath)
+	if err != nil {
+		return loadResult{}, err
 	}
 
 	var bootstrapped bool
@@ -270,18 +229,27 @@ func loadExisting(configPath string) (loadResult, error) {
 			return loadResult{}, err
 		}
 	}
-	data, err := os.ReadFile(configPath)
+	configPath, err := absolutePath(configPath)
 	if err != nil {
 		return loadResult{}, err
 	}
+	data, err := readRegularFile(configPath)
+	if err != nil {
+		return loadResult{}, err
+	}
+	return parseFileConfig(configPath, data)
+}
+
+func parseFileConfig(configPath string, data []byte) (loadResult, error) {
 	cfg := defaultFileConfig()
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return loadResult{}, fmt.Errorf("invalid config.yaml: %w", err)
 	}
-	cfg.DomainList, err = ExpandPath(cfg.DomainList)
+	domainPath, err := ExpandPath(cfg.DomainList)
 	if err != nil {
 		return loadResult{}, err
 	}
+	cfg.DomainList = domainPath
 	if err := validateFileConfig(cfg); err != nil {
 		return loadResult{}, err
 	}
@@ -317,27 +285,38 @@ func ExpandPath(path string) (string, error) {
 		}
 		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
 	}
-	return os.ExpandEnv(path), nil
+	return absolutePath(os.ExpandEnv(path))
 }
 
-func loadDomainList(path string) ([]domain.Entry, string, error) {
-	text, err := readText(path)
+func loadDomainList(path string) ([]domain.Entry, []byte, error) {
+	data, err := readRegularFile(path)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	entries, errs := domain.ParseList(text)
-	if len(errs) > 0 {
-		return nil, "", fmt.Errorf("invalid Domain List:\n%s", formatDomainErrors(errs))
+	entries, err := parseDomainList(data)
+	if err != nil {
+		return nil, nil, err
 	}
-	return entries, text, nil
+	return entries, data, nil
 }
 
-func readText(path string) (string, error) {
-	data, err := os.ReadFile(path)
+func absolutePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	return filepath.Clean(abs), nil
+}
+
+func readRegularFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be an ordinary file", path)
+	}
+	return os.ReadFile(path)
 }
 
 func lifecycleChanges(nextCATrusted, baselineCATrusted bool) []string {
@@ -396,10 +375,4 @@ func (c Config) ConfigPath() string {
 
 func (c Config) DomainListPath() string {
 	return c.domainListPath
-}
-
-func cloneConfig(live Config) Config {
-	live.entries = append([]domain.Entry(nil), live.entries...)
-	live.pendingLifecycle = append([]string(nil), live.pendingLifecycle...)
-	return live
 }

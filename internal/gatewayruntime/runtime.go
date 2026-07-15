@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
-	"time"
 
 	"seamless-cors/internal/corsproxy"
 	"seamless-cors/internal/liveconfig"
@@ -131,7 +130,7 @@ func (r *Runtime) State() State {
 }
 
 func (r *Runtime) watchLiveConfig(ctx context.Context, errs chan<- serverError) {
-	events := r.liveConfig.Watch(ctx, 100*time.Millisecond)
+	events := r.liveConfig.Watch(ctx)
 	for {
 		select {
 		case <-ctx.Done():
