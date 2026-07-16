@@ -2,6 +2,7 @@ package gatewayrouter
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"time"
@@ -16,7 +17,6 @@ import (
 const tokenHeader = "X-Seamless-CORS-Token"
 
 type Facade interface {
-	PlanStart() (gatewayfacade.StartPlan, error)
 	ExecuteStart(context.Context, gatewayfacade.StartRequest) (gatewayfacade.StartResult, error)
 	Stop() (gatewayfacade.StopResult, error)
 	Status(bool) (gatewayfacade.StatusResult, error)
@@ -58,7 +58,6 @@ func (s *Server) ShutdownRequested() <-chan struct{} {
 }
 
 func (s *Server) register(api huma.API) {
-	huma.Register(api, s.commandOperation(api, http.MethodGet, "/start/plan", "planStart", "Plan start"), s.planStart)
 	huma.Register(api, s.commandOperation(api, http.MethodPost, "/start", "start", "Start"), s.start)
 	huma.Register(api, s.commandOperation(api, http.MethodPost, "/stop", "stop", "Stop"), s.stop)
 	huma.Register(api, s.commandOperation(api, http.MethodGet, "/status", "status", "Status"), s.status)
@@ -97,14 +96,6 @@ func (s *Server) health(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) planStart(_ context.Context, _ *struct{}) (*startPlanOutput, error) {
-	result, err := s.facade.PlanStart()
-	if err != nil {
-		return nil, err
-	}
-	return &startPlanOutput{Body: result}, nil
-}
-
 func (s *Server) start(_ context.Context, input *startInput) (*startOutput, error) {
 	request := gatewayfacade.StartRequest{}
 	if input.Body != nil {
@@ -112,10 +103,29 @@ func (s *Server) start(_ context.Context, input *startInput) (*startOutput, erro
 	}
 	result, err := s.facade.ExecuteStart(context.Background(), request)
 	if err != nil {
+		var startErr *gatewayfacade.StartError
+		if errors.As(err, &startErr) {
+			return nil, &startHTTPError{
+				Status:   http.StatusInternalServerError,
+				Title:    "gateway start failed",
+				Detail:   startErr.Diagnostic,
+				CAEnsure: startErr.CAEnsure,
+			}
+		}
 		return nil, err
 	}
 	return &startOutput{Body: result}, nil
 }
+
+type startHTTPError struct {
+	Status   int                           `json:"status"`
+	Title    string                        `json:"title"`
+	Detail   string                        `json:"detail"`
+	CAEnsure *gatewayfacade.CAEnsureResult `json:"caEnsure,omitempty"`
+}
+
+func (e *startHTTPError) Error() string  { return e.Detail }
+func (e *startHTTPError) GetStatus() int { return e.Status }
 
 func (s *Server) stop(_ context.Context, _ *struct{}) (*stopOutput, error) {
 	result, err := s.facade.Stop()
@@ -180,10 +190,6 @@ func gatewayRouterConfig() huma.Config {
 
 type startInput struct {
 	Body *gatewayfacade.StartRequest
-}
-
-type startPlanOutput struct {
-	Body gatewayfacade.StartPlan
 }
 
 type startOutput struct {

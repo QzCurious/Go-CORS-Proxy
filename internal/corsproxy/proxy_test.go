@@ -1,6 +1,7 @@
 package corsproxy
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -226,7 +227,7 @@ func (s *testTrustStore) TrustedCAs() ([]platform.CARecord, error) {
 	return append([]platform.CARecord(nil), s.records...), nil
 }
 
-func (s *testTrustStore) TrustCA(certPEM []byte) error {
+func (s *testTrustStore) TrustCA(_ context.Context, certPEM []byte) error {
 	fingerprint, err := userca.SHA1Fingerprint(certPEM)
 	if err != nil {
 		return err
@@ -240,7 +241,7 @@ func (s *testTrustStore) TrustCA(certPEM []byte) error {
 	return nil
 }
 
-func (s *testTrustStore) RemoveCAs([]string) error {
+func (s *testTrustStore) RemoveCAs(context.Context, []string) error {
 	s.records = nil
 	return nil
 }

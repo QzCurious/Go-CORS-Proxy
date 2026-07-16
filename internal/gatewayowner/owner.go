@@ -62,7 +62,7 @@ func (o *Owner) Facade() *gatewayfacade.Facade {
 	return o.facade
 }
 
-func (o *Owner) Run(ctx context.Context, afterPublish func() error) error {
+func (o *Owner) Run(ctx context.Context, afterPublish func(context.Context) error) error {
 	errs := make(chan error, 1)
 	go func() { errs <- o.router.Serve(o.listener) }()
 	if err := o.coord.Claim(o.cache); err != nil {
@@ -71,33 +71,104 @@ func (o *Owner) Run(ctx context.Context, afterPublish func() error) error {
 	}
 	defer o.coord.RemoveOwned(o.cache)
 	leaseLost := watchLease(ctx, o.coord, o.cache)
-	if afterPublish != nil {
-		if err := afterPublish(); err != nil {
-			_ = o.closeOwnerOnly(context.Background())
-			return err
-		}
-	}
-	select {
-	case <-ctx.Done():
+	event := superviseOwner(ctx, afterPublish, leaseLost, o.router.ShutdownRequested(), o.facade.FatalRuntimeErrors(), errs)
+	switch event.kind {
+	case ownerEventContextDone, ownerEventLeaseLost:
 		_, _ = o.facade.Stop()
 		_ = o.router.Close(context.Background())
 		return nil
-	case <-leaseLost:
-		_, _ = o.facade.Stop()
+	case ownerEventShutdownRequested:
 		_ = o.router.Close(context.Background())
 		return nil
-	case <-o.router.ShutdownRequested():
-		_ = o.router.Close(context.Background())
-		return nil
-	case err := <-o.facade.FatalRuntimeErrors():
+	case ownerEventFatalRuntime:
 		_, _ = o.facade.Stop()
 		_ = o.router.Close(context.Background())
-		return err
-	case err := <-errs:
-		if err == nil || err == http.ErrServerClosed {
+		return event.err
+	case ownerEventRouterStopped:
+		if event.err == nil || event.err == http.ErrServerClosed {
 			return nil
 		}
-		return err
+		return event.err
+	case ownerEventActivationFailed:
+		_ = o.closeOwnerOnly(context.Background())
+		return event.err
+	default:
+		return fmt.Errorf("unknown gateway owner event %d", event.kind)
+	}
+}
+
+type ownerEventKind int
+
+const (
+	ownerEventContextDone ownerEventKind = iota
+	ownerEventLeaseLost
+	ownerEventShutdownRequested
+	ownerEventFatalRuntime
+	ownerEventRouterStopped
+	ownerEventActivationFailed
+)
+
+type ownerEvent struct {
+	kind ownerEventKind
+	err  error
+}
+
+// superviseOwner keeps ownership events observable while activation is pending.
+// Every interruption cancels the activation context and waits for the callback
+// to acknowledge cancellation before its caller tears down owned resources.
+func superviseOwner(
+	ctx context.Context,
+	afterPublish func(context.Context) error,
+	leaseLost <-chan struct{},
+	shutdownRequested <-chan struct{},
+	fatalRuntimeErrors <-chan error,
+	routerErrors <-chan error,
+) ownerEvent {
+	activationCtx, cancelActivation := context.WithCancel(ctx)
+	defer cancelActivation()
+
+	var activationDone <-chan error
+	if afterPublish != nil {
+		done := make(chan error, 1)
+		activationDone = done
+		go func() {
+			done <- afterPublish(activationCtx)
+		}()
+	}
+
+	for {
+		select {
+		case err := <-activationDone:
+			activationDone = nil
+			if ctx.Err() != nil {
+				return ownerEvent{kind: ownerEventContextDone}
+			}
+			if err != nil {
+				return ownerEvent{kind: ownerEventActivationFailed, err: err}
+			}
+		case <-ctx.Done():
+			cancelAndWait(cancelActivation, activationDone)
+			return ownerEvent{kind: ownerEventContextDone}
+		case <-leaseLost:
+			cancelAndWait(cancelActivation, activationDone)
+			return ownerEvent{kind: ownerEventLeaseLost}
+		case <-shutdownRequested:
+			cancelAndWait(cancelActivation, activationDone)
+			return ownerEvent{kind: ownerEventShutdownRequested}
+		case err := <-fatalRuntimeErrors:
+			cancelAndWait(cancelActivation, activationDone)
+			return ownerEvent{kind: ownerEventFatalRuntime, err: err}
+		case err := <-routerErrors:
+			cancelAndWait(cancelActivation, activationDone)
+			return ownerEvent{kind: ownerEventRouterStopped, err: err}
+		}
+	}
+}
+
+func cancelAndWait(cancel context.CancelFunc, activationDone <-chan error) {
+	cancel()
+	if activationDone != nil {
+		<-activationDone
 	}
 }
 

@@ -35,7 +35,7 @@ func (f *appFakeAdapter) Capabilities() platform.CapabilityReport {
 		RuntimeCleanup:    platform.CapabilitySupported,
 	}
 }
-func (f *appFakeAdapter) InstallPAC(url string, services []string) ([]string, error) {
+func (f *appFakeAdapter) ApplyPAC(url string, services []string) ([]platform.PACServiceUpdate, error) {
 	f.installedPAC = url
 	if len(f.pacStates) == 0 {
 		f.pacStates = []platform.PACServiceState{{Name: "Wi-Fi"}}
@@ -44,26 +44,24 @@ func (f *appFakeAdapter) InstallPAC(url string, services []string) ([]string, er
 	for _, service := range services {
 		serviceSet[service] = struct{}{}
 	}
+	var updates []platform.PACServiceUpdate
 	for idx := range f.pacStates {
 		if _, ok := serviceSet[f.pacStates[idx].Name]; ok {
 			f.pacStates[idx].URL = url
 			f.pacStates[idx].Enabled = true
+			updates = append(updates, platform.PACServiceUpdate{ServiceName: f.pacStates[idx].Name, Outcome: platform.PACApplyOutcomeApplied})
 		}
 	}
-	return append([]string(nil), services...), nil
-}
-func (f *appFakeAdapter) RefreshPAC(url string, services []string) error {
-	serviceSet := map[string]struct{}{}
 	for _, service := range services {
-		serviceSet[service] = struct{}{}
-	}
-	for idx := range f.pacStates {
-		if _, ok := serviceSet[f.pacStates[idx].Name]; ok {
-			f.pacStates[idx].URL = url
-			f.pacStates[idx].Enabled = true
+		found := false
+		for _, update := range updates {
+			found = found || update.ServiceName == service
+		}
+		if !found {
+			updates = append(updates, platform.PACServiceUpdate{ServiceName: service, Outcome: platform.PACApplyOutcomeAbsent})
 		}
 	}
-	return nil
+	return updates, nil
 }
 func (f *appFakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
 	if f.pacStates == nil {
@@ -78,7 +76,7 @@ func (f *appFakeAdapter) ClearOwnedPAC() error {
 func (f *appFakeAdapter) TrustedCAs() ([]platform.CARecord, error) {
 	return append([]platform.CARecord(nil), f.caRecords...), nil
 }
-func (f *appFakeAdapter) TrustCA(certPEM []byte) error {
+func (f *appFakeAdapter) TrustCA(_ context.Context, certPEM []byte) error {
 	f.trusted++
 	if f.trustErr == nil {
 		fingerprint, err := userca.SHA1Fingerprint(certPEM)
@@ -97,7 +95,7 @@ func (f *appFakeAdapter) TrustCA(certPEM []byte) error {
 	}
 	return f.trustErr
 }
-func (f *appFakeAdapter) RemoveCAs([]string) error {
+func (f *appFakeAdapter) RemoveCAs(context.Context, []string) error {
 	f.cleanedCA++
 	f.caRecords = nil
 	return nil
@@ -157,7 +155,7 @@ func TestInstallIsConfigIndependentAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestUninstallRefusesWhileManagedGatewayIsRunning(t *testing.T) {
+func TestUninstallAllowsUntrustedGatewayRuntime(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	configDir := filepath.Join(home, ".seamless-cors")
@@ -185,10 +183,10 @@ func TestUninstallRefusesWhileManagedGatewayIsRunning(t *testing.T) {
 
 	var out bytes.Buffer
 	err := Uninstall(&out, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "running") {
+	if err != nil {
 		t.Fatalf("uninstall error = %v", err)
 	}
-	if !strings.Contains(out.String(), "stop it before uninstalling") {
+	if !strings.Contains(out.String(), "already absent") {
 		t.Fatalf("uninstall output = %q", out.String())
 	}
 

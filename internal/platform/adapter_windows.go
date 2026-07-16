@@ -4,6 +4,7 @@ package platform
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"crypto/x509"
 	"encoding/base64"
@@ -35,13 +36,13 @@ type WindowsAdapter struct {
 }
 
 type commandRunner interface {
-	run(name string, args ...string) ([]byte, error)
+	run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
 type execRunner struct{}
 
-func (execRunner) run(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func NewWindowsAdapter() *WindowsAdapter {
@@ -58,18 +59,9 @@ func (a *WindowsAdapter) Capabilities() CapabilityReport {
 	}
 }
 
-func (a *WindowsAdapter) InstallPAC(url string, services []string) ([]string, error) {
-	return a.updatePAC(url, services)
-}
-
-func (a *WindowsAdapter) RefreshPAC(url string, services []string) error {
-	_, err := a.updatePAC(url, services)
-	return err
-}
-
-func (a *WindowsAdapter) updatePAC(url string, services []string) ([]string, error) {
+func (a *WindowsAdapter) ApplyPAC(url string, services []string) ([]PACServiceUpdate, error) {
 	if !containsString(services, windowsPACServiceName) {
-		return nil, nil
+		return absentPACUpdates(services), nil
 	}
 	script := fmt.Sprintf(`
 $key = %s
@@ -82,7 +74,23 @@ New-ItemProperty -Path $key -Name AutoConfigURL -PropertyType String -Value %s -
 	if err := a.notifyInternetSettingsChanged(); err != nil {
 		return nil, err
 	}
-	return []string{windowsPACServiceName}, nil
+	updates := make([]PACServiceUpdate, 0, len(services))
+	for _, service := range services {
+		outcome := PACApplyOutcomeAbsent
+		if service == windowsPACServiceName {
+			outcome = PACApplyOutcomeApplied
+		}
+		updates = append(updates, PACServiceUpdate{ServiceName: service, Outcome: outcome})
+	}
+	return updates, nil
+}
+
+func absentPACUpdates(services []string) []PACServiceUpdate {
+	updates := make([]PACServiceUpdate, 0, len(services))
+	for _, service := range services {
+		updates = append(updates, PACServiceUpdate{ServiceName: service, Outcome: PACApplyOutcomeAbsent})
+	}
+	return updates
 }
 
 func (a *WindowsAdapter) CurrentPACState() ([]PACServiceState, error) {
@@ -128,7 +136,7 @@ Remove-ItemProperty -Path $key -Name AutoConfigURL -ErrorAction SilentlyContinue
 	return a.notifyInternetSettingsChanged()
 }
 
-func (a *WindowsAdapter) TrustCA(certPEM []byte) error {
+func (a *WindowsAdapter) TrustCA(ctx context.Context, certPEM []byte) error {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return fmt.Errorf("CA certificate PEM is invalid")
@@ -145,17 +153,17 @@ func (a *WindowsAdapter) TrustCA(certPEM []byte) error {
 	script := fmt.Sprintf(`
 Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
 `, psQuote(certPath))
-	_, err = a.powershell(script)
+	_, err = a.powershellContext(ctx, script)
 	return err
 }
 
 func (a *WindowsAdapter) TrustedCAs() ([]CARecord, error) {
-	return a.caFootprints()
+	return a.caFootprintsContext(context.Background())
 }
 
-func (a *WindowsAdapter) RemoveCAs(fingerprints []string) error {
+func (a *WindowsAdapter) RemoveCAs(ctx context.Context, fingerprints []string) error {
 	if len(fingerprints) == 0 {
-		records, err := a.caFootprints()
+		records, err := a.caFootprintsContext(ctx)
 		if err != nil {
 			return err
 		}
@@ -168,14 +176,14 @@ func (a *WindowsAdapter) RemoveCAs(fingerprints []string) error {
 		script := fmt.Sprintf(`
 Remove-Item -Path %s -ErrorAction SilentlyContinue
 `, psQuote(`Cert:\CurrentUser\Root\`+fingerprint))
-		if _, err := a.powershell(script); err != nil && firstErr == nil {
+		if _, err := a.powershellContext(ctx, script); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func (a *WindowsAdapter) caFootprints() ([]CARecord, error) {
+func (a *WindowsAdapter) caFootprintsContext(ctx context.Context) ([]CARecord, error) {
 	script := fmt.Sprintf(`
 $records = @(
 	Get-ChildItem -Path Cert:\CurrentUser\Root |
@@ -190,7 +198,7 @@ $records = @(
 )
 ConvertTo-Json -Compress -InputObject $records
 `, psQuote("CN="+installedCACommonName))
-	out, err := a.powershell(script)
+	out, err := a.powershellContext(ctx, script)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +206,11 @@ ConvertTo-Json -Compress -InputObject $records
 }
 
 func (a *WindowsAdapter) powershell(script string) ([]byte, error) {
-	out, err := a.runner.run("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	return a.powershellContext(context.Background(), script)
+}
+
+func (a *WindowsAdapter) powershellContext(ctx context.Context, script string) ([]byte, error) {
+	out, err := a.runner.run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	if err != nil {
 		return out, fmt.Errorf("powershell failed: %s: %w", bytes.TrimSpace(out), err)
 	}

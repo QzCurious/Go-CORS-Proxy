@@ -3,6 +3,7 @@ package gatewayclient
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,15 +63,20 @@ func New(cache gatewaycoord.GatewayStateCache) *Client {
 	}
 }
 
-func (c *Client) PlanStart() (gatewayfacade.StartPlan, error) {
-	var result gatewayfacade.StartPlan
-	err := c.callJSON(http.MethodGet, "/start/plan", nil, &result)
-	return result, err
-}
-
 func (c *Client) Start(request gatewayfacade.StartRequest) (gatewayfacade.StartResult, error) {
 	var result gatewayfacade.StartResult
 	err := c.callJSON(http.MethodPost, "/start", request, &result)
+	var responseErr *responseError
+	if errors.As(err, &responseErr) {
+		var failure struct {
+			Detail   string                        `json:"detail"`
+			CAEnsure *gatewayfacade.CAEnsureResult `json:"caEnsure"`
+		}
+		if json.Unmarshal(responseErr.body, &failure) == nil && failure.Detail != "" {
+			result.CAEnsure = failure.CAEnsure
+			return result, &gatewayfacade.StartError{Diagnostic: failure.Detail, CAEnsure: failure.CAEnsure}
+		}
+	}
 	return result, err
 }
 
@@ -126,7 +132,18 @@ func (c *Client) callJSON(method, path string, body any, out any) error {
 		if strings.Contains(text, managedpac.ErrManagedPACLeaseLost.Error()) {
 			return managedpac.ErrManagedPACLeaseLost
 		}
-		return fmt.Errorf("%s returned %s: %s", path, resp.Status, text)
+		return &responseError{path: path, status: resp.Status, body: data, text: text}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+type responseError struct {
+	path   string
+	status string
+	body   []byte
+	text   string
+}
+
+func (e *responseError) Error() string {
+	return fmt.Sprintf("%s returned %s: %s", e.path, e.status, e.text)
 }

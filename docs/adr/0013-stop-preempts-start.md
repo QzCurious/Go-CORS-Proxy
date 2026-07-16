@@ -1,0 +1,3 @@
+# Stop preempts an in-progress start
+
+`stop` cancels and supersedes an in-progress Start Sequence instead of waiting on a mutation mutex or returning busy. Start phases observe lifecycle cancellation and cannot publish runtime or install PAC after cancellation; an interrupted CA Ensure reinspects trust and local material, preserving a fully usable CA, accepting fully absent state, or removing partial seamless-cors-owned state before cancellation settles. Stop then closes any admitted runtime, performs final ownership-aware cleanup, removes the owner cache, and shuts down the router. Successfully completed CA Ensure remains installed and reportable because CA lifecycle completion is independent from Gateway Activation.

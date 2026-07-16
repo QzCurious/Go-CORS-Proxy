@@ -181,6 +181,9 @@ func InstallCA(stdout io.Writer, adapter platform.Adapter) error {
 		return err
 	}
 	renderInstallResult(stdout, result)
+	if result.Kind == gatewayfacade.InstallResultBlockedRuntimeActive {
+		return fmt.Errorf("Installed User CA replacement blocked while trusted gateway runtime is active")
+	}
 	return nil
 }
 
@@ -282,7 +285,11 @@ func confirmPACReplacementConsent(stdin io.Reader, stdout io.Writer, detail *gat
 		if url == "" {
 			url = "(empty)"
 		}
-		fmt.Fprintf(stdout, "  %s: %s -> seamless-cors owned (enabled=%t url=%s)\n", state.ServiceName, state.Ownership, state.Enabled, url)
+		agreement := "included in Managed PAC Service Set"
+		if state.ReplacementConsentRequired {
+			agreement = "replacement consent required"
+		}
+		fmt.Fprintf(stdout, "  %s: %s -> seamless-cors owned (%s; enabled=%t url=%s)\n", state.ServiceName, state.Ownership, agreement, state.Enabled, url)
 	}
 	fmt.Fprintln(stdout)
 	fmt.Fprint(stdout, "Proceed? [y/N] ")
@@ -291,7 +298,7 @@ func confirmPACReplacementConsent(stdin io.Reader, stdout io.Writer, detail *gat
 		return false, err
 	}
 	if !ok {
-		fmt.Fprintln(stdout, "Startup canceled; no lifecycle changes were applied.")
+		fmt.Fprintln(stdout, "Gateway Activation canceled; any completed UserCA changes are retained.")
 		return false, nil
 	}
 	fmt.Fprintln(stdout)
@@ -314,10 +321,11 @@ func pacStatesForPrompt(states []platform.PACServiceState) []gatewayfacade.Manag
 	out := make([]gatewayfacade.ManagedPACServiceState, 0, len(states))
 	for _, state := range states {
 		out = append(out, gatewayfacade.ManagedPACServiceState{
-			ServiceName: state.Name,
-			Enabled:     state.Enabled,
-			URL:         state.URL,
-			Ownership:   pacOwnershipForPrompt(state.URL),
+			ServiceName:                state.Name,
+			Enabled:                    state.Enabled,
+			URL:                        state.URL,
+			Ownership:                  pacOwnershipForPrompt(state.URL),
+			ReplacementConsentRequired: pacOwnershipForPrompt(state.URL) == gatewayfacade.PACOwnershipForeign,
 		})
 	}
 	return out
@@ -334,12 +342,12 @@ func pacOwnershipForPrompt(raw string) gatewayfacade.PACOwnership {
 }
 
 func renderStartResult(stdout io.Writer, result gatewayfacade.StartResult) {
+	if result.CAEnsure != nil && result.CAEnsure.Kind == gatewayfacade.CAEnsureResultInstalled {
+		fmt.Fprintln(stdout, "Installed User CA added to the current user's SSL trust settings.")
+	}
 	switch result.Kind {
 	case gatewayfacade.StartResultStarted:
 		if result.Guidance != nil {
-			if result.Guidance.InstalledCAChanged {
-				fmt.Fprintln(stdout, "Installed User CA added to the current user's SSL trust settings.")
-			}
 			fmt.Fprintln(stdout, "seamless-cors running")
 			fmt.Fprintf(stdout, "config: %s\n", result.Guidance.ConfigPath)
 			fmt.Fprintf(stdout, "domain-list: %s\n", result.Guidance.DomainListPath)
@@ -373,6 +381,8 @@ func renderInstallResult(stdout io.Writer, result gatewayfacade.InstallResult) {
 		fmt.Fprintln(stdout, "Installed User CA installed.")
 	case gatewayfacade.InstallResultAlreadyUsable:
 		fmt.Fprintln(stdout, "Installed User CA is already usable.")
+	case gatewayfacade.InstallResultBlockedRuntimeActive:
+		fmt.Fprintln(stdout, "Installed User CA replacement requires stopping the trusted gateway runtime first.")
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
@@ -400,6 +410,8 @@ func renderStatus(stdout io.Writer, result gatewayfacade.StatusResult) {
 	switch result.Kind {
 	case gatewayfacade.GatewayStatusRunning:
 		fmt.Fprintln(stdout, "seamless-cors status: running")
+	case gatewayfacade.GatewayStatusStarting:
+		fmt.Fprintln(stdout, "seamless-cors status: starting")
 	case gatewayfacade.GatewayStatusRouterOnly:
 		fmt.Fprintln(stdout, "seamless-cors status: owner running")
 		fmt.Fprintln(stdout, "gateway-runtime: inactive")
@@ -414,7 +426,11 @@ func renderStatus(stdout io.Writer, result gatewayfacade.StatusResult) {
 		}
 		fmt.Fprintf(stdout, "domain-list: %s\n", result.Runtime.DomainListPath)
 		fmt.Fprintf(stdout, "domains: %d\n", result.Runtime.DomainCount)
-		fmt.Fprintln(stdout, "managed-pac: active")
+		if result.Kind == gatewayfacade.GatewayStatusRunning {
+			fmt.Fprintln(stdout, "managed-pac: active")
+		} else {
+			fmt.Fprintln(stdout, "managed-pac: inactive")
+		}
 		if len(result.Runtime.ManagedPACServices) > 0 {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
 		}

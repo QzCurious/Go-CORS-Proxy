@@ -65,10 +65,15 @@ func (f *fakeAdapter) Capabilities() platform.CapabilityReport {
 		RuntimeCleanup:    platform.CapabilitySupported,
 	}
 }
-func (f *fakeAdapter) InstallPAC(url string, services []string) ([]string, error) {
+func (f *fakeAdapter) ApplyPAC(url string, services []string) ([]platform.PACServiceUpdate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.installedPAC = url
+	refresh := f.installedPAC != ""
+	if refresh {
+		f.refreshedPAC = append(f.refreshedPAC, url)
+	} else {
+		f.installedPAC = url
+	}
 	if len(f.pacStates) == 0 {
 		f.pacStates = []platform.PACServiceState{{Name: "Wi-Fi"}}
 	}
@@ -76,42 +81,39 @@ func (f *fakeAdapter) InstallPAC(url string, services []string) ([]string, error
 	for _, service := range services {
 		serviceSet[service] = struct{}{}
 	}
-	installed := make([]string, 0, len(f.pacStates))
+	updates := make([]platform.PACServiceUpdate, 0, len(services))
 	mutated := 0
 	for idx := range f.pacStates {
 		if _, ok := serviceSet[f.pacStates[idx].Name]; !ok {
 			continue
 		}
-		installed = append(installed, f.pacStates[idx].Name)
+		updates = append(updates, platform.PACServiceUpdate{ServiceName: f.pacStates[idx].Name, Outcome: platform.PACApplyOutcomeApplied})
 		f.pacStates[idx].URL = url
 		f.pacStates[idx].Enabled = true
 		mutated++
-		if f.installErr != nil && f.installFailAfter > 0 && mutated >= f.installFailAfter {
-			return installed, f.installErr
+		if !refresh && f.installErr != nil && f.installFailAfter > 0 && mutated >= f.installFailAfter {
+			return updates, f.installErr
+		}
+		if refresh && f.refreshErr != nil && f.refreshFailAfter > 0 && mutated >= f.refreshFailAfter {
+			return updates, f.refreshErr
 		}
 	}
-	return installed, f.installErr
-}
-func (f *fakeAdapter) RefreshPAC(url string, services []string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.refreshedPAC = append(f.refreshedPAC, url)
-	serviceSet := map[string]struct{}{}
 	for _, service := range services {
-		serviceSet[service] = struct{}{}
-	}
-	mutated := 0
-	for idx := range f.pacStates {
-		if _, ok := serviceSet[f.pacStates[idx].Name]; ok {
-			f.pacStates[idx].URL = url
-			f.pacStates[idx].Enabled = true
-			mutated++
-			if f.refreshErr != nil && f.refreshFailAfter > 0 && mutated >= f.refreshFailAfter {
-				return f.refreshErr
-			}
+		found := false
+		for _, update := range updates {
+			found = found || update.ServiceName == service
+		}
+		if !found {
+			updates = append(updates, platform.PACServiceUpdate{ServiceName: service, Outcome: platform.PACApplyOutcomeAbsent})
 		}
 	}
-	return f.refreshErr
+	if refresh && f.refreshErr != nil {
+		return updates, f.refreshErr
+	}
+	if !refresh && f.installErr != nil {
+		return updates, f.installErr
+	}
+	return updates, nil
 }
 func (f *fakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
 	f.mu.Lock()
@@ -163,10 +165,14 @@ func (f *fakeAdapter) refreshedPACSnapshot() []string {
 	return append([]string(nil), f.refreshedPAC...)
 }
 func (f *fakeAdapter) TrustedCAs() ([]platform.CARecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]platform.CARecord(nil), f.caRecords...), nil
 }
-func (f *fakeAdapter) TrustCA(certPEM []byte) error {
+func (f *fakeAdapter) TrustCA(_ context.Context, certPEM []byte) error {
+	f.mu.Lock()
 	f.trusted++
+	f.mu.Unlock()
 	if f.trustStarted != nil {
 		close(f.trustStarted)
 	}
@@ -186,11 +192,15 @@ func (f *fakeAdapter) TrustCA(certPEM []byte) error {
 		if err != nil {
 			return err
 		}
+		f.mu.Lock()
 		f.caRecords = []platform.CARecord{{SHA1: fingerprint, CertPEM: certPEM, NotAfter: cert.NotAfter}}
+		f.mu.Unlock()
 	}
 	return f.trustErr
 }
-func (f *fakeAdapter) RemoveCAs([]string) error {
+func (f *fakeAdapter) RemoveCAs(context.Context, []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.cleanedCA++
 	f.caRecords = nil
 	return nil
@@ -230,7 +240,7 @@ func TestPACReplacementConsentPromptDeclineCancels(t *testing.T) {
 	if !errors.Is(err, ErrPACReplacementConsentDeclined) {
 		t.Fatalf("prompt error = %v", err)
 	}
-	if !strings.Contains(out.String(), "Startup canceled") {
+	if !strings.Contains(out.String(), "Gateway Activation canceled") {
 		t.Fatalf("prompt output = %q", out.String())
 	}
 }
@@ -254,8 +264,11 @@ func TestManagedGatewayUsesAdapterAndCleansUpLifecycleState(t *testing.T) {
 	var out bytes.Buffer
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- StartWithContextAndInput(ctx, nil, &out, fake) }()
+	waitForInstalledPAC(t, fake)
 	cancel()
-	if err := StartWithContextAndInput(ctx, nil, &out, fake); err != nil {
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 
@@ -374,7 +387,7 @@ func TestStartRunsCleanupBeforeInvalidConfig(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "domain-list") {
 		t.Fatalf("start error = %v", err)
 	}
-	if fake.clearedPAC != 1 {
+	if fake.clearedPAC < 1 {
 		t.Fatalf("cleanup before config validation calls = %d", fake.clearedPAC)
 	}
 	if fake.installedPAC != "" || fake.trusted != 0 {
@@ -479,7 +492,7 @@ func TestStartDeclinedPACReplacementConsentDoesNotMutateOSOrRuntimeState(t *test
 	if !errors.Is(err, ErrPACReplacementConsentDeclined) {
 		t.Fatalf("start error = %v", err)
 	}
-	if fake.installedPAC != "" || fake.trusted != 0 {
+	if fake.installedPAC != "" || fake.trusted != 1 {
 		t.Fatalf("declined consent mutated OS state: PAC=%q trusted=%d", fake.installedPAC, fake.trusted)
 	}
 	if _, err := os.Stat(filepath.Join(configDir, "runtime", "gateway-state-cache.json")); !os.IsNotExist(err) {

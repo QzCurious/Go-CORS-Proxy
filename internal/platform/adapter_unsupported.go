@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 )
@@ -23,12 +24,8 @@ func (UnsupportedAdapter) Capabilities() CapabilityReport {
 	}
 }
 
-func (UnsupportedAdapter) InstallPAC(string, []string) ([]string, error) {
+func (UnsupportedAdapter) ApplyPAC(string, []string) ([]PACServiceUpdate, error) {
 	return nil, fmt.Errorf("managed PAC routing is unsupported on this platform")
-}
-
-func (UnsupportedAdapter) RefreshPAC(string, []string) error {
-	return fmt.Errorf("managed PAC routing is unsupported on this platform")
 }
 
 func (UnsupportedAdapter) CurrentPACState() ([]PACServiceState, error) {
@@ -43,10 +40,10 @@ func (UnsupportedAdapter) TrustedCAs() ([]CARecord, error) {
 	return nil, nil
 }
 
-func (UnsupportedAdapter) TrustCA([]byte) error {
+func (UnsupportedAdapter) TrustCA(context.Context, []byte) error {
 	return nil
 }
 
-func (UnsupportedAdapter) RemoveCAs([]string) error {
+func (UnsupportedAdapter) RemoveCAs(context.Context, []string) error {
 	return nil
 }

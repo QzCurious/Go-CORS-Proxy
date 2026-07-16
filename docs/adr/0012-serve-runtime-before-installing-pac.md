@@ -1,0 +1,3 @@
+# Serve runtime before installing PAC
+
+After PAC consent, Gateway Activation prepares and publishes Gateway Runtime, completes Trusted Runtime Admission, and begins serving proxy and PAC listeners before installing the Generated PAC into the Managed PAC Service Set. This prevents the OS from pointing at an endpoint that is not ready; ordinary managed traffic cannot reach the runtime before PAC installation, and Start Guidance is withheld until installation reaches at least one selected service. Installation failure closes the runtime and removes partial owned PAC state while preserving the completed CA Ensure Result.

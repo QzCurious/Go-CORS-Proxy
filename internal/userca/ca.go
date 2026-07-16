@@ -1,6 +1,7 @@
 package userca
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -32,8 +33,8 @@ const (
 
 type TrustStore interface {
 	TrustedCAs() ([]platform.CARecord, error)
-	TrustCA(certPEM []byte) error
-	RemoveCAs(fingerprints []string) error
+	TrustCA(ctx context.Context, certPEM []byte) error
+	RemoveCAs(ctx context.Context, fingerprints []string) error
 }
 
 type Health string
@@ -57,7 +58,8 @@ type Report struct {
 
 type EnsureResult struct {
 	Report
-	Changed bool
+	Changed     bool
+	Fingerprint string
 }
 
 type Authority struct {
@@ -75,37 +77,97 @@ func Inspect(dir string, store TrustStore) (Report, error) {
 }
 
 func Ensure(dir string, store TrustStore) (*Authority, EnsureResult, error) {
+	return EnsureContext(context.Background(), dir, store)
+}
+
+func EnsureContext(ctx context.Context, dir string, store TrustStore) (*Authority, EnsureResult, error) {
+	lease, err := acquireCAMutationLease(ctx, dir)
+	if err != nil {
+		return nil, EnsureResult{}, err
+	}
+	defer func() { _ = lease.release() }()
+	return ensureLocked(ctx, dir, store)
+}
+
+func ensureLocked(ctx context.Context, dir string, store TrustStore) (*Authority, EnsureResult, error) {
 	report, authority, err := inspect(dir, store, true)
 	if err != nil {
 		return nil, EnsureResult{Report: report}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return reconcileCancelledEnsure(dir, store, err)
+	}
 	if report.Health == HealthUsable {
-		return authority, EnsureResult{Report: report}, nil
+		return authority, ensureResult(authority, report, false), nil
 	}
-	if err := Uninstall(dir, store); err != nil {
+	if err := uninstallLocked(ctx, dir, store); err != nil {
+		if ctx.Err() != nil {
+			return reconcileCancelledEnsure(dir, store, ctx.Err())
+		}
 		return nil, EnsureResult{Report: report}, err
 	}
-	authority, err = createFresh(dir, store)
+	if err := ctx.Err(); err != nil {
+		return reconcileCancelledEnsure(dir, store, err)
+	}
+	authority, err = createFresh(ctx, dir, store)
 	if err != nil {
-		return nil, EnsureResult{Report: report}, err
+		if ctx.Err() != nil {
+			return reconcileCancelledEnsure(dir, store, ctx.Err())
+		}
+		cleanupErr := uninstallLocked(context.Background(), dir, store)
+		return nil, EnsureResult{Report: Report{Health: HealthMissing}}, errors.Join(err, cleanupErr)
 	}
-	return authority, EnsureResult{
-		Report: Report{
-			Health:  HealthUsable,
-			Expires: authority.cert.NotAfter,
-		},
-		Changed: true,
-	}, nil
+	if ctx.Err() != nil {
+		return reconcileCancelledEnsure(dir, store, ctx.Err())
+	}
+	return authority, ensureResult(authority, Report{
+		Health:  HealthUsable,
+		Expires: authority.cert.NotAfter,
+	}, true), nil
+}
+
+func reconcileCancelledEnsure(dir string, store TrustStore, cancellation error) (*Authority, EnsureResult, error) {
+	report, authority, err := inspect(dir, store, true)
+	if err == nil && report.Health == HealthUsable {
+		return authority, ensureResult(authority, report, true), nil
+	}
+	cleanupErr := uninstallLocked(context.Background(), dir, store)
+	return nil, EnsureResult{Report: Report{Health: HealthMissing}}, errors.Join(cancellation, err, cleanupErr)
+}
+
+func ensureResult(authority *Authority, report Report, changed bool) EnsureResult {
+	fingerprint, _ := authority.Fingerprint()
+	return EnsureResult{Report: report, Changed: changed, Fingerprint: fingerprint}
 }
 
 func Uninstall(dir string, store TrustStore) error {
+	return UninstallContext(context.Background(), dir, store)
+}
+
+func UninstallContext(ctx context.Context, dir string, store TrustStore) error {
+	lease, err := acquireCAMutationLease(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lease.release() }()
+	err = uninstallLocked(ctx, dir, store)
+	if ctx.Err() == nil {
+		return err
+	}
+	// Once removal has begun, settle partial trust-store changes to the
+	// operation's safe terminal state even though its caller was cancelled.
+	reconcileErr := uninstallLocked(context.Background(), dir, store)
+	return errors.Join(ctx.Err(), err, reconcileErr)
+}
+
+func uninstallLocked(ctx context.Context, dir string, store TrustStore) error {
 	records, trustErr := store.TrustedCAs()
 	var fingerprints []string
 	for _, record := range records {
 		fingerprints = append(fingerprints, record.SHA1)
 	}
-	removeErr := store.RemoveCAs(fingerprints)
-	fileErr := os.RemoveAll(dir)
+	removeErr := store.RemoveCAs(ctx, fingerprints)
+	fileErr := errors.Join(os.RemoveAll(dir), os.RemoveAll(stagingDir(dir)))
 	return errors.Join(trustErr, removeErr, fileErr)
 }
 
@@ -121,6 +183,37 @@ func Load(dir string) (*Authority, error) {
 		return nil, err
 	}
 	return parseAuthority(certPath, keyPath, certPEM, keyPEM)
+}
+
+// LoadUsable loads the currently trusted and locally usable authority without
+// installing or replacing trust. A nil authority and a non-usable report are
+// returned when the Installed User CA is not ready for admission.
+func LoadUsable(dir string, store TrustStore) (*Authority, Report, error) {
+	return LoadUsableContext(context.Background(), dir, store)
+}
+
+// LoadUsableContext waits for any CA mutation to settle before reinspecting the
+// current authority. It never invokes platform trust approval.
+func LoadUsableContext(ctx context.Context, dir string, store TrustStore) (*Authority, Report, error) {
+	lease, err := acquireCAMutationLease(ctx, dir)
+	if err != nil {
+		return nil, Report{Health: HealthUnknown}, err
+	}
+	defer func() { _ = lease.release() }()
+	report, authority, err := inspect(dir, store, true)
+	if err != nil {
+		return nil, report, err
+	}
+	if report.Health != HealthUsable {
+		return nil, report, nil
+	}
+	return authority, report, nil
+}
+
+// Fingerprint identifies the authority certificate independently of its local
+// paths and key representation.
+func (a *Authority) Fingerprint() (string, error) {
+	return SHA1Fingerprint(a.CertPEM)
 }
 
 func (a *Authority) TLSCertificate() (tls.Certificate, error) {
@@ -183,10 +276,15 @@ func repairAuthorityPermissions(dir string, authority *Authority) error {
 	)
 }
 
-func createFresh(dir string, store TrustStore) (*Authority, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+func createFresh(ctx context.Context, dir string, store TrustStore) (*Authority, error) {
+	staging := stagingDir(dir)
+	if err := os.RemoveAll(staging); err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(staging) }()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
@@ -206,18 +304,22 @@ func createFresh(dir string, store TrustStore) (*Authority, error) {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	stagedCertPath := filepath.Join(staging, CertFileName)
+	stagedKeyPath := filepath.Join(staging, KeyFileName)
+	if err := os.WriteFile(stagedCertPath, certPEM, 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(stagedKeyPath, keyPEM, 0o600); err != nil {
+		return nil, err
+	}
+	if err := store.TrustCA(ctx, certPEM); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(staging, dir); err != nil {
+		return nil, err
+	}
 	certPath := filepath.Join(dir, CertFileName)
 	keyPath := filepath.Join(dir, KeyFileName)
-	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		return nil, err
-	}
-	if err := store.TrustCA(certPEM); err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, err
-	}
 	return &Authority{
 		CertPath: certPath,
 		KeyPath:  keyPath,
@@ -226,6 +328,10 @@ func createFresh(dir string, store TrustStore) (*Authority, error) {
 		cert:     template,
 		key:      key,
 	}, nil
+}
+
+func stagingDir(dir string) string {
+	return filepath.Clean(dir) + ".staging"
 }
 
 func parseAuthority(certPath, keyPath string, certPEM, keyPEM []byte) (*Authority, error) {

@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -16,15 +17,23 @@ import (
 )
 
 type fakeRunner struct {
-	calls        []string
-	err          error
-	out          []byte
-	autoProxyOut []byte
-	findCertOut  []byte
+	calls          []string
+	err            error
+	out            []byte
+	autoProxyOut   []byte
+	findCertOut    []byte
+	runFunc        func(name string, args ...string) ([]byte, error)
+	runContextFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-func (f *fakeRunner) run(name string, args ...string) ([]byte, error) {
+func (f *fakeRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	if f.runContextFunc != nil {
+		return f.runContextFunc(ctx, name, args...)
+	}
+	if f.runFunc != nil {
+		return f.runFunc(name, args...)
+	}
 	switch args[0] {
 	case "-listallnetworkservices":
 		return []byte("An asterisk (*) denotes that a network service is disabled.\nWi-Fi\nThunderbolt Bridge\n"), nil
@@ -43,21 +52,98 @@ func (f *fakeRunner) run(name string, args ...string) ([]byte, error) {
 	}
 }
 
-func TestDarwinAdapterInstallsPACWithoutRecordingPreviousAutoProxy(t *testing.T) {
+func TestDarwinCATrustMutationsObserveCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(context.Context, *DarwinAdapter) error
+	}{
+		{
+			name: "trust",
+			run: func(ctx context.Context, adapter *DarwinAdapter) error {
+				return adapter.TrustCA(ctx, testCertificate(t, installedCACommonName, true))
+			},
+		},
+		{
+			name: "remove",
+			run: func(ctx context.Context, adapter *DarwinAdapter) error {
+				return adapter.RemoveCAs(ctx, []string{"ABCDEF"})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entered := make(chan struct{})
+			runner := &fakeRunner{runContextFunc: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+				close(entered)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}}
+			adapter := &DarwinAdapter{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- test.run(ctx, adapter) }()
+			<-entered
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("mutation error = %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("CA mutation ignored cancellation")
+			}
+		})
+	}
+}
+
+func TestDarwinAdapterReportsAbsentServiceAndPreservesPartialResults(t *testing.T) {
+	runner := &fakeRunner{}
+	runner.runFunc = func(_ string, args ...string) ([]byte, error) {
+		switch args[1] {
+		case "Ethernet":
+			return nil, nil
+		case "Missing VPN":
+			return []byte("Missing VPN is not a recognized network service."), errors.New("exit status 1")
+		default:
+			return []byte("permission denied"), errors.New("exit status 1")
+		}
+	}
+	adapter := &DarwinAdapter{runner: runner}
+
+	updates, err := adapter.ApplyPAC("http://127.0.0.1:8079/seamless-cors.pac", []string{"Ethernet", "Missing VPN", "Wi-Fi"})
+
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("apply error = %v", err)
+	}
+	want := []PACServiceUpdate{
+		{ServiceName: "Ethernet", Outcome: PACApplyOutcomeApplied},
+		{ServiceName: "Missing VPN", Outcome: PACApplyOutcomeAbsent},
+	}
+	if len(updates) != len(want) {
+		t.Fatalf("updates = %#v", updates)
+	}
+	for i := range want {
+		if updates[i] != want[i] {
+			t.Fatalf("updates[%d] = %#v, want %#v", i, updates[i], want[i])
+		}
+	}
+}
+
+func TestDarwinAdapterInstallsPACDirectlyWithSetAutoProxyURL(t *testing.T) {
 	runner := &fakeRunner{}
 	adapter := &DarwinAdapter{runner: runner}
 
-	if _, err := adapter.InstallPAC("http://127.0.0.1:8079/seamless-cors.pac", []string{"Wi-Fi"}); err != nil {
+	if _, err := adapter.ApplyPAC("http://127.0.0.1:8079/seamless-cors.pac", []string{"Wi-Fi"}); err != nil {
 		t.Fatal(err)
 	}
 
 	joined := strings.Join(runner.calls, "\n")
-	for _, want := range []string{
-		"networksetup -setautoproxyurl Wi-Fi http://127.0.0.1:8079/seamless-cors.pac",
-		"networksetup -setautoproxystate Wi-Fi on",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("missing call %q in:\n%s", want, joined)
+	want := "networksetup -setautoproxyurl Wi-Fi http://127.0.0.1:8079/seamless-cors.pac"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("missing call %q in:\n%s", want, joined)
+	}
+	for _, unwanted := range []string{"-listallnetworkservices", "-getautoproxyurl", "-setautoproxystate"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("PAC installation should not call %q:\n%s", unwanted, joined)
 		}
 	}
 }
@@ -118,7 +204,7 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 -----END CERTIFICATE-----
 `)
 
-	if err := adapter.TrustCA(certPEM); !errors.Is(err, ErrTrustApprovalDenied) {
+	if err := adapter.TrustCA(context.Background(), certPEM); !errors.Is(err, ErrTrustApprovalDenied) {
 		t.Fatalf("trust error = %v", err)
 	}
 }
@@ -138,10 +224,10 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 -----END CERTIFICATE-----
 `)
 
-	if err := adapter.TrustCA(certPEM); err != nil {
+	if err := adapter.TrustCA(context.Background(), certPEM); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.RemoveCAs(nil); err != nil {
+	if err := adapter.RemoveCAs(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +249,7 @@ func TestDarwinAdapterDoesNotRemoveSameNameNonCAFootprint(t *testing.T) {
 	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, installedCACommonName, false))}
 	adapter := &DarwinAdapter{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 
-	if err := adapter.RemoveCAs(nil); err != nil {
+	if err := adapter.RemoveCAs(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 

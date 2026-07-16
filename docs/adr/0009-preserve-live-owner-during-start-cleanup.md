@@ -1,0 +1,3 @@
+# Preserve the live owner during start cleanup
+
+Start Sequence cleanup is ownership-aware rather than an unconditional removal of every gateway footprint. Direct start removes stale Gateway State Cache and owned PAC state before claiming ownership, while router-hosted start removes stale owned PAC but preserves the existing owner's live cache and router throughout CA Ensure, PAC consent, and activation failure; stop removes both when ownership is intentionally ending. This prevents stale PAC from surviving an approval wait without causing a router-hosted start to revoke its own ownership lease.

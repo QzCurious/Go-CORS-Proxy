@@ -4,6 +4,7 @@ package platform
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"crypto/x509"
 	"encoding/hex"
@@ -28,13 +29,13 @@ type DarwinAdapter struct {
 }
 
 type commandRunner interface {
-	run(name string, args ...string) ([]byte, error)
+	run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
 type execRunner struct{}
 
-func (execRunner) run(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func NewDarwinAdapter() *DarwinAdapter {
@@ -51,42 +52,29 @@ func (a *DarwinAdapter) Capabilities() CapabilityReport {
 	}
 }
 
-func (a *DarwinAdapter) InstallPAC(url string, services []string) ([]string, error) {
-	installed, err := a.updatePAC(url, services)
-	if err != nil {
-		return nil, err
-	}
-	return installed, nil
-}
-
-func (a *DarwinAdapter) RefreshPAC(url string, services []string) error {
-	_, err := a.updatePAC(url, services)
-	return err
-}
-
-func (a *DarwinAdapter) updatePAC(url string, services []string) ([]string, error) {
-	states, err := a.CurrentPACState()
-	if err != nil {
-		return nil, err
-	}
-	visible := map[string]struct{}{}
-	for _, state := range states {
-		visible[state.Name] = struct{}{}
-	}
-	var installed []string
+func (a *DarwinAdapter) ApplyPAC(url string, services []string) ([]PACServiceUpdate, error) {
+	updates := make([]PACServiceUpdate, 0, len(services))
 	for _, service := range services {
-		if _, ok := visible[service]; !ok {
+		out, err := a.networksetup("-setautoproxyurl", service, url)
+		if err != nil && isMissingNetworkService(out, err) {
+			updates = append(updates, PACServiceUpdate{ServiceName: service, Outcome: PACApplyOutcomeAbsent})
 			continue
 		}
-		if _, err := a.networksetup("-setautoproxyurl", service, url); err != nil {
-			return installed, err
+		if err != nil {
+			return updates, err
 		}
-		if _, err := a.networksetup("-setautoproxystate", service, "on"); err != nil {
-			return installed, err
-		}
-		installed = append(installed, service)
+		updates = append(updates, PACServiceUpdate{ServiceName: service, Outcome: PACApplyOutcomeApplied})
 	}
-	return installed, nil
+	return updates, nil
+}
+
+func isMissingNetworkService(out []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(string(out) + " " + err.Error())
+	return strings.Contains(message, "not a recognized network service") ||
+		strings.Contains(message, "network service was not found")
 }
 
 func (a *DarwinAdapter) CurrentPACState() ([]PACServiceState, error) {
@@ -122,7 +110,7 @@ func (a *DarwinAdapter) ClearOwnedPAC() error {
 	return firstErr
 }
 
-func (a *DarwinAdapter) TrustCA(certPEM []byte) error {
+func (a *DarwinAdapter) TrustCA(ctx context.Context, certPEM []byte) error {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return fmt.Errorf("CA certificate PEM is invalid")
@@ -138,7 +126,7 @@ func (a *DarwinAdapter) TrustCA(certPEM []byte) error {
 		return err
 	}
 	keychain := a.keychain()
-	_, err = a.security("add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", keychain, a.certPath)
+	_, err = a.securityContext(ctx, "add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", keychain, a.certPath)
 	if isTrustApprovalDenied(err) {
 		return fmt.Errorf("%w: %w", ErrTrustApprovalDenied, err)
 	}
@@ -146,12 +134,12 @@ func (a *DarwinAdapter) TrustCA(certPEM []byte) error {
 }
 
 func (a *DarwinAdapter) TrustedCAs() ([]CARecord, error) {
-	return a.caFootprints()
+	return a.caFootprintsContext(context.Background())
 }
 
-func (a *DarwinAdapter) RemoveCAs(fingerprints []string) error {
+func (a *DarwinAdapter) RemoveCAs(ctx context.Context, fingerprints []string) error {
 	if len(fingerprints) == 0 {
-		records, err := a.caFootprints()
+		records, err := a.caFootprintsContext(ctx)
 		if err != nil {
 			return err
 		}
@@ -161,7 +149,7 @@ func (a *DarwinAdapter) RemoveCAs(fingerprints []string) error {
 	}
 	var firstErr error
 	for _, fingerprint := range fingerprints {
-		if _, err := a.security("delete-certificate", "-Z", fingerprint, a.keychain()); err != nil && firstErr == nil {
+		if _, err := a.securityContext(ctx, "delete-certificate", "-Z", fingerprint, a.keychain()); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -211,8 +199,8 @@ func (a *DarwinAdapter) getAutoProxy(service string) (PACServiceState, error) {
 	return state, nil
 }
 
-func (a *DarwinAdapter) caFootprints() ([]CARecord, error) {
-	out, err := a.security("find-certificate", "-a", "-c", installedCACommonName, "-p", "-Z", a.keychain())
+func (a *DarwinAdapter) caFootprintsContext(ctx context.Context) ([]CARecord, error) {
+	out, err := a.securityContext(ctx, "find-certificate", "-a", "-c", installedCACommonName, "-p", "-Z", a.keychain())
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "could not be found") ||
 			strings.Contains(strings.ToLower(string(out)), "could not be found") {
@@ -279,7 +267,7 @@ func caRecordFromFingerprint(fingerprint string, pemLines []string) (CARecord, b
 }
 
 func (a *DarwinAdapter) networksetup(args ...string) ([]byte, error) {
-	out, err := a.runner.run("networksetup", args...)
+	out, err := a.runner.run(context.Background(), "networksetup", args...)
 	if err != nil {
 		return out, fmt.Errorf("networksetup %s failed: %s: %w", strings.Join(args, " "), bytes.TrimSpace(out), err)
 	}
@@ -287,7 +275,11 @@ func (a *DarwinAdapter) networksetup(args ...string) ([]byte, error) {
 }
 
 func (a *DarwinAdapter) security(args ...string) ([]byte, error) {
-	out, err := a.runner.run("security", args...)
+	return a.securityContext(context.Background(), args...)
+}
+
+func (a *DarwinAdapter) securityContext(ctx context.Context, args ...string) ([]byte, error) {
+	out, err := a.runner.run(ctx, "security", args...)
 	if err != nil {
 		return out, fmt.Errorf("security %s failed: %s: %w", strings.Join(args, " "), bytes.TrimSpace(out), err)
 	}

@@ -2,6 +2,9 @@ package gatewayfacade
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,14 +20,6 @@ import (
 	"seamless-cors/internal/userca"
 )
 
-type StartPlanKind string
-
-const (
-	StartPlanReady           StartPlanKind = "ready"
-	StartPlanConsentRequired StartPlanKind = "consent-required"
-	StartPlanAlreadyRunning  StartPlanKind = "already-running"
-)
-
 type StartResultKind string
 
 const (
@@ -33,12 +28,19 @@ const (
 	StartResultConsentRequired        StartResultKind = "consent-required"
 	StartResultStartAlreadyMutating   StartResultKind = "start-already-mutating"
 	StartResultPlatformApprovalDenied StartResultKind = "platform-approval-denied"
+	StartResultStopCancelled          StartResultKind = "stop-cancelled"
 )
 
-type StartPlan struct {
-	Kind                  StartPlanKind                `json:"kind"`
-	PACReplacementConsent *PACReplacementConsentDetail `json:"pacReplacementConsent,omitempty"`
+// StartError preserves a completed CA Ensure result when a later activation
+// step fails. Command transports must carry both pieces of information.
+type StartError struct {
+	Diagnostic string          `json:"diagnostic"`
+	CAEnsure   *CAEnsureResult `json:"caEnsure,omitempty"`
+	Cause      error           `json:"-"`
 }
+
+func (e *StartError) Error() string { return e.Diagnostic }
+func (e *StartError) Unwrap() error { return e.Cause }
 
 type StartRequest struct {
 	PACReplacementConsent *PACReplacementConsentInput `json:"pacReplacementConsent,omitempty"`
@@ -47,12 +49,26 @@ type StartRequest struct {
 type StartResult struct {
 	Kind                  StartResultKind              `json:"kind"`
 	PACReplacementConsent *PACReplacementConsentDetail `json:"pacReplacementConsent,omitempty"`
+	CAEnsure              *CAEnsureResult              `json:"caEnsure,omitempty"`
 	Guidance              *StartGuidanceDetail         `json:"guidance,omitempty"`
+}
+
+type CAEnsureResultKind string
+
+const (
+	CAEnsureResultInstalled     CAEnsureResultKind = "installed"
+	CAEnsureResultAlreadyUsable CAEnsureResultKind = "already-usable"
+)
+
+type CAEnsureResult struct {
+	Kind    CAEnsureResultKind `json:"kind"`
+	Expires time.Time          `json:"expires"`
 }
 
 type PACReplacementConsentDetail struct {
 	CurrentPACState []ManagedPACServiceState `json:"currentPacState"`
 	CleanupMode     CleanupMode              `json:"cleanupMode"`
+	Fingerprint     PACConsentFingerprint    `json:"fingerprint"`
 }
 
 type CleanupMode string
@@ -60,10 +76,11 @@ type CleanupMode string
 const CleanupModeNoPACRestoration CleanupMode = "no-pac-restoration"
 
 type ManagedPACServiceState struct {
-	ServiceName string       `json:"serviceName"`
-	Enabled     bool         `json:"enabled"`
-	URL         string       `json:"url"`
-	Ownership   PACOwnership `json:"ownership"`
+	ServiceName                string       `json:"serviceName"`
+	Enabled                    bool         `json:"enabled"`
+	URL                        string       `json:"url"`
+	Ownership                  PACOwnership `json:"ownership"`
+	ReplacementConsentRequired bool         `json:"replacementConsentRequired"`
 }
 
 type PACOwnership string
@@ -75,8 +92,11 @@ const (
 )
 
 type PACReplacementConsentInput struct {
-	Accepted bool `json:"accepted"`
+	Accepted    bool                  `json:"accepted"`
+	Fingerprint PACConsentFingerprint `json:"fingerprint"`
 }
+
+type PACConsentFingerprint string
 
 type StartGuidanceDetail struct {
 	ConfigPath         string   `json:"configPath"`
@@ -84,7 +104,6 @@ type StartGuidanceDetail struct {
 	ManagedPACActive   bool     `json:"managedPacActive"`
 	ManagedPACServices []string `json:"managedPacServices,omitempty"`
 	CATrusted          bool     `json:"caTrusted"`
-	InstalledCAChanged bool     `json:"installedCaChanged,omitempty"`
 }
 
 type StopResultKind string
@@ -124,8 +143,9 @@ const CommandWarningRuntimeCloseFailed CommandWarningKind = "runtime-close-faile
 type InstallResultKind string
 
 const (
-	InstallResultInstalled     InstallResultKind = "installed"
-	InstallResultAlreadyUsable InstallResultKind = "already-usable"
+	InstallResultInstalled            InstallResultKind = "installed"
+	InstallResultAlreadyUsable        InstallResultKind = "already-usable"
+	InstallResultBlockedRuntimeActive InstallResultKind = "blocked-runtime-active"
 )
 
 type InstallResult struct {
@@ -168,6 +188,7 @@ const (
 	GatewayStatusNotRunning GatewayStatusKind = "not-running"
 	GatewayStatusStaleCache GatewayStatusKind = "stale-cache"
 	GatewayStatusRouterOnly GatewayStatusKind = "router-only"
+	GatewayStatusStarting   GatewayStatusKind = "starting"
 	GatewayStatusRunning    GatewayStatusKind = "running"
 )
 
@@ -230,15 +251,19 @@ type CheckResult struct {
 }
 
 type Facade struct {
-	mu            sync.Mutex
-	adapter       platform.Adapter
-	coord         *gatewaycoord.Coordinator
-	runtimeDir    string
-	routerListen  string
-	ownerCache    gatewaycoord.GatewayStateCache
-	startMutating bool
-	runtime       *activeRuntime
-	fatal         chan error
+	mu                   sync.Mutex
+	caAdmissionMu        sync.Mutex
+	adapter              platform.Adapter
+	coord                *gatewaycoord.Coordinator
+	runtimeDir           string
+	routerListen         string
+	ownerCache           gatewaycoord.GatewayStateCache
+	startMutating        bool
+	startCleanupComplete bool
+	startCancel          context.CancelFunc
+	startDone            chan struct{}
+	runtime              *activeRuntime
+	fatal                chan error
 }
 
 type activeRuntime struct {
@@ -247,7 +272,15 @@ type activeRuntime struct {
 	pac    *managedpac.Session
 	cancel context.CancelFunc
 	done   chan error
+	phase  runtimePhase
 }
+
+type runtimePhase string
+
+const (
+	runtimePhaseStarting runtimePhase = "starting"
+	runtimePhaseRunning  runtimePhase = "running"
+)
 
 func New(adapter platform.Adapter, coord *gatewaycoord.Coordinator, routerListen string) (*Facade, error) {
 	if adapter == nil {
@@ -289,21 +322,20 @@ func (f *Facade) SetOwnerCache(cache gatewaycoord.GatewayStateCache) {
 	f.ownerCache = cache
 }
 
-func (f *Facade) PlanStart() (StartPlan, error) {
+// MarkStartCleanupComplete records direct-start cleanup performed before the
+// owner claimed its cache. Router-hosted starts deliberately do not use it.
+func (f *Facade) MarkStartCleanupComplete() {
 	f.mu.Lock()
-	running := f.runtime != nil
-	f.mu.Unlock()
-	if running {
-		return StartPlan{Kind: StartPlanAlreadyRunning}, nil
-	}
-	assessment, err := managedpac.Assess(f.adapter)
-	if err != nil {
-		return StartPlan{}, err
-	}
-	if assessment.ReplacementRequired {
-		return StartPlan{Kind: StartPlanConsentRequired, PACReplacementConsent: f.pacReplacementConsentDetail(assessment)}, nil
-	}
-	return StartPlan{Kind: StartPlanReady}, nil
+	defer f.mu.Unlock()
+	f.startCleanupComplete = true
+}
+
+func (f *Facade) takeStartCleanupComplete() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	complete := f.startCleanupComplete
+	f.startCleanupComplete = false
+	return complete
 }
 
 func (f *Facade) ExecuteStart(ctx context.Context, request StartRequest) (StartResult, error) {
@@ -317,28 +349,46 @@ func (f *Facade) ExecuteStart(ctx context.Context, request StartRequest) (StartR
 		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
 	}
 	f.startMutating = true
+	startCtx, cancel := context.WithCancel(ctx)
+	f.startCancel = cancel
+	f.startDone = make(chan struct{})
+	done := f.startDone
 	f.mu.Unlock()
 	defer func() {
 		f.mu.Lock()
 		f.startMutating = false
+		f.startCancel = nil
+		f.startDone = nil
 		f.mu.Unlock()
+		close(done)
 	}()
 
-	return gatewayActivation{facade: f}.Start(ctx, request)
+	return gatewayActivation{facade: f}.Start(startCtx, request)
 }
 
 func (f *Facade) Stop() (StopResult, error) {
 	var warnings []CommandWarning
 	f.mu.Lock()
+	startCancel := f.startCancel
+	startDone := f.startDone
 	active := f.runtime
 	f.runtime = nil
 	ownerCache := f.ownerCache
 	f.mu.Unlock()
+	if startCancel != nil {
+		startCancel()
+	}
 	if active != nil {
+		if active.pac != nil {
+			active.pac.Close()
+		}
 		if err := active.engine.CloseTraffic(); err != nil {
 			warnings = append(warnings, CommandWarning{Kind: CommandWarningRuntimeCloseFailed, Diagnostic: err.Error()})
 		}
 		active.cancel()
+	}
+	if startDone != nil {
+		<-startDone
 	}
 	var cleanupErr error
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
@@ -360,6 +410,12 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 	f.mu.Lock()
 	active := f.runtime
 	ownerCache := f.ownerCache
+	var phase runtimePhase
+	var pac *managedpac.Session
+	if active != nil {
+		phase = active.phase
+		pac = active.pac
+	}
 	f.mu.Unlock()
 	result := StatusResult{
 		Kind:        GatewayStatusNotRunning,
@@ -367,12 +423,18 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 		InstalledCA: f.installedCAStatus(),
 	}
 	if active != nil {
-		if err := active.pac.RequireLease(); err != nil {
-			f.reportFatalRuntimeError(active, err)
-			return StatusResult{}, err
+		if phase == runtimePhaseRunning {
+			if err := pac.RequireLease(); err != nil {
+				f.reportFatalRuntimeError(active, err)
+				return StatusResult{}, err
+			}
+		} else {
+			result.Kind = GatewayStatusStarting
 		}
 		state := active.engine.State()
-		result.Kind = GatewayStatusRunning
+		if phase == runtimePhaseRunning {
+			result.Kind = GatewayStatusRunning
+		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
 			ProxyListen:        state.ProxyListen,
@@ -380,7 +442,7 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 			DomainListPath:     state.DomainList,
 			DomainCount:        state.DomainCount,
 			CATrusted:          state.CATrusted,
-			ManagedPACServices: active.pac.Services(),
+			ManagedPACServices: managedPACServices(pac),
 			PendingLifecycle:   pendingLifecycleKinds(state.PendingLifecycle),
 		}
 		return result, nil
@@ -395,9 +457,25 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 }
 
 func (f *Facade) Install() (InstallResult, error) {
+	f.caAdmissionMu.Lock()
+	defer f.caAdmissionMu.Unlock()
 	caDir, err := liveconfig.CADir()
 	if err != nil {
 		return InstallResult{}, err
+	}
+	if f.activeRuntimeCATrusted() {
+		report, inspectErr := userca.Inspect(caDir, f.adapter)
+		if inspectErr != nil {
+			return InstallResult{}, inspectErr
+		}
+		if report.Health == userca.HealthUsable {
+			return InstallResult{
+				Kind:               InstallResultAlreadyUsable,
+				InstalledCAExpires: report.Expires,
+				Advisories:         installAdvisories(),
+			}, nil
+		}
+		return InstallResult{Kind: InstallResultBlockedRuntimeActive}, nil
 	}
 	_, result, err := userca.Ensure(caDir, f.adapter)
 	if err != nil {
@@ -415,7 +493,9 @@ func (f *Facade) Install() (InstallResult, error) {
 }
 
 func (f *Facade) Uninstall() (UninstallResult, error) {
-	if f.RuntimeActive() {
+	f.caAdmissionMu.Lock()
+	defer f.caAdmissionMu.Unlock()
+	if f.activeRuntimeCATrusted() {
 		return UninstallResult{Kind: UninstallResultBlockedRuntimeActive}, nil
 	}
 	caDir, err := liveconfig.CADir()
@@ -439,6 +519,12 @@ func (f *Facade) Uninstall() (UninstallResult, error) {
 	return UninstallResult{Kind: UninstallResultUninstalled}, nil
 }
 
+func (f *Facade) activeRuntimeCATrusted() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runtime != nil && f.runtime.live.CATrusted()
+}
+
 func (f *Facade) Check() CheckResult {
 	report := f.adapter.Capabilities()
 	return CheckResult{
@@ -456,10 +542,6 @@ func (f *Facade) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
 		case <-ctx.Done():
 			return
 		case nextURL := <-active.engine.PACURLUpdates():
-			if err := active.pac.RequireLease(); err != nil {
-				f.reportFatalRuntimeError(active, err)
-				return
-			}
 			if err := active.pac.Refresh(nextURL); err != nil {
 				f.reportFatalRuntimeError(active, err)
 				return
@@ -484,16 +566,41 @@ func (f *Facade) pacReplacementConsentDetail(assessment managedpac.Assessment) *
 	out := make([]ManagedPACServiceState, 0, len(assessment.States))
 	for _, state := range assessment.States {
 		out = append(out, ManagedPACServiceState{
-			ServiceName: state.ServiceName,
-			Enabled:     state.Enabled,
-			URL:         state.URL,
-			Ownership:   pacOwnership(state.Ownership),
+			ServiceName:                state.ServiceName,
+			Enabled:                    state.Enabled,
+			URL:                        state.URL,
+			Ownership:                  pacOwnership(state.Ownership),
+			ReplacementConsentRequired: state.Ownership == managedpac.OwnershipForeign,
 		})
 	}
 	return &PACReplacementConsentDetail{
 		CurrentPACState: out,
 		CleanupMode:     CleanupModeNoPACRestoration,
+		Fingerprint:     pacConsentFingerprint(assessment.States),
 	}
+}
+
+func pacConsentFingerprint(states []managedpac.ServiceState) PACConsentFingerprint {
+	h := sha256.New()
+	var size [8]byte
+	for _, state := range states {
+		if state.Ownership != managedpac.OwnershipForeign {
+			continue
+		}
+		for _, value := range []string{state.ServiceName, state.URL} {
+			binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+			_, _ = h.Write(size[:])
+			_, _ = h.Write([]byte(value))
+		}
+	}
+	return PACConsentFingerprint(hex.EncodeToString(h.Sum(nil)))
+}
+
+func managedPACServices(pac *managedpac.Session) []string {
+	if pac == nil {
+		return nil
+	}
+	return pac.Services()
 }
 
 func pacOwnership(ownership managedpac.Ownership) PACOwnership {

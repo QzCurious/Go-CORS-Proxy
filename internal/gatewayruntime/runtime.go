@@ -77,6 +77,12 @@ func (r *Runtime) SetAuthority(authority *userca.Authority) error {
 }
 
 func (r *Runtime) Serve(ctx context.Context) error {
+	return r.ServeReady(ctx, nil)
+}
+
+// ServeReady reports when both bound traffic listeners have entered their
+// serving goroutines. Callers may then safely publish the PAC URL.
+func (r *Runtime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
 	if r.proxy.Handler == nil {
 		if err := r.SetAuthority(nil); err != nil {
 			return err
@@ -84,8 +90,21 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	}
 	errs := make(chan serverError, 3)
 	go r.watchLiveConfig(ctx, errs)
-	go func() { errs <- serverError{source: "proxy", err: r.proxy.Serve(r.listeners[0])} }()
-	go func() { errs <- serverError{source: "pac", err: r.pac.Serve(r.listeners[1])} }()
+	go func() {
+		errs <- serverError{source: "proxy", err: r.proxy.Serve(r.listeners[0])}
+	}()
+	go func() {
+		errs <- serverError{source: "pac", err: r.pac.Serve(r.listeners[1])}
+	}()
+	for _, address := range []string{r.listeners[0].Addr().String(), r.listeners[1].Addr().String()} {
+		if err := proveHTTPServing(ctx, address); err != nil {
+			_ = r.Close()
+			return fmt.Errorf("runtime readiness failed for %s: %w", address, err)
+		}
+	}
+	if ready != nil {
+		close(ready)
+	}
 
 	select {
 	case <-ctx.Done():
@@ -97,6 +116,25 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		}
 		return serverErr.err
 	}
+}
+
+func proveHTTPServing(ctx context.Context, address string) error {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	stopCancelClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancelClose()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", address); err != nil {
+		return err
+	}
+	var first [1]byte
+	_, err = conn.Read(first[:])
+	return err
 }
 
 func (r *Runtime) Close() error {

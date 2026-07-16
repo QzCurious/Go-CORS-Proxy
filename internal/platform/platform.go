@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
 	"net"
@@ -46,15 +47,26 @@ type PACServiceState struct {
 	Enabled bool
 }
 
+type PACApplyOutcome string
+
+const (
+	PACApplyOutcomeApplied PACApplyOutcome = "applied"
+	PACApplyOutcomeAbsent  PACApplyOutcome = "absent"
+)
+
+type PACServiceUpdate struct {
+	ServiceName string
+	Outcome     PACApplyOutcome
+}
+
 type Adapter interface {
 	Capabilities() CapabilityReport
-	InstallPAC(url string, services []string) ([]string, error)
-	RefreshPAC(url string, services []string) error
+	ApplyPAC(url string, services []string) ([]PACServiceUpdate, error)
 	CurrentPACState() ([]PACServiceState, error)
 	ClearOwnedPAC() error
 	TrustedCAs() ([]CARecord, error)
-	TrustCA(certPEM []byte) error
-	RemoveCAs(fingerprints []string) error
+	TrustCA(ctx context.Context, certPEM []byte) error
+	RemoveCAs(ctx context.Context, fingerprints []string) error
 }
 
 var CurrentAdapter Adapter = currentAdapter()

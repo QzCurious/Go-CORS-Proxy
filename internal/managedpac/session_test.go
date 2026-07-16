@@ -17,18 +17,18 @@ type fakeAdapter struct {
 	installErr   error
 	refreshErr   error
 	currentErr   error
+	currentCalls int
+	applyStarted chan struct{}
+	applyRelease chan struct{}
 }
 
-func (f *fakeAdapter) InstallPAC(url string, services []string) ([]string, error) {
+func (f *fakeAdapter) ApplyPAC(url string, services []string) ([]platform.PACServiceUpdate, error) {
+	if f.applyStarted != nil {
+		close(f.applyStarted)
+		<-f.applyRelease
+	}
 	f.installedURL = url
 	f.installed = append([]string(nil), services...)
-	if f.installOut != nil {
-		return append([]string(nil), f.installOut...), f.installErr
-	}
-	return f.installed, f.installErr
-}
-
-func (f *fakeAdapter) RefreshPAC(url string, services []string) error {
 	f.refreshes = append(f.refreshes, url)
 	for idx := range f.pacStates {
 		for _, service := range services {
@@ -38,14 +38,29 @@ func (f *fakeAdapter) RefreshPAC(url string, services []string) error {
 			}
 		}
 	}
-	return f.refreshErr
+	if len(f.refreshes) > 1 && f.refreshErr != nil {
+		return nil, f.refreshErr
+	}
+	if f.installOut != nil {
+		return updatesFor(f.installOut, platform.PACApplyOutcomeApplied), f.installErr
+	}
+	return updatesFor(f.installed, platform.PACApplyOutcomeApplied), f.installErr
 }
 
 func (f *fakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
+	f.currentCalls++
 	if f.currentErr != nil {
 		return nil, f.currentErr
 	}
 	return append([]platform.PACServiceState(nil), f.pacStates...), nil
+}
+
+func updatesFor(services []string, outcome platform.PACApplyOutcome) []platform.PACServiceUpdate {
+	updates := make([]platform.PACServiceUpdate, 0, len(services))
+	for _, service := range services {
+		updates = append(updates, platform.PACServiceUpdate{ServiceName: service, Outcome: outcome})
+	}
+	return updates
 }
 
 func TestAssessPropagatesCurrentPACStateError(t *testing.T) {
@@ -99,6 +114,25 @@ func TestStartInstallsInitialURLAndKeepsSelectedServices(t *testing.T) {
 	if got := strings.Join(result.InstalledServices, ","); got != "Ethernet,Wi-Fi" {
 		t.Fatalf("installed services = %s", got)
 	}
+	if adapter.currentCalls != 0 {
+		t.Fatalf("start rediscovered PAC state %d times", adapter.currentCalls)
+	}
+}
+
+func TestPreparedSessionClosedBeforeInstallPerformsNoPlatformWrite(t *testing.T) {
+	adapter := &fakeAdapter{}
+	session, err := Prepare(adapter, []string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+
+	if _, err := session.Install(); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("install error = %v, want %v", err, ErrSessionClosed)
+	}
+	if adapter.installedURL != "" {
+		t.Fatalf("platform write URL = %q, want none", adapter.installedURL)
+	}
 }
 
 func TestStartRejectsEmptyServiceSet(t *testing.T) {
@@ -150,6 +184,32 @@ func TestRefreshCommitsCurrentURLOnlyAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestRefreshDoesNotOverwriteForeignSelectedPACState(t *testing.T) {
+	currentURL := "http://127.0.0.1:49152/seamless-cors.pac?v=1"
+	nextURL := "http://127.0.0.1:49152/seamless-cors.pac?v=2"
+	adapter := &fakeAdapter{pacStates: []platform.PACServiceState{{Name: "Wi-Fi"}}}
+	session, _, err := Start(adapter, []string{"Wi-Fi"}, currentURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.pacStates[0] = platform.PACServiceState{
+		Name: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true,
+	}
+	writesBefore := len(adapter.refreshes)
+
+	err = session.Refresh(nextURL)
+
+	if !errors.Is(err, ErrManagedPACLeaseLost) {
+		t.Fatalf("refresh error = %v, want managed PAC lease lost", err)
+	}
+	if len(adapter.refreshes) != writesBefore {
+		t.Fatalf("refresh overwrote foreign PAC state: writes before=%d after=%d", writesBefore, len(adapter.refreshes))
+	}
+	if session.CurrentURL() != currentURL {
+		t.Fatalf("current URL = %q after rejected refresh", session.CurrentURL())
+	}
+}
+
 func TestRequireLeaseAllowsMissingSelectedService(t *testing.T) {
 	url := "http://127.0.0.1:49152/seamless-cors.pac?v=1"
 	adapter := &fakeAdapter{
@@ -159,7 +219,6 @@ func TestRequireLeaseAllowsMissingSelectedService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	if err := session.RequireLease(); err != nil {
 		t.Fatalf("missing selected service should not lose the managed PAC lease: %v", err)
 	}
@@ -177,9 +236,41 @@ func TestRequireLeaseRejectsVisibleChangedSelectedService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	adapter.pacStates[1].URL = "http://corp.example/proxy.pac"
 
 	if !errors.Is(session.RequireLease(), ErrManagedPACLeaseLost) {
 		t.Fatal("visible selected service with replaced PAC should lose the managed PAC lease")
+	}
+}
+
+func TestRequireLeaseReattachesVisibleSelectedServiceWithOwnedMarker(t *testing.T) {
+	currentURL := "http://127.0.0.1:49152/seamless-cors.pac?v=2"
+	adapter := &fakeAdapter{
+		pacStates: []platform.PACServiceState{
+			{Name: "Wi-Fi", URL: currentURL, Enabled: true},
+			{Name: "Ethernet", URL: "http://localhost:48000/seamless-cors.pac?v=1", Enabled: false},
+			{Name: "New VPN", URL: "http://corp.example/proxy.pac", Enabled: true},
+		},
+	}
+	session, _, err := Start(adapter, []string{"Wi-Fi", "Ethernet"}, currentURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.pacStates[1].URL = "http://localhost:48000/seamless-cors.pac?v=1"
+	adapter.pacStates[1].Enabled = false
+	adapter.installed = nil
+
+	if err := session.RequireLease(); err != nil {
+		t.Fatalf("owned selected service should reattach: %v", err)
+	}
+	if got := strings.Join(adapter.installed, ","); got != "Ethernet" {
+		t.Fatalf("reattached services = %q, want Ethernet", got)
+	}
+	if adapter.pacStates[1].URL != currentURL || !adapter.pacStates[1].Enabled {
+		t.Fatalf("reattached state = %+v", adapter.pacStates[1])
+	}
+	if adapter.pacStates[2].URL != "http://corp.example/proxy.pac" {
+		t.Fatalf("new unselected service was modified: %+v", adapter.pacStates[2])
 	}
 }
 
@@ -198,5 +289,45 @@ func TestRequireLeaseWrapsInspectionFailure(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "managed PAC lease inspection failed") {
 		t.Fatalf("lease error missing context: %v", err)
+	}
+}
+
+func TestCloseWaitsForCurrentMutationAndRejectsLaterWrites(t *testing.T) {
+	adapter := &fakeAdapter{}
+	session, _, err := Start(adapter, []string{"Wi-Fi"}, "http://127.0.0.1:49152/seamless-cors.pac?v=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.applyStarted = make(chan struct{})
+	adapter.applyRelease = make(chan struct{})
+	applyStarted := adapter.applyStarted
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- session.Refresh("http://127.0.0.1:49152/seamless-cors.pac?v=2")
+	}()
+	<-applyStarted
+
+	closeDone := make(chan struct{})
+	go func() {
+		session.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+		t.Fatal("close returned before the current PAC mutation settled")
+	default:
+	}
+	close(adapter.applyRelease)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	<-closeDone
+	writesBefore := len(adapter.refreshes)
+
+	if err := session.Refresh("http://127.0.0.1:49152/seamless-cors.pac?v=3"); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("refresh after close = %v", err)
+	}
+	if len(adapter.refreshes) != writesBefore {
+		t.Fatalf("refresh wrote after close: before=%d after=%d", writesBefore, len(adapter.refreshes))
 	}
 }

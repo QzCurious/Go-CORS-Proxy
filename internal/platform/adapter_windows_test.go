@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -12,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -19,14 +21,61 @@ import (
 )
 
 type fakeWindowsRunner struct {
-	calls []string
-	out   []byte
-	err   error
+	calls   []string
+	out     []byte
+	err     error
+	runFunc func(context.Context, string, ...string) ([]byte, error)
 }
 
-func (f *fakeWindowsRunner) run(name string, args ...string) ([]byte, error) {
+func (f *fakeWindowsRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	if f.runFunc != nil {
+		return f.runFunc(ctx, name, args...)
+	}
 	return f.out, f.err
+}
+
+func TestWindowsCATrustMutationsObserveCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(context.Context, *WindowsAdapter) error
+	}{
+		{
+			name: "trust",
+			run: func(ctx context.Context, adapter *WindowsAdapter) error {
+				return adapter.TrustCA(ctx, testWindowsCertificate(t, installedCACommonName, true))
+			},
+		},
+		{
+			name: "remove",
+			run: func(ctx context.Context, adapter *WindowsAdapter) error {
+				return adapter.RemoveCAs(ctx, []string{"ABCDEF"})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entered := make(chan struct{})
+			runner := &fakeWindowsRunner{runFunc: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+				close(entered)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}}
+			adapter := &WindowsAdapter{runner: runner}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- test.run(ctx, adapter) }()
+			<-entered
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("mutation error = %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("CA mutation ignored cancellation")
+			}
+		})
+	}
 }
 
 func TestWindowsAdapterInstallsPACForCurrentUser(t *testing.T) {
@@ -37,11 +86,11 @@ func TestWindowsAdapterInstallsPACForCurrentUser(t *testing.T) {
 		return nil
 	}}
 
-	installed, err := adapter.InstallPAC("http://127.0.0.1:8079/seamless-cors.pac", []string{windowsPACServiceName})
+	installed, err := adapter.ApplyPAC("http://127.0.0.1:8079/seamless-cors.pac", []string{windowsPACServiceName})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(installed) != 1 || installed[0] != windowsPACServiceName {
+	if len(installed) != 1 || installed[0].ServiceName != windowsPACServiceName || installed[0].Outcome != PACApplyOutcomeApplied {
 		t.Fatalf("installed services = %v", installed)
 	}
 	if !notified {
@@ -114,10 +163,10 @@ func TestWindowsAdapterTrustsAndRemovesInstalledCAInUserRootStore(t *testing.T) 
 	runner := &fakeWindowsRunner{out: testWindowsCARecordsJSON(t, certPEM)}
 	adapter := &WindowsAdapter{runner: runner}
 
-	if err := adapter.TrustCA(certPEM); err != nil {
+	if err := adapter.TrustCA(context.Background(), certPEM); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.RemoveCAs(nil); err != nil {
+	if err := adapter.RemoveCAs(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(runner.calls, "\n")

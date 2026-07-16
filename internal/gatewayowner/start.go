@@ -18,6 +18,7 @@ const (
 	StartResultOwnerAlreadyRunning    StartResultKind = "owner-already-running"
 	StartResultPACReplacementDeclined StartResultKind = "pac-replacement-declined"
 	StartResultPlatformApprovalDenied StartResultKind = "platform-approval-denied"
+	StartResultStopCancelled          StartResultKind = "stop-cancelled"
 )
 
 type StartResult struct {
@@ -50,9 +51,10 @@ func Start(ctx context.Context, adapter platform.Adapter, hooks StartHooks) (Sta
 	if err != nil {
 		return StartResult{}, err
 	}
+	owner.facade.MarkStartCleanupComplete()
 	var result StartResult
-	err = owner.Run(ctx, func() error {
-		start, err := planAndStart(ctx, owner.facade, hooks)
+	err = owner.Run(ctx, func(activationCtx context.Context) error {
+		start, err := executeAndStart(activationCtx, owner.facade, hooks)
 		result = start
 		if err != nil {
 			return err
@@ -81,7 +83,7 @@ func Serve(ctx context.Context, adapter platform.Adapter, ready func()) error {
 	if err != nil {
 		return err
 	}
-	return owner.Run(ctx, func() error {
+	return owner.Run(ctx, func(context.Context) error {
 		if ready != nil {
 			ready()
 		}
@@ -89,41 +91,44 @@ func Serve(ctx context.Context, adapter platform.Adapter, ready func()) error {
 	})
 }
 
-func planAndStart(ctx context.Context, facade *gatewayfacade.Facade, hooks StartHooks) (StartResult, error) {
-	plan, err := facade.PlanStart()
-	if err != nil {
-		return StartResult{}, err
-	}
-	input := gatewayfacade.StartRequest{}
-	if plan.Kind == gatewayfacade.StartPlanConsentRequired && plan.PACReplacementConsent != nil {
-		accepted := false
-		if hooks.ConfirmPACReplacement != nil {
-			accepted, err = hooks.ConfirmPACReplacement(*plan.PACReplacementConsent)
-			if err != nil {
-				return StartResult{}, err
+func executeAndStart(ctx context.Context, facade *gatewayfacade.Facade, hooks StartHooks) (StartResult, error) {
+	request := gatewayfacade.StartRequest{}
+	for {
+		result, err := facade.ExecuteStart(ctx, request)
+		if hooks.Started != nil {
+			hooks.Started(result)
+		}
+		if err != nil {
+			return StartResult{Start: &result}, err
+		}
+		switch result.Kind {
+		case gatewayfacade.StartResultStarted, gatewayfacade.StartResultAlreadyRunning:
+			return StartResult{Kind: StartResultStarted, Start: &result}, nil
+		case gatewayfacade.StartResultPlatformApprovalDenied:
+			return StartResult{Kind: StartResultPlatformApprovalDenied, Start: &result, Reason: platform.ErrTrustApprovalDenied}, platform.ErrTrustApprovalDenied
+		case gatewayfacade.StartResultStopCancelled:
+			return StartResult{Kind: StartResultStopCancelled, Start: &result}, nil
+		case gatewayfacade.StartResultConsentRequired:
+			if result.PACReplacementConsent == nil {
+				return StartResult{Start: &result}, fmt.Errorf("consent-required start omitted PAC replacement consent detail")
 			}
+			accepted := false
+			if hooks.ConfirmPACReplacement != nil {
+				accepted, err = hooks.ConfirmPACReplacement(*result.PACReplacementConsent)
+				if err != nil {
+					return StartResult{Start: &result}, err
+				}
+			}
+			if !accepted {
+				return StartResult{Kind: StartResultPACReplacementDeclined, Start: &result}, nil
+			}
+			request.PACReplacementConsent = &gatewayfacade.PACReplacementConsentInput{
+				Accepted:    true,
+				Fingerprint: result.PACReplacementConsent.Fingerprint,
+			}
+		default:
+			return StartResult{Start: &result}, fmt.Errorf("gateway start did not activate runtime: %s", result.Kind)
 		}
-		if !accepted {
-			return StartResult{Kind: StartResultPACReplacementDeclined}, nil
-		}
-		input.PACReplacementConsent = &gatewayfacade.PACReplacementConsentInput{Accepted: true}
-	}
-	result, err := facade.ExecuteStart(ctx, input)
-	if err != nil {
-		return StartResult{}, err
-	}
-	if hooks.Started != nil {
-		hooks.Started(result)
-	}
-	switch result.Kind {
-	case gatewayfacade.StartResultStarted, gatewayfacade.StartResultAlreadyRunning:
-		return StartResult{Kind: StartResultStarted, Start: &result}, nil
-	case gatewayfacade.StartResultPlatformApprovalDenied:
-		return StartResult{Kind: StartResultPlatformApprovalDenied, Start: &result, Reason: platform.ErrTrustApprovalDenied}, platform.ErrTrustApprovalDenied
-	case gatewayfacade.StartResultConsentRequired:
-		return StartResult{Kind: StartResultPACReplacementDeclined, Start: &result}, nil
-	default:
-		return StartResult{Start: &result}, fmt.Errorf("gateway start did not activate runtime: %s", result.Kind)
 	}
 }
 

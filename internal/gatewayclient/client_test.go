@@ -2,6 +2,7 @@ package gatewayclient
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,7 +26,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.PACReplacementConsent == nil || !request.PACReplacementConsent.Accepted {
+		if request.PACReplacementConsent == nil || !request.PACReplacementConsent.Accepted || request.PACReplacementConsent.Fingerprint != "foreign-state-v1" {
 			t.Fatalf("request = %#v", request)
 		}
 		_ = json.NewEncoder(w).Encode(gatewayfacade.StartResult{Kind: gatewayfacade.StartResultStarted})
@@ -37,13 +38,32 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		Token:            "owner-token",
 	})
 	result, err := client.Start(gatewayfacade.StartRequest{
-		PACReplacementConsent: &gatewayfacade.PACReplacementConsentInput{Accepted: true},
+		PACReplacementConsent: &gatewayfacade.PACReplacementConsentInput{Accepted: true, Fingerprint: "foreign-state-v1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Kind != gatewayfacade.StartResultStarted {
 		t.Fatalf("result = %s", result.Kind)
+	}
+}
+
+func TestStartFailureReturnsCompletedCAEnsure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"status":500,"detail":"PAC install failed","caEnsure":{"kind":"installed","expires":"0001-01-01T00:00:00Z"}}`))
+	}))
+	defer server.Close()
+	client := New(gatewaycoord.GatewayStateCache{HTTPRouterListen: server.Listener.Addr().String()})
+
+	result, err := client.Start(gatewayfacade.StartRequest{})
+	var startErr *gatewayfacade.StartError
+	if !errors.As(err, &startErr) {
+		t.Fatalf("error = %v, want StartError", err)
+	}
+	if result.CAEnsure == nil || result.CAEnsure.Kind != gatewayfacade.CAEnsureResultInstalled {
+		t.Fatalf("CA result = %#v", result.CAEnsure)
 	}
 }
 

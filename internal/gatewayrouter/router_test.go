@@ -86,6 +86,19 @@ func TestStartAllowsEmptyBody(t *testing.T) {
 	}
 }
 
+func TestStartPlanRouteDoesNotExist(t *testing.T) {
+	server := New("token", &fakeFacade{})
+	req := httptest.NewRequest(http.MethodGet, "/start/plan", nil)
+	req.Header.Set(tokenHeader, "token")
+	rec := httptest.NewRecorder()
+
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /start/plan returned %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestStartUsesOwnerLifecycleContext(t *testing.T) {
 	facade := &fakeFacade{}
 	server := New("token", facade)
@@ -105,6 +118,31 @@ func TestStartUsesOwnerLifecycleContext(t *testing.T) {
 	}
 	if err := facade.startContext.Err(); err != nil {
 		t.Fatalf("start context err = %v, want nil", err)
+	}
+}
+
+func TestStartFailureCarriesCompletedCAEnsure(t *testing.T) {
+	ca := &gatewayfacade.CAEnsureResult{Kind: gatewayfacade.CAEnsureResultInstalled}
+	facade := &fakeFacade{startErr: &gatewayfacade.StartError{Diagnostic: "PAC install failed", CAEnsure: ca}}
+	server := New("token", facade)
+	req := httptest.NewRequest(http.MethodPost, "/start", nil)
+	req.Header.Set(tokenHeader, "token")
+	rec := httptest.NewRecorder()
+
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("start status = %d, want %d: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	var body struct {
+		Detail   string                        `json:"detail"`
+		CAEnsure *gatewayfacade.CAEnsureResult `json:"caEnsure"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Detail != "PAC install failed" || body.CAEnsure == nil || body.CAEnsure.Kind != gatewayfacade.CAEnsureResultInstalled {
+		t.Fatalf("failure body = %#v", body)
 	}
 }
 
@@ -150,17 +188,14 @@ type fakeFacade struct {
 	statusCalled bool
 	startRequest gatewayfacade.StartRequest
 	startContext context.Context
-}
-
-func (f *fakeFacade) PlanStart() (gatewayfacade.StartPlan, error) {
-	return gatewayfacade.StartPlan{Kind: gatewayfacade.StartPlanReady}, nil
+	startErr     error
 }
 
 func (f *fakeFacade) ExecuteStart(ctx context.Context, request gatewayfacade.StartRequest) (gatewayfacade.StartResult, error) {
 	f.startCalled = true
 	f.startRequest = request
 	f.startContext = ctx
-	return gatewayfacade.StartResult{Kind: gatewayfacade.StartResultStarted}, nil
+	return gatewayfacade.StartResult{Kind: gatewayfacade.StartResultStarted}, f.startErr
 }
 
 func (f *fakeFacade) Stop() (gatewayfacade.StopResult, error) {
