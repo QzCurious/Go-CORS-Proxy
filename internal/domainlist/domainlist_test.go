@@ -1,4 +1,4 @@
-package domain
+package domainlist
 
 import "testing"
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"seamless-cors/internal/domain"
+	"seamless-cors/internal/domainlist"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,7 +22,7 @@ type Config struct {
 	caTrusted        bool
 	configPath       string
 	domainListPath   string
-	entries          []domain.Entry
+	entries          []domainlist.Entry
 	pendingLifecycle []string
 }
 
@@ -175,12 +175,12 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
-func configFromLoadResult(loaded loadResult, entries []domain.Entry, pending []string, activeCATrusted bool) Config {
+func configFromLoadResult(loaded loadResult, entries []domainlist.Entry, pending []string, activeCATrusted bool) Config {
 	return Config{
 		caTrusted:        activeCATrusted,
 		configPath:       loaded.ConfigPath,
 		domainListPath:   loaded.DomainPath,
-		entries:          append([]domain.Entry(nil), entries...),
+		entries:          append([]domainlist.Entry(nil), entries...),
 		pendingLifecycle: append([]string(nil), pending...),
 	}
 }
@@ -288,7 +288,7 @@ func ExpandPath(path string) (string, error) {
 	return absolutePath(os.ExpandEnv(path))
 }
 
-func loadDomainList(path string) ([]domain.Entry, []byte, error) {
+func loadDomainList(path string) ([]domainlist.Entry, []byte, error) {
 	data, err := readRegularFile(path)
 	if err != nil {
 		return nil, nil, err
@@ -326,7 +326,7 @@ func lifecycleChanges(nextCATrusted, baselineCATrusted bool) []string {
 	return nil
 }
 
-func formatDomainErrors(errs []domain.LineError) string {
+func formatDomainErrors(errs []domainlist.LineError) string {
 	var lines []string
 	for _, err := range errs {
 		lines = append(lines, err.Error())
@@ -361,8 +361,8 @@ func (c Config) CATrusted() bool {
 	return c.caTrusted
 }
 
-func (c Config) Entries() []domain.Entry {
-	return append([]domain.Entry(nil), c.entries...)
+func (c Config) Entries() []domainlist.Entry {
+	return append([]domainlist.Entry(nil), c.entries...)
 }
 
 func (c Config) PendingLifecycle() []string {

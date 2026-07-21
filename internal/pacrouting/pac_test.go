@@ -4,22 +4,22 @@ import (
 	"strings"
 	"testing"
 
-	"seamless-cors/internal/domain"
+	"seamless-cors/internal/domainlist"
 )
 
 func TestGenerateUsesTrustAwareHTTPSRouting(t *testing.T) {
-	httpsEntry, err := domain.ParseEntry("https://api.example.test")
+	httpsEntry, err := domainlist.ParseEntry("https://api.example.test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpEntry, err := domain.ParseEntry("http://api.example.test")
+	httpEntry, err := domainlist.ParseEntry("http://api.example.test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := Generate(Options{
 		ProxyListen: "127.0.0.1:8080",
 		CATrusted:   false,
-		Entries:     []domain.Entry{httpsEntry, httpEntry},
+		Entries:     []domainlist.Entry{httpsEntry, httpEntry},
 	})
 	if strings.Contains(js, "scheme == 'https' && host == 'api.example.test'") {
 		t.Fatal("HTTPS route should be omitted when CA is not trusted")
@@ -75,14 +75,14 @@ func TestPolicyMatchesDomainListEntries(t *testing.T) {
 }
 
 func TestGenerateUsesExactPortsForFullOrigins(t *testing.T) {
-	entry, err := domain.ParseEntry("http://api.example.test:8081")
+	entry, err := domainlist.ParseEntry("http://api.example.test:8081")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := Generate(Options{
 		ProxyListen: "127.0.0.1:8080",
 		CATrusted:   false,
-		Entries:     []domain.Entry{entry},
+		Entries:     []domainlist.Entry{entry},
 	})
 	if !strings.Contains(js, `"port":"8081"`) {
 		t.Fatalf("PAC should preserve full-origin port, got:\n%s", js)
@@ -110,11 +110,11 @@ func TestRouteSetFingerprintIgnoresOrderAndDuplicates(t *testing.T) {
 	}
 }
 
-func mustParseEntries(t *testing.T, texts ...string) []domain.Entry {
+func mustParseEntries(t *testing.T, texts ...string) []domainlist.Entry {
 	t.Helper()
-	entries := make([]domain.Entry, 0, len(texts))
+	entries := make([]domainlist.Entry, 0, len(texts))
 	for _, text := range texts {
-		entry, err := domain.ParseEntry(text)
+		entry, err := domainlist.ParseEntry(text)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -8,25 +8,25 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"seamless-cors/internal/domain"
+	"seamless-cors/internal/domainlist"
 )
 
 type Policy struct {
-	entries []domain.Entry
+	entries []domainlist.Entry
 }
 
 type Options struct {
 	ProxyListen string
 	CATrusted   bool
-	Entries     []domain.Entry
+	Entries     []domainlist.Entry
 }
 
-func NewPolicy(entries []domain.Entry) Policy {
-	return Policy{entries: append([]domain.Entry(nil), entries...)}
+func NewPolicy(entries []domainlist.Entry) Policy {
+	return Policy{entries: append([]domainlist.Entry(nil), entries...)}
 }
 
-func (p Policy) Entries() []domain.Entry {
-	return append([]domain.Entry(nil), p.entries...)
+func (p Policy) Entries() []domainlist.Entry {
+	return append([]domainlist.Entry(nil), p.entries...)
 }
 
 func (p Policy) Matches(scheme, host, port string) bool {
@@ -77,7 +77,7 @@ func Generate(opts Options) string {
 	)
 }
 
-func RouteSetFingerprint(entries []domain.Entry, caTrusted bool) string {
+func RouteSetFingerprint(entries []domainlist.Entry, caTrusted bool) string {
 	buckets := canonicalRouteBuckets(deriveRouteBuckets(NewPolicy(entries), caTrusted))
 	data, err := json.Marshal(routeSetFingerprint{
 		ExactHosts:      buckets.exactHosts,
@@ -249,7 +249,7 @@ func originRouteKey(route originRoute) string {
 	return route.Scheme + "|" + route.Host + "|" + route.Port
 }
 
-func entryMatches(entry domain.Entry, scheme, host, port string) bool {
+func entryMatches(entry domainlist.Entry, scheme, host, port string) bool {
 	if entry.Scheme != "" && !strings.EqualFold(entry.Scheme, scheme) {
 		return false
 	}

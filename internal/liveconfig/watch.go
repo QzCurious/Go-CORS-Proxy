@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"seamless-cors/internal/domain"
+	"seamless-cors/internal/domainlist"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -426,8 +426,8 @@ func publishLatest(output chan Event, event Event) {
 	output <- event
 }
 
-func parseDomainList(data []byte) ([]domain.Entry, error) {
-	entries, errs := domain.ParseList(string(data))
+func parseDomainList(data []byte) ([]domainlist.Entry, error) {
+	entries, errs := domainlist.ParseList(string(data))
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("invalid Domain List:\n%s", formatDomainErrors(errs))
 	}
