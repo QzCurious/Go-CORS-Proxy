@@ -1,27 +1,25 @@
-package gatewayfacade
+package gateway
 
 import (
 	"context"
 	"errors"
 	"fmt"
-
-	"seamless-cors/internal/gatewayruntime"
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
 	"seamless-cors/internal/userca"
 )
 
-type gatewayActivation struct {
-	facade *Facade
+type startSequence struct {
+	lifecycle *lifecycle
 }
 
-// Start runs the Start Sequence. CA Ensure deliberately completes before PAC
+// Execute runs the Start Sequence. CA Ensure deliberately completes before PAC
 // Replacement Consent is assessed; the two lifecycle operations remain
 // independent even though start composes them.
-func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (StartResult, error) {
-	if !a.facade.takeStartCleanupComplete() {
-		if err := a.facade.adapter.ClearOwnedPAC(); err != nil {
+func (s startSequence) Execute(ctx context.Context, request StartRequest) (StartResult, error) {
+	if !s.lifecycle.takeStartCleanupComplete() {
+		if err := s.lifecycle.adapter.ClearOwnedPAC(); err != nil {
 			return StartResult{}, fmt.Errorf("early managed PAC cleanup failed: %w", err)
 		}
 	}
@@ -41,7 +39,7 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 			return StartResult{}, err
 		}
 		var ensured userca.EnsureResult
-		authority, ensured, err = userca.EnsureContext(ctx, caDir, a.facade.adapter)
+		authority, ensured, err = userca.EnsureContext(ctx, caDir, s.lifecycle.adapter)
 		if err != nil {
 			if errors.Is(err, platform.ErrTrustApprovalDenied) {
 				return StartResult{Kind: StartResultPlatformApprovalDenied}, nil
@@ -65,11 +63,11 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 		return StartResult{CAEnsure: caEnsure}, &StartError{Diagnostic: err.Error(), CAEnsure: caEnsure, Cause: err}
 	}
 
-	assessment, err := managedpac.Assess(a.facade.adapter)
+	assessment, err := managedpac.Assess(s.lifecycle.adapter)
 	if err != nil {
 		return postCAFailure(err)
 	}
-	detail := a.facade.pacReplacementConsentDetail(assessment)
+	detail := s.lifecycle.pacReplacementConsentDetail(assessment)
 	if assessment.ReplacementRequired && !acceptsPACState(request.PACReplacementConsent, detail.Fingerprint) {
 		return StartResult{
 			Kind:                  StartResultConsentRequired,
@@ -87,7 +85,7 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 	}
 	live = latest
 
-	engine, err := gatewayruntime.New(source, live)
+	engine, err := newRuntime(source, live)
 	if err != nil {
 		return postCAFailure(err)
 	}
@@ -112,48 +110,48 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 	}
 	// This short admission gate coordinates runtime publication with standalone
 	// CA mutation. It is not held across the Start Sequence.
-	a.facade.caAdmissionMu.Lock()
-	a.facade.mu.Lock()
+	s.lifecycle.caAdmissionMu.Lock()
+	s.lifecycle.mu.Lock()
 	if ctx.Err() != nil {
-		a.facade.mu.Unlock()
-		a.facade.caAdmissionMu.Unlock()
+		s.lifecycle.mu.Unlock()
+		s.lifecycle.caAdmissionMu.Unlock()
 		return StartResult{Kind: StartResultStopCancelled, CAEnsure: caEnsure}, nil
 	}
-	a.facade.runtime = active
-	a.facade.mu.Unlock()
+	s.lifecycle.runtime = active
+	s.lifecycle.mu.Unlock()
 	withdraw := func() {
-		a.facade.mu.Lock()
-		if a.facade.runtime == active {
-			a.facade.runtime = nil
+		s.lifecycle.mu.Lock()
+		if s.lifecycle.runtime == active {
+			s.lifecycle.runtime = nil
 		}
-		a.facade.mu.Unlock()
+		s.lifecycle.mu.Unlock()
 		cancel()
 	}
 
 	// Trusted Runtime Admission adopts the currently usable authority. This
 	// closes the race with independent CA commands without a start-wide lock.
 	if live.CATrusted() {
-		admitted, report, admissionErr := userca.LoadUsableContext(ctx, caDir, a.facade.adapter)
+		admitted, report, admissionErr := userca.LoadUsableContext(ctx, caDir, s.lifecycle.adapter)
 		if admissionErr != nil {
 			withdraw()
-			a.facade.caAdmissionMu.Unlock()
+			s.lifecycle.caAdmissionMu.Unlock()
 			return postCAFailure(fmt.Errorf("trusted runtime admission failed: %w", admissionErr))
 		}
 		if err := engine.SetAuthority(admitted); err != nil {
 			withdraw()
-			a.facade.caAdmissionMu.Unlock()
+			s.lifecycle.caAdmissionMu.Unlock()
 			return postCAFailure(err)
 		}
 		if fingerprint, fingerprintErr := admitted.Fingerprint(); fingerprintErr != nil {
 			withdraw()
-			a.facade.caAdmissionMu.Unlock()
+			s.lifecycle.caAdmissionMu.Unlock()
 			return postCAFailure(fmt.Errorf("admitted User CA identity unavailable: %w", fingerprintErr))
 		} else if fingerprint != ensuredFingerprint {
 			caEnsure.Kind = CAEnsureResultAlreadyUsable
 		}
 		caEnsure.Expires = report.Expires
 	}
-	a.facade.caAdmissionMu.Unlock()
+	s.lifecycle.caAdmissionMu.Unlock()
 
 	// Traffic listeners begin serving before OS PAC state can point at them.
 	ready := make(chan struct{})
@@ -162,7 +160,7 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 		done <- err
 		if err != nil {
 			select {
-			case a.facade.fatal <- err:
+			case s.lifecycle.fatal <- err:
 			default:
 			}
 		}
@@ -183,39 +181,39 @@ func (a gatewayActivation) Start(ctx context.Context, request StartRequest) (Sta
 	default:
 	}
 
-	session, err := managedpac.Prepare(a.facade.adapter, assessment.ServiceSet, engine.PACURL())
+	session, err := managedpac.Prepare(s.lifecycle.adapter, assessment.ServiceSet, engine.PACURL())
 	if err != nil {
 		withdraw()
 		return postCAFailure(err)
 	}
-	a.facade.mu.Lock()
-	if a.facade.runtime != active || ctx.Err() != nil {
-		a.facade.mu.Unlock()
+	s.lifecycle.mu.Lock()
+	if s.lifecycle.runtime != active || ctx.Err() != nil {
+		s.lifecycle.mu.Unlock()
 		session.Close()
 		withdraw()
 		return StartResult{Kind: StartResultStopCancelled, CAEnsure: caEnsure}, nil
 	}
 	active.pac = session
-	a.facade.mu.Unlock()
+	s.lifecycle.mu.Unlock()
 	pacStart, err := session.Install()
 	if err != nil {
 		withdraw()
-		return postCAFailure(errors.Join(err, a.cleanupFailedPACInstall()))
+		return postCAFailure(errors.Join(err, s.cleanupFailedPACInstall()))
 	}
 
-	a.facade.mu.Lock()
-	if a.facade.runtime != active || ctx.Err() != nil {
-		a.facade.mu.Unlock()
+	s.lifecycle.mu.Lock()
+	if s.lifecycle.runtime != active || ctx.Err() != nil {
+		s.lifecycle.mu.Unlock()
 		session.Close()
 		withdraw()
-		_ = a.cleanupFailedPACInstall()
+		_ = s.cleanupFailedPACInstall()
 		return StartResult{Kind: StartResultStopCancelled, CAEnsure: caEnsure}, nil
 	}
 	active.phase = runtimePhaseRunning
-	a.facade.mu.Unlock()
+	s.lifecycle.mu.Unlock()
 	cleanupEngine = false
 
-	go a.facade.watchPACRefreshes(runCtx, active)
+	go s.lifecycle.watchPACRefreshes(runCtx, active)
 
 	return StartResult{
 		Kind:     StartResultStarted,
@@ -242,8 +240,8 @@ func caEnsureResult(result userca.EnsureResult) *CAEnsureResult {
 	return &CAEnsureResult{Kind: kind, Expires: result.Expires}
 }
 
-func (a gatewayActivation) cleanupFailedPACInstall() error {
-	if err := a.facade.adapter.ClearOwnedPAC(); err != nil {
+func (s startSequence) cleanupFailedPACInstall() error {
+	if err := s.lifecycle.adapter.ClearOwnedPAC(); err != nil {
 		return fmt.Errorf("cleanup after failed managed PAC install failed: %w", err)
 	}
 	return nil

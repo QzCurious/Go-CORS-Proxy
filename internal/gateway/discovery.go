@@ -1,4 +1,4 @@
-package gatewaycoord
+package gateway
 
 import (
 	"encoding/json"
@@ -11,94 +11,99 @@ import (
 	"seamless-cors/internal/liveconfig"
 )
 
-const StateFileName = "gateway-state-cache.json"
+const stateFileName = "gateway-state-cache.json"
 
-type StateStatus string
+type stateStatus string
 
 const (
-	Missing StateStatus = "missing"
-	Active  StateStatus = "active"
-	Stale   StateStatus = "stale"
+	stateMissing stateStatus = "missing"
+	stateActive  stateStatus = "active"
+	stateStale   stateStatus = "stale"
 )
 
-type GatewayStateCache struct {
+type stateCache struct {
 	HTTPRouterListen string `json:"httpRouterListen"`
 	Token            string `json:"token"`
 }
 
-type Verification struct {
-	Status StateStatus
-	Cache  GatewayStateCache
+type verification struct {
+	Status stateStatus
+	Cache  stateCache
 }
 
-type OwnerVerifier func(GatewayStateCache) bool
+type ownerVerifier func(stateCache) bool
 
-func Default() (*Coordinator, error) {
+func defaultCoordinator() (*coordinator, error) {
 	runtimeDir, err := liveconfig.RuntimeDir()
 	if err != nil {
 		return nil, err
 	}
-	return New(runtimeDir), nil
+	return newCoordinator(runtimeDir), nil
 }
 
-type Coordinator struct {
+type coordinator struct {
 	runtimeDir    string
 	statePath     string
-	ownerVerifier OwnerVerifier
+	ownerVerifier ownerVerifier
 }
 
-func New(runtimeDir string) *Coordinator {
-	return NewWithVerifier(runtimeDir, VerifyHTTPRouter)
+func newCoordinator(runtimeDir string) *coordinator {
+	return newCoordinatorWithVerifier(runtimeDir, verifyHTTPRouter)
 }
 
-func NewWithVerifier(runtimeDir string, ownerVerifier OwnerVerifier) *Coordinator {
+func newCoordinatorWithVerifier(runtimeDir string, ownerVerifier ownerVerifier) *coordinator {
 	if ownerVerifier == nil {
-		ownerVerifier = VerifyHTTPRouter
+		ownerVerifier = verifyHTTPRouter
 	}
-	return &Coordinator{
+	return &coordinator{
 		runtimeDir:    runtimeDir,
-		statePath:     filepath.Join(runtimeDir, StateFileName),
+		statePath:     filepath.Join(runtimeDir, stateFileName),
 		ownerVerifier: ownerVerifier,
 	}
 }
 
-func (c *Coordinator) RuntimeDirPath() string {
+func (c *coordinator) RuntimeDirPath() string {
 	return c.runtimeDir
 }
 
-func (c *Coordinator) StateFilePath() string {
+func (c *coordinator) StateFilePath() string {
 	return c.statePath
 }
 
-func (c *Coordinator) Verify() Verification {
+func (c *coordinator) Exists() bool {
+	_, err := os.Stat(c.statePath)
+	return err == nil
+}
+
+func (c *coordinator) Verify() verification {
 	cache, err := c.read()
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Verification{Status: Missing}
+			return verification{Status: stateMissing}
 		}
-		return Verification{Status: Stale}
+		return verification{Status: stateStale}
 	}
 	if c.ownerVerifier(cache) {
-		return Verification{Status: Active, Cache: cache}
+		return verification{Status: stateActive, Cache: cache}
 	}
-	return Verification{Status: Stale, Cache: cache}
+	return verification{Status: stateStale, Cache: cache}
 }
 
-func (c *Coordinator) EnsureStartAllowed() (bool, error) {
+func (c *coordinator) EnsureStartAllowed() (bool, error) {
 	if err := os.MkdirAll(c.runtimeDir, 0o700); err != nil {
 		return false, err
 	}
 	switch c.Verify().Status {
-	case Active:
+	case stateActive:
 		return false, fmt.Errorf("gateway owner already running")
-	case Stale:
+	case stateStale:
 		return true, nil
 	default:
 		return false, nil
 	}
 }
 
-func (c *Coordinator) Claim(cache GatewayStateCache) error {
+func (c *coordinator) Claim(cache stateCache) error {
 	if cache.HTTPRouterListen == "" || cache.Token == "" {
 		return fmt.Errorf("gateway state cache requires router listen and token")
 	}
@@ -107,13 +112,13 @@ func (c *Coordinator) Claim(cache GatewayStateCache) error {
 	} else if !os.IsExist(err) {
 		return err
 	}
-	if c.Verify().Status == Active {
+	if c.Verify().Status == stateActive {
 		return fmt.Errorf("gateway owner already running")
 	}
 	return writeAtomicReplace(c.statePath, cache)
 }
 
-func (c *Coordinator) Remove() error {
+func (c *coordinator) Remove() error {
 	err := os.Remove(c.statePath)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -121,14 +126,14 @@ func (c *Coordinator) Remove() error {
 	return nil
 }
 
-func (c *Coordinator) RemoveOwned(cache GatewayStateCache) error {
+func (c *coordinator) RemoveOwned(cache stateCache) error {
 	if !c.Owns(cache) {
 		return nil
 	}
 	return c.Remove()
 }
 
-func (c *Coordinator) Owns(cache GatewayStateCache) bool {
+func (c *coordinator) Owns(cache stateCache) bool {
 	current, err := c.read()
 	if err != nil {
 		return false
@@ -136,23 +141,23 @@ func (c *Coordinator) Owns(cache GatewayStateCache) bool {
 	return current.HTTPRouterListen == cache.HTTPRouterListen && current.Token == cache.Token
 }
 
-func (c *Coordinator) Write(cache GatewayStateCache) error {
+func (c *coordinator) Write(cache stateCache) error {
 	return writeExclusive(c.statePath, cache)
 }
 
-func (c *Coordinator) read() (GatewayStateCache, error) {
+func (c *coordinator) read() (stateCache, error) {
 	data, err := os.ReadFile(c.statePath)
 	if err != nil {
-		return GatewayStateCache{}, err
+		return stateCache{}, err
 	}
-	var cache GatewayStateCache
+	var cache stateCache
 	if err := json.Unmarshal(data, &cache); err != nil {
-		return GatewayStateCache{}, err
+		return stateCache{}, err
 	}
 	return cache, nil
 }
 
-func writeExclusive(path string, cache GatewayStateCache) error {
+func writeExclusive(path string, cache stateCache) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -169,7 +174,7 @@ func writeExclusive(path string, cache GatewayStateCache) error {
 	return err
 }
 
-func writeAtomicReplace(path string, cache GatewayStateCache) error {
+func writeAtomicReplace(path string, cache stateCache) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -197,17 +202,17 @@ func writeAtomicReplace(path string, cache GatewayStateCache) error {
 	return os.Rename(tmpPath, path)
 }
 
-func WaitForStop(cache GatewayStateCache) {
+func waitForStop(cache stateCache) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if !VerifyHTTPRouter(cache) {
+		if !verifyHTTPRouter(cache) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-func VerifyHTTPRouter(cache GatewayStateCache) bool {
+func verifyHTTPRouter(cache stateCache) bool {
 	if cache.HTTPRouterListen == "" || cache.Token == "" {
 		return false
 	}

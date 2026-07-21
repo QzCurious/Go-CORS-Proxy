@@ -1,4 +1,4 @@
-package gatewayowner
+package gateway
 
 import (
 	"context"

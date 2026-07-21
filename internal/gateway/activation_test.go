@@ -1,13 +1,11 @@
-package gatewayfacade
+package gateway
 
 import (
 	"context"
 	"os"
 	"path/filepath"
-	"testing"
-
-	"seamless-cors/internal/gatewaycoord"
 	"seamless-cors/internal/platform"
+	"testing"
 )
 
 func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
@@ -26,16 +24,16 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adapter := &facadeTestAdapter{states: []platform.PACServiceState{
+	adapter := &lifecycleTestAdapter{states: []platform.PACServiceState{
 		{Name: "Wi-Fi", Enabled: true, URL: "http://corp.example/a.pac"},
 		{Name: "Ethernet"},
 	}}
-	facade, err := New(adapter, gatewaycoord.New(filepath.Join(configDir, "runtime")), "")
+	lifecycle, err := newLifecycle(adapter, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	first, err := facade.ExecuteStart(context.Background(), StartRequest{})
+	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +52,7 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 	}
 
 	adapter.states[1].URL = "http://corp.example/b.pac"
-	changed, err := facade.ExecuteStart(context.Background(), StartRequest{
+	changed, err := lifecycle.ExecuteStart(context.Background(), StartRequest{
 		PACReplacementConsent: &PACReplacementConsentInput{Accepted: true, Fingerprint: detail.Fingerprint},
 	})
 	if err != nil {
@@ -71,12 +69,14 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 	}
 }
 
-type facadeTestAdapter struct {
-	states  []platform.PACServiceState
-	applied int
+type lifecycleTestAdapter struct {
+	states   []platform.PACServiceState
+	applied  int
+	clearErr error
+	cleared  int
 }
 
-func (f *facadeTestAdapter) Capabilities() platform.CapabilityReport {
+func (f *lifecycleTestAdapter) Capabilities() platform.CapabilityReport {
 	return platform.CapabilityReport{
 		Platform:          "test/test",
 		Supported:         true,
@@ -86,7 +86,7 @@ func (f *facadeTestAdapter) Capabilities() platform.CapabilityReport {
 	}
 }
 
-func (f *facadeTestAdapter) ApplyPAC(_ string, services []string) ([]platform.PACServiceUpdate, error) {
+func (f *lifecycleTestAdapter) ApplyPAC(_ string, services []string) ([]platform.PACServiceUpdate, error) {
 	f.applied++
 	updates := make([]platform.PACServiceUpdate, 0, len(services))
 	for _, service := range services {
@@ -95,11 +95,14 @@ func (f *facadeTestAdapter) ApplyPAC(_ string, services []string) ([]platform.PA
 	return updates, nil
 }
 
-func (f *facadeTestAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
+func (f *lifecycleTestAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
 	return append([]platform.PACServiceState(nil), f.states...), nil
 }
 
-func (f *facadeTestAdapter) ClearOwnedPAC() error                      { return nil }
-func (f *facadeTestAdapter) TrustedCAs() ([]platform.CARecord, error)  { return nil, nil }
-func (f *facadeTestAdapter) TrustCA(context.Context, []byte) error     { return nil }
-func (f *facadeTestAdapter) RemoveCAs(context.Context, []string) error { return nil }
+func (f *lifecycleTestAdapter) ClearOwnedPAC() error {
+	f.cleared++
+	return f.clearErr
+}
+func (f *lifecycleTestAdapter) TrustedCAs() ([]platform.CARecord, error)  { return nil, nil }
+func (f *lifecycleTestAdapter) TrustCA(context.Context, []byte) error     { return nil }
+func (f *lifecycleTestAdapter) RemoveCAs(context.Context, []string) error { return nil }

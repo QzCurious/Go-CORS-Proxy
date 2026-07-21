@@ -11,12 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"seamless-cors/internal/cleanup"
-	"seamless-cors/internal/gatewayclient"
-	"seamless-cors/internal/gatewaycoord"
-	"seamless-cors/internal/gatewayfacade"
-	"seamless-cors/internal/gatewayowner"
-	"seamless-cors/internal/liveconfig"
+	"seamless-cors/internal/gateway"
 	"seamless-cors/internal/platform"
 )
 
@@ -34,19 +29,19 @@ func StartWithContext(ctx context.Context, stdout io.Writer, adapter platform.Ad
 
 func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer, adapter platform.Adapter) error {
 	stdout = writerOrDiscard(stdout)
-	result, err := gatewayowner.Start(ctx, adapter, gatewayowner.StartHooks{
-		ConfirmPACReplacement: func(detail gatewayfacade.PACReplacementConsentDetail) (bool, error) {
+	result, err := gateway.Start(ctx, adapter, gateway.StartHooks{
+		ConfirmPACReplacement: func(detail gateway.PACReplacementConsentDetail) (bool, error) {
 			return confirmPACReplacementConsent(stdin, stdout, &detail)
 		},
-		Started: func(result gatewayfacade.StartResult) {
+		Started: func(result gateway.StartResult) {
 			renderStartResult(stdout, result)
 		},
 	})
-	if result.Kind == gatewayowner.StartResultOwnerAlreadyRunning {
+	if result.Kind == gateway.StartResultOwnerAlreadyRunning {
 		fmt.Fprintln(stdout, "gateway owner already running")
 		return fmt.Errorf("gateway owner already running")
 	}
-	if result.Kind == gatewayowner.StartResultPACReplacementDeclined {
+	if result.Kind == gateway.StartResultPACReplacementDeclined {
 		return ErrPACReplacementConsentDeclined
 	}
 	return err
@@ -60,13 +55,13 @@ func Serve(stdout, _ io.Writer) error {
 
 func ServeWithContext(ctx context.Context, stdout io.Writer, adapter platform.Adapter) error {
 	stdout = writerOrDiscard(stdout)
-	return gatewayowner.Serve(ctx, adapter, func() {
+	return gateway.Serve(ctx, adapter, func() {
 		fmt.Fprintln(stdout, "gateway owner running")
 	})
 }
 
 func Check(stdout, _ io.Writer) error {
-	writeCapabilityReport(stdout, platform.CurrentAdapter.Capabilities())
+	writeCapabilityReport(stdout, gateway.Check(platform.CurrentAdapter))
 	return nil
 }
 
@@ -94,21 +89,16 @@ func Stop(stdout, _ io.Writer) error {
 func stop(stdout io.Writer, adapter platform.Adapter) error {
 	stdout = writerOrDiscard(stdout)
 	adapter = adapterOrDefault(adapter)
-	target, err := gatewayclient.Discover()
-	if err != nil {
+	result, err := gateway.Stop(adapter)
+	if result.Kind == gateway.StopResultNotRunning {
+		fmt.Fprintln(stdout, "seamless-cors stop requested; no running seamless-cors found")
 		return err
 	}
-	if target.Kind != gatewayclient.TargetActive {
-		fmt.Fprintln(stdout, "seamless-cors stop requested; no running seamless-cors found")
-		return cleanRuntime(adapter)
-	}
-	result, err := target.Client.Stop()
 	if err != nil {
 		return err
 	}
 	renderStopResult(stdout, result)
-	if result.Kind == gatewayfacade.StopResultStopped {
-		gatewaycoord.WaitForStop(target.Cache)
+	if result.Kind == gateway.StopResultStopped {
 		return nil
 	}
 	return fmt.Errorf("gateway stop failed: %s", cleanupFailureText(result.CleanupFailures))
@@ -121,32 +111,12 @@ func Status(stdout, _ io.Writer) error {
 func status(stdout io.Writer, adapter platform.Adapter) error {
 	stdout = writerOrDiscard(stdout)
 	adapter = adapterOrDefault(adapter)
-	target, err := gatewayclient.Discover()
-	if err != nil {
-		return err
-	}
-	if target.Kind == gatewayclient.TargetActive {
-		result, err := target.Client.Status()
-		if err != nil {
-			return err
-		}
-		renderStatus(stdout, result)
-		return nil
-	}
-	coord, err := gatewaycoord.Default()
-	if err != nil {
-		return err
-	}
-	facade, err := gatewayfacade.New(adapter, coord, "")
-	if err != nil {
-		return err
-	}
-	result, err := facade.Status(target.Kind == gatewayclient.TargetStale)
+	result, err := gateway.Status(adapter)
 	if err != nil {
 		return err
 	}
 	renderStatus(stdout, result)
-	if target.Kind == gatewayclient.TargetStale {
+	if result.Kind == gateway.GatewayStatusStaleCache {
 		fmt.Fprintln(stdout, "stale Gateway State Cache detected; run start or stop to clean up")
 	}
 	return nil
@@ -155,24 +125,7 @@ func status(stdout io.Writer, adapter platform.Adapter) error {
 func InstallCA(stdout io.Writer, adapter platform.Adapter) error {
 	stdout = writerOrDiscard(stdout)
 	adapter = adapterOrDefault(adapter)
-	target, err := gatewayclient.Discover()
-	if err != nil {
-		return err
-	}
-	var result gatewayfacade.InstallResult
-	if target.Kind == gatewayclient.TargetActive {
-		result, err = target.Client.Install()
-	} else {
-		coord, coordErr := gatewaycoord.Default()
-		if coordErr != nil {
-			return coordErr
-		}
-		facade, facadeErr := gatewayfacade.New(adapter, coord, "")
-		if facadeErr != nil {
-			return facadeErr
-		}
-		result, err = facade.Install()
-	}
+	result, err := gateway.InstallCA(adapter)
 	if err != nil {
 		if errors.Is(err, platform.ErrTrustApprovalDenied) {
 			fmt.Fprintln(stdout, "Certificate trust was not approved.")
@@ -181,7 +134,7 @@ func InstallCA(stdout io.Writer, adapter platform.Adapter) error {
 		return err
 	}
 	renderInstallResult(stdout, result)
-	if result.Kind == gatewayfacade.InstallResultBlockedRuntimeActive {
+	if result.Kind == gateway.InstallResultBlockedRuntimeActive {
 		return fmt.Errorf("Installed User CA replacement blocked while trusted gateway runtime is active")
 	}
 	return nil
@@ -190,40 +143,15 @@ func InstallCA(stdout io.Writer, adapter platform.Adapter) error {
 func UninstallCA(stdout io.Writer, adapter platform.Adapter) error {
 	stdout = writerOrDiscard(stdout)
 	adapter = adapterOrDefault(adapter)
-	target, err := gatewayclient.Discover()
-	if err != nil {
-		return err
-	}
-	var result gatewayfacade.UninstallResult
-	if target.Kind == gatewayclient.TargetActive {
-		result, err = target.Client.Uninstall()
-	} else {
-		coord, coordErr := gatewaycoord.Default()
-		if coordErr != nil {
-			return coordErr
-		}
-		facade, facadeErr := gatewayfacade.New(adapter, coord, "")
-		if facadeErr != nil {
-			return facadeErr
-		}
-		result, err = facade.Uninstall()
-	}
+	result, err := gateway.UninstallCA(adapter)
 	if err != nil {
 		return err
 	}
 	renderUninstallResult(stdout, result)
-	if result.Kind == gatewayfacade.UninstallResultBlockedRuntimeActive {
+	if result.Kind == gateway.UninstallResultBlockedRuntimeActive {
 		return fmt.Errorf("seamless-cors is running")
 	}
 	return nil
-}
-
-func cleanRuntime(adapter cleanup.Adapter) error {
-	runtimeDir, err := liveconfig.RuntimeDir()
-	if err != nil {
-		return err
-	}
-	return cleanup.Clean(runtimeDir, adapter)
 }
 
 func requireSupported(report platform.CapabilityReport) error {
@@ -236,7 +164,7 @@ func requireSupported(report platform.CapabilityReport) error {
 	return fmt.Errorf("platform unsupported: run `seamless-cors check` for details")
 }
 
-func writeCapabilityReport(stdout io.Writer, report platform.CapabilityReport) {
+func writeCapabilityReport(stdout io.Writer, report gateway.CheckResult) {
 	fmt.Fprintf(stdout, "platform: %s\n", report.Platform)
 	fmt.Fprintf(stdout, "supported: %t\n", report.Supported)
 	fmt.Fprintf(stdout, "pac-management: %s\n", report.PACManagement)
@@ -257,9 +185,9 @@ func promptForPACReplacementConsentRequest(stdin io.Reader, stdout io.Writer, re
 	if !req.needed() {
 		return nil
 	}
-	detail := &gatewayfacade.PACReplacementConsentDetail{
+	detail := &gateway.PACReplacementConsentDetail{
 		CurrentPACState: pacStatesForPrompt(req.CurrentPACState),
-		CleanupMode:     gatewayfacade.CleanupModeNoPACRestoration,
+		CleanupMode:     gateway.CleanupModeNoPACRestoration,
 	}
 	ok, err := confirmPACReplacementConsent(stdin, stdout, detail)
 	if err != nil {
@@ -271,7 +199,7 @@ func promptForPACReplacementConsentRequest(stdin io.Reader, stdout io.Writer, re
 	return nil
 }
 
-func confirmPACReplacementConsent(stdin io.Reader, stdout io.Writer, detail *gatewayfacade.PACReplacementConsentDetail) (bool, error) {
+func confirmPACReplacementConsent(stdin io.Reader, stdout io.Writer, detail *gateway.PACReplacementConsentDetail) (bool, error) {
 	if detail == nil {
 		return true, nil
 	}
@@ -317,36 +245,36 @@ func readYes(stdin io.Reader) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-func pacStatesForPrompt(states []platform.PACServiceState) []gatewayfacade.ManagedPACServiceState {
-	out := make([]gatewayfacade.ManagedPACServiceState, 0, len(states))
+func pacStatesForPrompt(states []platform.PACServiceState) []gateway.ManagedPACServiceState {
+	out := make([]gateway.ManagedPACServiceState, 0, len(states))
 	for _, state := range states {
-		out = append(out, gatewayfacade.ManagedPACServiceState{
+		out = append(out, gateway.ManagedPACServiceState{
 			ServiceName:                state.Name,
 			Enabled:                    state.Enabled,
 			URL:                        state.URL,
 			Ownership:                  pacOwnershipForPrompt(state.URL),
-			ReplacementConsentRequired: pacOwnershipForPrompt(state.URL) == gatewayfacade.PACOwnershipForeign,
+			ReplacementConsentRequired: pacOwnershipForPrompt(state.URL) == gateway.PACOwnershipForeign,
 		})
 	}
 	return out
 }
 
-func pacOwnershipForPrompt(raw string) gatewayfacade.PACOwnership {
+func pacOwnershipForPrompt(raw string) gateway.PACOwnership {
 	if raw == "" || raw == "(null)" {
-		return gatewayfacade.PACOwnershipEmpty
+		return gateway.PACOwnershipEmpty
 	}
 	if platform.IsManagedPACFootprint(raw) {
-		return gatewayfacade.PACOwnershipOwned
+		return gateway.PACOwnershipOwned
 	}
-	return gatewayfacade.PACOwnershipForeign
+	return gateway.PACOwnershipForeign
 }
 
-func renderStartResult(stdout io.Writer, result gatewayfacade.StartResult) {
-	if result.CAEnsure != nil && result.CAEnsure.Kind == gatewayfacade.CAEnsureResultInstalled {
+func renderStartResult(stdout io.Writer, result gateway.StartResult) {
+	if result.CAEnsure != nil && result.CAEnsure.Kind == gateway.CAEnsureResultInstalled {
 		fmt.Fprintln(stdout, "Installed User CA added to the current user's SSL trust settings.")
 	}
 	switch result.Kind {
-	case gatewayfacade.StartResultStarted:
+	case gateway.StartResultStarted:
 		if result.Guidance != nil {
 			fmt.Fprintln(stdout, "seamless-cors running")
 			fmt.Fprintf(stdout, "config: %s\n", result.Guidance.ConfigPath)
@@ -358,61 +286,63 @@ func renderStartResult(stdout io.Writer, result gatewayfacade.StartResult) {
 				}
 			}
 		}
-	case gatewayfacade.StartResultAlreadyRunning:
+	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
-	case gatewayfacade.StartResultPlatformApprovalDenied:
+	case gateway.StartResultPlatformApprovalDenied:
 		fmt.Fprintln(stdout, "Certificate trust was not approved.")
 		fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
 	}
 }
 
-func renderStopResult(stdout io.Writer, result gatewayfacade.StopResult) {
+func renderStopResult(stdout io.Writer, result gateway.StopResult) {
 	switch result.Kind {
-	case gatewayfacade.StopResultStopped:
+	case gateway.StopResultStopped:
 		fmt.Fprintln(stdout, "seamless-cors stop requested")
-	case gatewayfacade.StopResultCleanupFailed:
+	case gateway.StopResultNotRunning:
+		fmt.Fprintln(stdout, "seamless-cors stop requested; no running seamless-cors found")
+	case gateway.StopResultCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors stop cleanup failed")
 	}
 }
 
-func renderInstallResult(stdout io.Writer, result gatewayfacade.InstallResult) {
+func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	switch result.Kind {
-	case gatewayfacade.InstallResultInstalled:
+	case gateway.InstallResultInstalled:
 		fmt.Fprintln(stdout, "Installed User CA installed.")
-	case gatewayfacade.InstallResultAlreadyUsable:
+	case gateway.InstallResultAlreadyUsable:
 		fmt.Fprintln(stdout, "Installed User CA is already usable.")
-	case gatewayfacade.InstallResultBlockedRuntimeActive:
+	case gateway.InstallResultBlockedRuntimeActive:
 		fmt.Fprintln(stdout, "Installed User CA replacement requires stopping the trusted gateway runtime first.")
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
 	}
 	for _, advisory := range result.Advisories {
-		if advisory.Kind == gatewayfacade.InstallAdvisoryConfigCATrustedDisabled && advisory.ConfigCATrustedDisabled != nil {
+		if advisory.Kind == gateway.InstallAdvisoryConfigCATrustedDisabled && advisory.ConfigCATrustedDisabled != nil {
 			fmt.Fprintln(stdout, "HTTPS interception is disabled by config: ca-trusted: false.")
 			fmt.Fprintln(stdout, "Set ca-trusted: true to use the Installed User CA.")
 		}
 	}
 }
 
-func renderUninstallResult(stdout io.Writer, result gatewayfacade.UninstallResult) {
+func renderUninstallResult(stdout io.Writer, result gateway.UninstallResult) {
 	switch result.Kind {
-	case gatewayfacade.UninstallResultUninstalled:
+	case gateway.UninstallResultUninstalled:
 		fmt.Fprintln(stdout, "Installed User CA uninstalled.")
-	case gatewayfacade.UninstallResultAlreadyAbsent:
+	case gateway.UninstallResultAlreadyAbsent:
 		fmt.Fprintln(stdout, "Installed User CA is already absent.")
-	case gatewayfacade.UninstallResultBlockedRuntimeActive:
+	case gateway.UninstallResultBlockedRuntimeActive:
 		fmt.Fprintln(stdout, "seamless-cors is running; stop it before uninstalling the Installed User CA.")
 	}
 }
 
-func renderStatus(stdout io.Writer, result gatewayfacade.StatusResult) {
+func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 	switch result.Kind {
-	case gatewayfacade.GatewayStatusRunning:
+	case gateway.GatewayStatusRunning:
 		fmt.Fprintln(stdout, "seamless-cors status: running")
-	case gatewayfacade.GatewayStatusStarting:
+	case gateway.GatewayStatusStarting:
 		fmt.Fprintln(stdout, "seamless-cors status: starting")
-	case gatewayfacade.GatewayStatusRouterOnly:
+	case gateway.GatewayStatusRouterOnly:
 		fmt.Fprintln(stdout, "seamless-cors status: owner running")
 		fmt.Fprintln(stdout, "gateway-runtime: inactive")
 	default:
@@ -426,7 +356,7 @@ func renderStatus(stdout io.Writer, result gatewayfacade.StatusResult) {
 		}
 		fmt.Fprintf(stdout, "domain-list: %s\n", result.Runtime.DomainListPath)
 		fmt.Fprintf(stdout, "domains: %d\n", result.Runtime.DomainCount)
-		if result.Kind == gatewayfacade.GatewayStatusRunning {
+		if result.Kind == gateway.GatewayStatusRunning {
 			fmt.Fprintln(stdout, "managed-pac: active")
 		} else {
 			fmt.Fprintln(stdout, "managed-pac: inactive")
@@ -452,7 +382,7 @@ func renderStatus(stdout io.Writer, result gatewayfacade.StatusResult) {
 	}
 }
 
-func cleanupFailureText(failures []gatewayfacade.CleanupFailureDetail) string {
+func cleanupFailureText(failures []gateway.CleanupFailureDetail) string {
 	var parts []string
 	for _, failure := range failures {
 		if failure.Diagnostic != "" {

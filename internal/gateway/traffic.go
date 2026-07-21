@@ -1,4 +1,4 @@
-package gatewayruntime
+package gateway
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"seamless-cors/internal/userca"
 )
 
-type Runtime struct {
+type trafficRuntime struct {
 	mu         sync.RWMutex
 	live       liveconfig.Config
 	authority  *userca.Authority
@@ -34,7 +34,7 @@ type serverError struct {
 	err    error
 }
 
-func New(source *liveconfig.Source, live liveconfig.Config) (*Runtime, error) {
+func newRuntime(source *liveconfig.Source, live liveconfig.Config) (*trafficRuntime, error) {
 	entries := live.Entries()
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -50,7 +50,7 @@ func New(source *liveconfig.Source, live liveconfig.Config) (*Runtime, error) {
 
 	pacBody := pacrouting.Generate(pacrouting.Options{ProxyListen: proxyListen, CATrusted: live.CATrusted(), Entries: entries})
 	pacHandler := pacrouting.NewDynamicHandler(pacBody)
-	return &Runtime{
+	return &trafficRuntime{
 		live:       live,
 		liveConfig: source,
 		pacHandler: pacHandler,
@@ -63,7 +63,7 @@ func New(source *liveconfig.Source, live liveconfig.Config) (*Runtime, error) {
 	}, nil
 }
 
-func (r *Runtime) SetAuthority(authority *userca.Authority) error {
+func (r *trafficRuntime) SetAuthority(authority *userca.Authority) error {
 	r.authority = authority
 	proxyHandler, err := corsproxy.New(corsproxy.Options{
 		CATrusted: r.live.CATrusted(),
@@ -76,13 +76,13 @@ func (r *Runtime) SetAuthority(authority *userca.Authority) error {
 	return nil
 }
 
-func (r *Runtime) Serve(ctx context.Context) error {
+func (r *trafficRuntime) Serve(ctx context.Context) error {
 	return r.ServeReady(ctx, nil)
 }
 
 // ServeReady reports when both bound traffic listeners have entered their
 // serving goroutines. Callers may then safely publish the PAC URL.
-func (r *Runtime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
+func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
 	if r.proxy.Handler == nil {
 		if err := r.SetAuthority(nil); err != nil {
 			return err
@@ -137,37 +137,37 @@ func proveHTTPServing(ctx context.Context, address string) error {
 	return err
 }
 
-func (r *Runtime) Close() error {
+func (r *trafficRuntime) Close() error {
 	return r.CloseTraffic()
 }
 
-func (r *Runtime) CloseTraffic() error {
+func (r *trafficRuntime) CloseTraffic() error {
 	_ = r.proxy.Close()
 	return r.pac.Close()
 }
 
-func (r *Runtime) PACURL() string {
+func (r *trafficRuntime) PACURL() string {
 	r.mu.RLock()
 	version := r.pacVersion
 	r.mu.RUnlock()
 	return r.pacURL(version)
 }
 
-func (r *Runtime) PACListen() string {
+func (r *trafficRuntime) PACListen() string {
 	return r.listeners[1].Addr().String()
 }
 
-func (r *Runtime) PACURLUpdates() <-chan string {
+func (r *trafficRuntime) PACURLUpdates() <-chan string {
 	return r.pacUpdates
 }
 
-func (r *Runtime) State() State {
+func (r *trafficRuntime) snapshot() runtimeState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.stateLocked()
 }
 
-func (r *Runtime) watchLiveConfig(ctx context.Context, errs chan<- serverError) {
+func (r *trafficRuntime) watchLiveConfig(ctx context.Context, errs chan<- serverError) {
 	events := r.liveConfig.Watch(ctx)
 	for {
 		select {
@@ -189,7 +189,7 @@ func (r *Runtime) watchLiveConfig(ctx context.Context, errs chan<- serverError) 
 	}
 }
 
-func (r *Runtime) applyLiveConfig(live liveconfig.Config) {
+func (r *trafficRuntime) applyLiveConfig(live liveconfig.Config) {
 	nextRouteSet := pacrouting.RouteSetFingerprint(live.Entries(), live.CATrusted())
 	r.mu.Lock()
 	r.live = live
@@ -217,7 +217,7 @@ func (r *Runtime) applyLiveConfig(live liveconfig.Config) {
 	}
 }
 
-func (r *Runtime) pacURL(version uint64) string {
+func (r *trafficRuntime) pacURL(version uint64) string {
 	u := url.URL{
 		Scheme:   "http",
 		Host:     r.listeners[1].Addr().String(),
@@ -227,7 +227,7 @@ func (r *Runtime) pacURL(version uint64) string {
 	return u.String()
 }
 
-type State struct {
+type runtimeState struct {
 	ProxyListen      string
 	PACListen        string
 	DomainList       string
@@ -236,9 +236,9 @@ type State struct {
 	PendingLifecycle []string
 }
 
-func (r *Runtime) stateLocked() State {
+func (r *trafficRuntime) stateLocked() runtimeState {
 	entries := r.live.Entries()
-	return State{
+	return runtimeState{
 		ProxyListen:      r.listeners[0].Addr().String(),
 		PACListen:        r.listeners[1].Addr().String(),
 		DomainList:       r.live.DomainListPath(),

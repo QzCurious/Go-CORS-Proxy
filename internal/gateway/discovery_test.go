@@ -1,4 +1,4 @@
-package gatewaycoord
+package gateway
 
 import (
 	"encoding/json"
@@ -10,17 +10,17 @@ import (
 )
 
 func TestVerifyReportsMissingWithoutCache(t *testing.T) {
-	coord := New(t.TempDir())
+	coord := newCoordinator(t.TempDir())
 
 	verification := coord.Verify()
 
-	if verification.Status != Missing {
-		t.Fatalf("status = %s, want %s", verification.Status, Missing)
+	if verification.Status != stateMissing {
+		t.Fatalf("status = %s, want %s", verification.Status, stateMissing)
 	}
 }
 
 func TestVerifyCollapsesMalformedCacheIntoStale(t *testing.T) {
-	coord := New(t.TempDir())
+	coord := newCoordinator(t.TempDir())
 	if err := os.MkdirAll(coord.RuntimeDirPath(), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -30,26 +30,26 @@ func TestVerifyCollapsesMalformedCacheIntoStale(t *testing.T) {
 
 	verification := coord.Verify()
 
-	if verification.Status != Stale {
-		t.Fatalf("status = %s, want %s", verification.Status, Stale)
+	if verification.Status != stateStale {
+		t.Fatalf("status = %s, want %s", verification.Status, stateStale)
 	}
 }
 
 func TestVerifyReportsStaleWhenRouterIsInactive(t *testing.T) {
-	coord := NewWithVerifier(t.TempDir(), func(GatewayStateCache) bool { return false })
-	if err := coord.Write(GatewayStateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"}); err != nil {
+	coord := newCoordinatorWithVerifier(t.TempDir(), func(stateCache) bool { return false })
+	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"}); err != nil {
 		t.Fatal(err)
 	}
 
 	verification := coord.Verify()
 
-	if verification.Status != Stale {
-		t.Fatalf("status = %s, want %s", verification.Status, Stale)
+	if verification.Status != stateStale {
+		t.Fatalf("status = %s, want %s", verification.Status, stateStale)
 	}
 }
 
 func TestVerifyDoesNotReadLegacyControlListenSchema(t *testing.T) {
-	coord := NewWithVerifier(t.TempDir(), func(cache GatewayStateCache) bool {
+	coord := newCoordinatorWithVerifier(t.TempDir(), func(cache stateCache) bool {
 		if cache.HTTPRouterListen != "" {
 			t.Fatalf("legacy controlListen was read as httpRouterListen: %#v", cache)
 		}
@@ -64,8 +64,8 @@ func TestVerifyDoesNotReadLegacyControlListenSchema(t *testing.T) {
 
 	verification := coord.Verify()
 
-	if verification.Status != Stale {
-		t.Fatalf("status = %s, want %s", verification.Status, Stale)
+	if verification.Status != stateStale {
+		t.Fatalf("status = %s, want %s", verification.Status, stateStale)
 	}
 }
 
@@ -83,8 +83,8 @@ func TestVerifyReportsActiveWhenRouterResponds(t *testing.T) {
 	}))
 	defer server.Close()
 
-	coord := New(t.TempDir())
-	if err := coord.Write(GatewayStateCache{
+	coord := newCoordinator(t.TempDir())
+	if err := coord.Write(stateCache{
 		HTTPRouterListen: strings.TrimPrefix(server.URL, "http://"),
 		Token:            "token",
 	}); err != nil {
@@ -93,14 +93,14 @@ func TestVerifyReportsActiveWhenRouterResponds(t *testing.T) {
 
 	verification := coord.Verify()
 
-	if verification.Status != Active {
-		t.Fatalf("status = %s, want %s", verification.Status, Active)
+	if verification.Status != stateActive {
+		t.Fatalf("status = %s, want %s", verification.Status, stateActive)
 	}
 }
 
 func TestWriteUsesExclusiveCacheFile(t *testing.T) {
-	coord := New(t.TempDir())
-	cache := GatewayStateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"}
+	coord := newCoordinator(t.TempDir())
+	cache := stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"}
 	if err := coord.Write(cache); err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +113,8 @@ func TestWriteUsesExclusiveCacheFile(t *testing.T) {
 }
 
 func TestCacheShapeContainsOnlyRouterIdentity(t *testing.T) {
-	coord := New(t.TempDir())
-	cache := GatewayStateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"}
+	coord := newCoordinator(t.TempDir())
+	cache := stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"}
 	if err := coord.Write(cache); err != nil {
 		t.Fatal(err)
 	}
@@ -132,13 +132,13 @@ func TestCacheShapeContainsOnlyRouterIdentity(t *testing.T) {
 }
 
 func TestRemoveOwnedDoesNotRemoveAnotherOwnerCache(t *testing.T) {
-	coord := New(t.TempDir())
-	other := GatewayStateCache{HTTPRouterListen: "127.0.0.1:2", Token: "other-token"}
+	coord := newCoordinator(t.TempDir())
+	other := stateCache{HTTPRouterListen: "127.0.0.1:2", Token: "other-token"}
 	if err := coord.Write(other); err != nil {
 		t.Fatal(err)
 	}
 
-	err := coord.RemoveOwned(GatewayStateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"})
+	err := coord.RemoveOwned(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"})
 
 	if err != nil {
 		t.Fatal(err)
@@ -149,12 +149,12 @@ func TestRemoveOwnedDoesNotRemoveAnotherOwnerCache(t *testing.T) {
 }
 
 func TestClaimReplacesStaleCache(t *testing.T) {
-	coord := NewWithVerifier(t.TempDir(), func(GatewayStateCache) bool { return false })
-	stale := GatewayStateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale-token"}
+	coord := newCoordinatorWithVerifier(t.TempDir(), func(stateCache) bool { return false })
+	stale := stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale-token"}
 	if err := coord.Write(stale); err != nil {
 		t.Fatal(err)
 	}
-	current := GatewayStateCache{HTTPRouterListen: "127.0.0.1:2", Token: "current-token"}
+	current := stateCache{HTTPRouterListen: "127.0.0.1:2", Token: "current-token"}
 
 	if err := coord.Claim(current); err != nil {
 		t.Fatal(err)

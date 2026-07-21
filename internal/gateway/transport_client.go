@@ -1,4 +1,4 @@
-package gatewayclient
+package gateway
 
 import (
 	"bytes"
@@ -7,104 +7,101 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"seamless-cors/internal/managedpac"
 	"strings"
 	"time"
-
-	"seamless-cors/internal/gatewaycoord"
-	"seamless-cors/internal/gatewayfacade"
-	"seamless-cors/internal/managedpac"
 )
 
 const tokenHeader = "X-Seamless-CORS-Token"
 
-type Client struct {
-	cache      gatewaycoord.GatewayStateCache
+type client struct {
+	cache      stateCache
 	httpClient *http.Client
 }
 
-type TargetKind string
+type targetKind string
 
 const (
-	TargetMissing TargetKind = "missing"
-	TargetStale   TargetKind = "stale"
-	TargetActive  TargetKind = "active"
+	targetMissing targetKind = "missing"
+	targetStale   targetKind = "stale"
+	targetActive  targetKind = "active"
 )
 
-type Target struct {
-	Kind   TargetKind
-	Cache  gatewaycoord.GatewayStateCache
-	Client *Client
+type target struct {
+	kind   targetKind
+	cache  stateCache
+	client *client
 }
 
-func Discover() (Target, error) {
-	coord, err := gatewaycoord.Default()
+func discover() (target, error) {
+	coord, err := defaultCoordinator()
 	if err != nil {
-		return Target{}, err
+		return target{}, err
 	}
 	verification := coord.Verify()
 	switch verification.Status {
-	case gatewaycoord.Active:
-		return Target{
-			Kind:   TargetActive,
-			Cache:  verification.Cache,
-			Client: New(verification.Cache),
+	case stateActive:
+		return target{
+			kind:   targetActive,
+			cache:  verification.Cache,
+			client: newClient(verification.Cache),
 		}, nil
-	case gatewaycoord.Stale:
-		return Target{Kind: TargetStale, Cache: verification.Cache}, nil
+	case stateStale:
+		return target{kind: targetStale, cache: verification.Cache}, nil
 	default:
-		return Target{Kind: TargetMissing}, nil
+		return target{kind: targetMissing}, nil
 	}
 }
 
-func New(cache gatewaycoord.GatewayStateCache) *Client {
-	return &Client{
+func newClient(cache stateCache) *client {
+	return &client{
 		cache:      cache,
 		httpClient: &http.Client{Timeout: 500 * time.Millisecond},
 	}
 }
 
-func (c *Client) Start(request gatewayfacade.StartRequest) (gatewayfacade.StartResult, error) {
-	var result gatewayfacade.StartResult
+func (c *client) Start(request StartRequest) (StartResult, error) {
+	var result StartResult
 	err := c.callJSON(http.MethodPost, "/start", request, &result)
 	var responseErr *responseError
 	if errors.As(err, &responseErr) {
 		var failure struct {
-			Detail   string                        `json:"detail"`
-			CAEnsure *gatewayfacade.CAEnsureResult `json:"caEnsure"`
+			Detail   string          `json:"detail"`
+			CAEnsure *CAEnsureResult `json:"caEnsure"`
 		}
 		if json.Unmarshal(responseErr.body, &failure) == nil && failure.Detail != "" {
 			result.CAEnsure = failure.CAEnsure
-			return result, &gatewayfacade.StartError{Diagnostic: failure.Detail, CAEnsure: failure.CAEnsure}
+			return result, &StartError{Diagnostic: failure.Detail, CAEnsure: failure.CAEnsure}
 		}
 	}
 	return result, err
 }
 
-func (c *Client) Stop() (gatewayfacade.StopResult, error) {
-	var result gatewayfacade.StopResult
+func (c *client) Stop() (StopResult, error) {
+	var result StopResult
 	err := c.callJSON(http.MethodPost, "/stop", nil, &result)
 	return result, err
 }
 
-func (c *Client) Status() (gatewayfacade.StatusResult, error) {
-	var result gatewayfacade.StatusResult
+func (c *client) Status() (StatusResult, error) {
+	var result StatusResult
 	err := c.callJSON(http.MethodGet, "/status", nil, &result)
 	return result, err
 }
 
-func (c *Client) Install() (gatewayfacade.InstallResult, error) {
-	var result gatewayfacade.InstallResult
+func (c *client) Install() (InstallResult, error) {
+	var result InstallResult
 	err := c.callJSON(http.MethodPost, "/install", nil, &result)
 	return result, err
 }
 
-func (c *Client) Uninstall() (gatewayfacade.UninstallResult, error) {
-	var result gatewayfacade.UninstallResult
+func (c *client) Uninstall() (UninstallResult, error) {
+	var result UninstallResult
 	err := c.callJSON(http.MethodPost, "/uninstall", nil, &result)
 	return result, err
 }
 
-func (c *Client) callJSON(method, path string, body any, out any) error {
+func (c *client) callJSON(method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)

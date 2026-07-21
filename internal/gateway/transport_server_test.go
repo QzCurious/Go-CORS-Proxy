@@ -1,4 +1,4 @@
-package gatewayrouter
+package gateway
 
 import (
 	"context"
@@ -6,12 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"seamless-cors/internal/gatewayfacade"
 )
 
 func TestDocsAndOpenAPIDoNotRequireToken(t *testing.T) {
-	server := New("token", &fakeFacade{})
+	server := newRouter("token", &fakeCommandHandler{})
 
 	for _, path := range []string{"/docs", "/openapi.json"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -26,8 +24,8 @@ func TestDocsAndOpenAPIDoNotRequireToken(t *testing.T) {
 }
 
 func TestCommandRoutesRequireToken(t *testing.T) {
-	facade := &fakeFacade{}
-	server := New("token", facade)
+	handler := &fakeCommandHandler{}
+	server := newRouter("token", handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
@@ -37,14 +35,14 @@ func TestCommandRoutesRequireToken(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status returned %d, want %d: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
-	if facade.statusCalled {
-		t.Fatal("facade Status was called without token")
+	if handler.statusCalled {
+		t.Fatal("command handler Status was called without token")
 	}
 }
 
-func TestHealthRequiresTokenAndDoesNotCallFacade(t *testing.T) {
-	facade := &fakeFacade{}
-	server := New("token", facade)
+func TestHealthRequiresTokenAndDoesNotCallCommandHandler(t *testing.T) {
+	handler := &fakeCommandHandler{}
+	server := newRouter("token", handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -60,14 +58,14 @@ func TestHealthRequiresTokenAndDoesNotCallFacade(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("health returned %d, want %d: %s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
-	if facade.statusCalled {
-		t.Fatal("health should not call facade Status")
+	if handler.statusCalled {
+		t.Fatal("health should not call command handler Status")
 	}
 }
 
 func TestStartAllowsEmptyBody(t *testing.T) {
-	facade := &fakeFacade{}
-	server := New("token", facade)
+	handler := &fakeCommandHandler{}
+	server := newRouter("token", handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/start", nil)
 	req.Header.Set(tokenHeader, "token")
@@ -78,16 +76,16 @@ func TestStartAllowsEmptyBody(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("start returned %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !facade.startCalled {
-		t.Fatal("facade ExecuteStart was not called")
+	if !handler.startCalled {
+		t.Fatal("command handler ExecuteStart was not called")
 	}
-	if facade.startRequest.PACReplacementConsent != nil {
-		t.Fatalf("start request pac replacement consent = %#v, want nil", facade.startRequest.PACReplacementConsent)
+	if handler.startRequest.PACReplacementConsent != nil {
+		t.Fatalf("start request pac replacement consent = %#v, want nil", handler.startRequest.PACReplacementConsent)
 	}
 }
 
 func TestStartPlanRouteDoesNotExist(t *testing.T) {
-	server := New("token", &fakeFacade{})
+	server := newRouter("token", &fakeCommandHandler{})
 	req := httptest.NewRequest(http.MethodGet, "/start/plan", nil)
 	req.Header.Set(tokenHeader, "token")
 	rec := httptest.NewRecorder()
@@ -100,8 +98,8 @@ func TestStartPlanRouteDoesNotExist(t *testing.T) {
 }
 
 func TestStartUsesOwnerLifecycleContext(t *testing.T) {
-	facade := &fakeFacade{}
-	server := New("token", facade)
+	handler := &fakeCommandHandler{}
+	server := newRouter("token", handler)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/start", nil)
@@ -113,18 +111,18 @@ func TestStartUsesOwnerLifecycleContext(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("start returned %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if facade.startContext == nil {
-		t.Fatal("facade ExecuteStart was not called")
+	if handler.startContext == nil {
+		t.Fatal("command handler ExecuteStart was not called")
 	}
-	if err := facade.startContext.Err(); err != nil {
+	if err := handler.startContext.Err(); err != nil {
 		t.Fatalf("start context err = %v, want nil", err)
 	}
 }
 
 func TestStartFailureCarriesCompletedCAEnsure(t *testing.T) {
-	ca := &gatewayfacade.CAEnsureResult{Kind: gatewayfacade.CAEnsureResultInstalled}
-	facade := &fakeFacade{startErr: &gatewayfacade.StartError{Diagnostic: "PAC install failed", CAEnsure: ca}}
-	server := New("token", facade)
+	ca := &CAEnsureResult{Kind: CAEnsureResultInstalled}
+	handler := &fakeCommandHandler{startErr: &StartError{Diagnostic: "PAC install failed", CAEnsure: ca}}
+	server := newRouter("token", handler)
 	req := httptest.NewRequest(http.MethodPost, "/start", nil)
 	req.Header.Set(tokenHeader, "token")
 	rec := httptest.NewRecorder()
@@ -135,19 +133,19 @@ func TestStartFailureCarriesCompletedCAEnsure(t *testing.T) {
 		t.Fatalf("start status = %d, want %d: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
 	}
 	var body struct {
-		Detail   string                        `json:"detail"`
-		CAEnsure *gatewayfacade.CAEnsureResult `json:"caEnsure"`
+		Detail   string          `json:"detail"`
+		CAEnsure *CAEnsureResult `json:"caEnsure"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Detail != "PAC install failed" || body.CAEnsure == nil || body.CAEnsure.Kind != gatewayfacade.CAEnsureResultInstalled {
+	if body.Detail != "PAC install failed" || body.CAEnsure == nil || body.CAEnsure.Kind != CAEnsureResultInstalled {
 		t.Fatalf("failure body = %#v", body)
 	}
 }
 
 func TestOpenAPIDocumentsGatewayOwnerToken(t *testing.T) {
-	server := New("token", &fakeFacade{})
+	server := newRouter("token", &fakeCommandHandler{})
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	rec := httptest.NewRecorder()
 
@@ -183,34 +181,34 @@ func TestOpenAPIDocumentsGatewayOwnerToken(t *testing.T) {
 	}
 }
 
-type fakeFacade struct {
+type fakeCommandHandler struct {
 	startCalled  bool
 	statusCalled bool
-	startRequest gatewayfacade.StartRequest
+	startRequest StartRequest
 	startContext context.Context
 	startErr     error
 }
 
-func (f *fakeFacade) ExecuteStart(ctx context.Context, request gatewayfacade.StartRequest) (gatewayfacade.StartResult, error) {
+func (f *fakeCommandHandler) ExecuteStart(ctx context.Context, request StartRequest) (StartResult, error) {
 	f.startCalled = true
 	f.startRequest = request
 	f.startContext = ctx
-	return gatewayfacade.StartResult{Kind: gatewayfacade.StartResultStarted}, f.startErr
+	return StartResult{Kind: StartResultStarted}, f.startErr
 }
 
-func (f *fakeFacade) Stop() (gatewayfacade.StopResult, error) {
-	return gatewayfacade.StopResult{Kind: gatewayfacade.StopResultCleanupFailed}, nil
+func (f *fakeCommandHandler) Stop() (StopResult, error) {
+	return StopResult{Kind: StopResultCleanupFailed}, nil
 }
 
-func (f *fakeFacade) Status(bool) (gatewayfacade.StatusResult, error) {
+func (f *fakeCommandHandler) Status(bool) (StatusResult, error) {
 	f.statusCalled = true
-	return gatewayfacade.StatusResult{Kind: gatewayfacade.GatewayStatusRouterOnly}, nil
+	return StatusResult{Kind: GatewayStatusRouterOnly}, nil
 }
 
-func (f *fakeFacade) Install() (gatewayfacade.InstallResult, error) {
-	return gatewayfacade.InstallResult{Kind: gatewayfacade.InstallResultAlreadyUsable}, nil
+func (f *fakeCommandHandler) Install() (InstallResult, error) {
+	return InstallResult{Kind: InstallResultAlreadyUsable}, nil
 }
 
-func (f *fakeFacade) Uninstall() (gatewayfacade.UninstallResult, error) {
-	return gatewayfacade.UninstallResult{Kind: gatewayfacade.UninstallResultAlreadyAbsent}, nil
+func (f *fakeCommandHandler) Uninstall() (UninstallResult, error) {
+	return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
 }

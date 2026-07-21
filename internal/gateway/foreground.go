@@ -1,4 +1,4 @@
-package gatewayowner
+package gateway
 
 import (
 	"context"
@@ -9,29 +9,26 @@ import (
 	"net/http"
 	"time"
 
-	"seamless-cors/internal/gatewaycoord"
-	"seamless-cors/internal/gatewayfacade"
-	"seamless-cors/internal/gatewayrouter"
 	"seamless-cors/internal/platform"
 )
 
-type Owner struct {
-	coord    *gatewaycoord.Coordinator
-	cache    gatewaycoord.GatewayStateCache
-	listener net.Listener
-	facade   *gatewayfacade.Facade
-	router   *gatewayrouter.Server
+type owner struct {
+	coord     *coordinator
+	cache     stateCache
+	listener  net.Listener
+	lifecycle *lifecycle
+	router    *routerServer
 }
 
-func New(adapter platform.Adapter) (*Owner, error) {
-	coord, err := gatewaycoord.Default()
+func newOwner(adapter platform.Adapter) (*owner, error) {
+	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, err
 	}
-	return NewWithCoord(adapter, coord)
+	return newOwnerWithCoordinator(adapter, coord)
 }
 
-func NewWithCoord(adapter platform.Adapter, coord *gatewaycoord.Coordinator) (*Owner, error) {
+func newOwnerWithCoordinator(adapter platform.Adapter, coord *coordinator) (*owner, error) {
 	token, err := randomToken()
 	if err != nil {
 		return nil, err
@@ -41,28 +38,24 @@ func NewWithCoord(adapter platform.Adapter, coord *gatewaycoord.Coordinator) (*O
 		return nil, fmt.Errorf("router listener unavailable: %w", err)
 	}
 	routerListen := listener.Addr().String()
-	facade, err := gatewayfacade.New(adapter, coord, routerListen)
+	lifecycle, err := newLifecycle(adapter, coord, routerListen)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err
 	}
-	cache := gatewaycoord.GatewayStateCache{HTTPRouterListen: routerListen, Token: token}
-	facade.SetOwnerCache(cache)
-	router := gatewayrouter.New(token, facade)
-	return &Owner{
-		coord:    coord,
-		cache:    cache,
-		listener: listener,
-		facade:   facade,
-		router:   router,
+	cache := stateCache{HTTPRouterListen: routerListen, Token: token}
+	lifecycle.SetOwnerCache(cache)
+	router := newRouter(token, lifecycle)
+	return &owner{
+		coord:     coord,
+		cache:     cache,
+		listener:  listener,
+		lifecycle: lifecycle,
+		router:    router,
 	}, nil
 }
 
-func (o *Owner) Facade() *gatewayfacade.Facade {
-	return o.facade
-}
-
-func (o *Owner) Run(ctx context.Context, afterPublish func(context.Context) error) error {
+func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) error) error {
 	errs := make(chan error, 1)
 	go func() { errs <- o.router.Serve(o.listener) }()
 	if err := o.coord.Claim(o.cache); err != nil {
@@ -71,17 +64,17 @@ func (o *Owner) Run(ctx context.Context, afterPublish func(context.Context) erro
 	}
 	defer o.coord.RemoveOwned(o.cache)
 	leaseLost := watchLease(ctx, o.coord, o.cache)
-	event := superviseOwner(ctx, afterPublish, leaseLost, o.router.ShutdownRequested(), o.facade.FatalRuntimeErrors(), errs)
+	event := superviseOwner(ctx, afterPublish, leaseLost, o.router.ShutdownRequested(), o.lifecycle.FatalRuntimeErrors(), errs)
 	switch event.kind {
 	case ownerEventContextDone, ownerEventLeaseLost:
-		_, _ = o.facade.Stop()
+		_, _ = o.lifecycle.Stop()
 		_ = o.router.Close(context.Background())
 		return nil
 	case ownerEventShutdownRequested:
 		_ = o.router.Close(context.Background())
 		return nil
 	case ownerEventFatalRuntime:
-		_, _ = o.facade.Stop()
+		_, _ = o.lifecycle.Stop()
 		_ = o.router.Close(context.Background())
 		return event.err
 	case ownerEventRouterStopped:
@@ -172,17 +165,17 @@ func cancelAndWait(cancel context.CancelFunc, activationDone <-chan error) {
 	}
 }
 
-func (o *Owner) Shutdown(ctx context.Context) error {
-	_, _ = o.facade.Stop()
+func (o *owner) Shutdown(ctx context.Context) error {
+	_, _ = o.lifecycle.Stop()
 	return o.closeOwnerOnly(ctx)
 }
 
-func (o *Owner) closeOwnerOnly(ctx context.Context) error {
+func (o *owner) closeOwnerOnly(ctx context.Context) error {
 	_ = o.coord.RemoveOwned(o.cache)
 	return o.router.Close(ctx)
 }
 
-func watchLease(ctx context.Context, coord *gatewaycoord.Coordinator, cache gatewaycoord.GatewayStateCache) <-chan struct{} {
+func watchLease(ctx context.Context, coord *coordinator, cache stateCache) <-chan struct{} {
 	lost := make(chan struct{})
 	go func() {
 		defer close(lost)

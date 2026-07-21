@@ -1,4 +1,4 @@
-package gatewayfacade
+package gateway
 
 import (
 	"context"
@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"seamless-cors/internal/cleanup"
-	"seamless-cors/internal/gatewaycoord"
-	"seamless-cors/internal/gatewayruntime"
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
@@ -25,7 +23,9 @@ type StartResultKind string
 const (
 	StartResultStarted                StartResultKind = "started"
 	StartResultAlreadyRunning         StartResultKind = "already-running"
+	StartResultOwnerAlreadyRunning    StartResultKind = "owner-already-running"
 	StartResultConsentRequired        StartResultKind = "consent-required"
+	StartResultPACReplacementDeclined StartResultKind = "pac-replacement-declined"
 	StartResultStartAlreadyMutating   StartResultKind = "start-already-mutating"
 	StartResultPlatformApprovalDenied StartResultKind = "platform-approval-denied"
 	StartResultStopCancelled          StartResultKind = "stop-cancelled"
@@ -110,6 +110,7 @@ type StopResultKind string
 
 const (
 	StopResultStopped       StopResultKind = "stopped"
+	StopResultNotRunning    StopResultKind = "not-running"
 	StopResultCleanupFailed StopResultKind = "cleanup-failed"
 )
 
@@ -250,14 +251,14 @@ type CheckResult struct {
 	RuntimeCleanup    platform.CapabilityStatus `json:"runtimeCleanup"`
 }
 
-type Facade struct {
+type lifecycle struct {
 	mu                   sync.Mutex
 	caAdmissionMu        sync.Mutex
 	adapter              platform.Adapter
-	coord                *gatewaycoord.Coordinator
+	coord                *coordinator
 	runtimeDir           string
 	routerListen         string
-	ownerCache           gatewaycoord.GatewayStateCache
+	ownerCache           stateCache
 	startMutating        bool
 	startCleanupComplete bool
 	startCancel          context.CancelFunc
@@ -267,7 +268,7 @@ type Facade struct {
 }
 
 type activeRuntime struct {
-	engine *gatewayruntime.Runtime
+	engine *trafficRuntime
 	live   liveconfig.Config
 	pac    *managedpac.Session
 	cancel context.CancelFunc
@@ -282,18 +283,18 @@ const (
 	runtimePhaseRunning  runtimePhase = "running"
 )
 
-func New(adapter platform.Adapter, coord *gatewaycoord.Coordinator, routerListen string) (*Facade, error) {
+func newLifecycle(adapter platform.Adapter, coord *coordinator, routerListen string) (*lifecycle, error) {
 	if adapter == nil {
 		adapter = platform.CurrentAdapter
 	}
 	if coord == nil {
 		var err error
-		coord, err = gatewaycoord.Default()
+		coord, err = defaultCoordinator()
 		if err != nil {
 			return nil, err
 		}
 	}
-	return &Facade{
+	return &lifecycle{
 		adapter:      adapter,
 		coord:        coord,
 		runtimeDir:   coord.RuntimeDirPath(),
@@ -306,17 +307,17 @@ func liveconfigLoadOrBootstrap() (*liveconfig.Source, liveconfig.Config, error) 
 	return liveconfig.LoadOrBootstrap("", nil)
 }
 
-func (f *Facade) FatalRuntimeErrors() <-chan error {
+func (f *lifecycle) FatalRuntimeErrors() <-chan error {
 	return f.fatal
 }
 
-func (f *Facade) RuntimeActive() bool {
+func (f *lifecycle) RuntimeActive() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.runtime != nil
 }
 
-func (f *Facade) SetOwnerCache(cache gatewaycoord.GatewayStateCache) {
+func (f *lifecycle) SetOwnerCache(cache stateCache) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ownerCache = cache
@@ -324,13 +325,13 @@ func (f *Facade) SetOwnerCache(cache gatewaycoord.GatewayStateCache) {
 
 // MarkStartCleanupComplete records direct-start cleanup performed before the
 // owner claimed its cache. Router-hosted starts deliberately do not use it.
-func (f *Facade) MarkStartCleanupComplete() {
+func (f *lifecycle) MarkStartCleanupComplete() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.startCleanupComplete = true
 }
 
-func (f *Facade) takeStartCleanupComplete() bool {
+func (f *lifecycle) takeStartCleanupComplete() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	complete := f.startCleanupComplete
@@ -338,7 +339,7 @@ func (f *Facade) takeStartCleanupComplete() bool {
 	return complete
 }
 
-func (f *Facade) ExecuteStart(ctx context.Context, request StartRequest) (StartResult, error) {
+func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (StartResult, error) {
 	f.mu.Lock()
 	if f.runtime != nil {
 		f.mu.Unlock()
@@ -363,10 +364,10 @@ func (f *Facade) ExecuteStart(ctx context.Context, request StartRequest) (StartR
 		close(done)
 	}()
 
-	return gatewayActivation{facade: f}.Start(startCtx, request)
+	return startSequence{lifecycle: f}.Execute(startCtx, request)
 }
 
-func (f *Facade) Stop() (StopResult, error) {
+func (f *lifecycle) Stop() (StopResult, error) {
 	var warnings []CommandWarning
 	f.mu.Lock()
 	startCancel := f.startCancel
@@ -390,12 +391,11 @@ func (f *Facade) Stop() (StopResult, error) {
 	if startDone != nil {
 		<-startDone
 	}
-	var cleanupErr error
+	var ownedCache *stateCache
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
-		cleanupErr = cleanup.CleanOwned(f.runtimeDir, f.adapter, ownerCache)
-	} else {
-		cleanupErr = cleanup.Clean(f.runtimeDir, f.adapter)
+		ownedCache = &ownerCache
 	}
+	cleanupErr := cleanGatewayFootprint(f.adapter, f.coord, ownedCache)
 	if cleanupErr != nil {
 		return StopResult{
 			Kind:            StopResultCleanupFailed,
@@ -406,7 +406,7 @@ func (f *Facade) Stop() (StopResult, error) {
 	return StopResult{Kind: StopResultStopped, Warnings: warnings}, nil
 }
 
-func (f *Facade) Status(stale bool) (StatusResult, error) {
+func (f *lifecycle) Status(stale bool) (StatusResult, error) {
 	f.mu.Lock()
 	active := f.runtime
 	ownerCache := f.ownerCache
@@ -431,7 +431,7 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 		} else {
 			result.Kind = GatewayStatusStarting
 		}
-		state := active.engine.State()
+		state := active.engine.snapshot()
 		if phase == runtimePhaseRunning {
 			result.Kind = GatewayStatusRunning
 		}
@@ -456,7 +456,7 @@ func (f *Facade) Status(stale bool) (StatusResult, error) {
 	return result, nil
 }
 
-func (f *Facade) Install() (InstallResult, error) {
+func (f *lifecycle) Install() (InstallResult, error) {
 	f.caAdmissionMu.Lock()
 	defer f.caAdmissionMu.Unlock()
 	caDir, err := liveconfig.CADir()
@@ -492,7 +492,7 @@ func (f *Facade) Install() (InstallResult, error) {
 	}, nil
 }
 
-func (f *Facade) Uninstall() (UninstallResult, error) {
+func (f *lifecycle) Uninstall() (UninstallResult, error) {
 	f.caAdmissionMu.Lock()
 	defer f.caAdmissionMu.Unlock()
 	if f.activeRuntimeCATrusted() {
@@ -519,13 +519,13 @@ func (f *Facade) Uninstall() (UninstallResult, error) {
 	return UninstallResult{Kind: UninstallResultUninstalled}, nil
 }
 
-func (f *Facade) activeRuntimeCATrusted() bool {
+func (f *lifecycle) activeRuntimeCATrusted() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.runtime != nil && f.runtime.live.CATrusted()
 }
 
-func (f *Facade) Check() CheckResult {
+func (f *lifecycle) Check() CheckResult {
 	report := f.adapter.Capabilities()
 	return CheckResult{
 		Platform:          report.Platform,
@@ -536,7 +536,7 @@ func (f *Facade) Check() CheckResult {
 	}
 }
 
-func (f *Facade) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
+func (f *lifecycle) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -550,7 +550,7 @@ func (f *Facade) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
 	}
 }
 
-func (f *Facade) reportFatalRuntimeError(active *activeRuntime, err error) {
+func (f *lifecycle) reportFatalRuntimeError(active *activeRuntime, err error) {
 	f.mu.Lock()
 	if f.runtime == active {
 		active.cancel()
@@ -562,7 +562,7 @@ func (f *Facade) reportFatalRuntimeError(active *activeRuntime, err error) {
 	}
 }
 
-func (f *Facade) pacReplacementConsentDetail(assessment managedpac.Assessment) *PACReplacementConsentDetail {
+func (f *lifecycle) pacReplacementConsentDetail(assessment managedpac.Assessment) *PACReplacementConsentDetail {
 	out := make([]ManagedPACServiceState, 0, len(assessment.States))
 	for _, state := range assessment.States {
 		out = append(out, ManagedPACServiceState{
@@ -640,11 +640,11 @@ func cleanupSubjectForError(err error) CleanupSubjectKind {
 	return CleanupSubjectGatewayStateCache
 }
 
-func (f *Facade) cleanupStatus(stale bool, runtimeActive bool, ownerCache gatewaycoord.GatewayStateCache) CleanupStatusDetail {
-	inspection := cleanup.Inspect(f.runtimeDir, f.adapter, stale)
+func (f *lifecycle) cleanupStatus(stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
+	inspection := cleanup.Inspect(f.adapter)
 	var subjects []CleanupSubjectKind
 	ownerCacheActive := ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" && f.coord.Owns(ownerCache)
-	if inspection.StaleGatewayStateCache || (inspection.GatewayStateCache && !ownerCacheActive) {
+	if stale || (f.coord.Exists() && !ownerCacheActive) {
 		subjects = append(subjects, CleanupSubjectGatewayStateCache)
 	}
 	if inspection.OwnedPAC && !runtimeActive {
@@ -653,7 +653,7 @@ func (f *Facade) cleanupStatus(stale bool, runtimeActive bool, ownerCache gatewa
 	return CleanupStatusDetail{Needed: len(subjects) > 0, Subjects: subjects}
 }
 
-func (f *Facade) installedCAStatus() InstalledCAStatusDetail {
+func (f *lifecycle) installedCAStatus() InstalledCAStatusDetail {
 	if f.adapter.Capabilities().CATrustManagement != platform.CapabilitySupported {
 		return InstalledCAStatusDetail{Health: CAHealthUnsupported}
 	}

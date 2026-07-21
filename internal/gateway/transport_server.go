@@ -1,4 +1,4 @@
-package gatewayrouter
+package gateway
 
 import (
 	"context"
@@ -10,31 +10,27 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
-
-	"seamless-cors/internal/gatewayfacade"
 )
 
-const tokenHeader = "X-Seamless-CORS-Token"
-
-type Facade interface {
-	ExecuteStart(context.Context, gatewayfacade.StartRequest) (gatewayfacade.StartResult, error)
-	Stop() (gatewayfacade.StopResult, error)
-	Status(bool) (gatewayfacade.StatusResult, error)
-	Install() (gatewayfacade.InstallResult, error)
-	Uninstall() (gatewayfacade.UninstallResult, error)
+type commandHandler interface {
+	ExecuteStart(context.Context, StartRequest) (StartResult, error)
+	Stop() (StopResult, error)
+	Status(bool) (StatusResult, error)
+	Install() (InstallResult, error)
+	Uninstall() (UninstallResult, error)
 }
 
-type Server struct {
+type routerServer struct {
 	server     *http.Server
 	token      string
-	facade     Facade
+	handler    commandHandler
 	shutdownCh chan struct{}
 }
 
-func New(token string, facade Facade) *Server {
-	s := &Server{
+func newRouter(token string, handler commandHandler) *routerServer {
+	s := &routerServer{
 		token:      token,
-		facade:     facade,
+		handler:    handler,
 		shutdownCh: make(chan struct{}),
 	}
 	router := chi.NewMux()
@@ -45,19 +41,19 @@ func New(token string, facade Facade) *Server {
 	return s
 }
 
-func (s *Server) Serve(listener net.Listener) error {
+func (s *routerServer) Serve(listener net.Listener) error {
 	return s.server.Serve(listener)
 }
 
-func (s *Server) Close(ctx context.Context) error {
+func (s *routerServer) Close(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-func (s *Server) ShutdownRequested() <-chan struct{} {
+func (s *routerServer) ShutdownRequested() <-chan struct{} {
 	return s.shutdownCh
 }
 
-func (s *Server) register(api huma.API) {
+func (s *routerServer) register(api huma.API) {
 	huma.Register(api, s.commandOperation(api, http.MethodPost, "/start", "start", "Start"), s.start)
 	huma.Register(api, s.commandOperation(api, http.MethodPost, "/stop", "stop", "Stop"), s.stop)
 	huma.Register(api, s.commandOperation(api, http.MethodGet, "/status", "status", "Status"), s.status)
@@ -65,7 +61,7 @@ func (s *Server) register(api huma.API) {
 	huma.Register(api, s.commandOperation(api, http.MethodPost, "/uninstall", "uninstall", "Uninstall UserCA"), s.uninstall)
 }
 
-func (s *Server) commandOperation(api huma.API, method, path, operationID, summary string) huma.Operation {
+func (s *routerServer) commandOperation(api huma.API, method, path, operationID, summary string) huma.Operation {
 	return huma.Operation{
 		Method:      method,
 		Path:        path,
@@ -78,7 +74,7 @@ func (s *Server) commandOperation(api huma.API, method, path, operationID, summa
 	}
 }
 
-func (s *Server) authorize(api huma.API) func(huma.Context, func(huma.Context)) {
+func (s *routerServer) authorize(api huma.API) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		if s.token != "" && ctx.Header(tokenHeader) == s.token {
 			next(ctx)
@@ -88,7 +84,7 @@ func (s *Server) authorize(api huma.API) func(huma.Context, func(huma.Context)) 
 	}
 }
 
-func (s *Server) health(w http.ResponseWriter, req *http.Request) {
+func (s *routerServer) health(w http.ResponseWriter, req *http.Request) {
 	if s.token == "" || req.Header.Get(tokenHeader) != s.token {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -96,14 +92,14 @@ func (s *Server) health(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) start(_ context.Context, input *startInput) (*startOutput, error) {
-	request := gatewayfacade.StartRequest{}
+func (s *routerServer) start(_ context.Context, input *startInput) (*startOutput, error) {
+	request := StartRequest{}
 	if input.Body != nil {
 		request = *input.Body
 	}
-	result, err := s.facade.ExecuteStart(context.Background(), request)
+	result, err := s.handler.ExecuteStart(context.Background(), request)
 	if err != nil {
-		var startErr *gatewayfacade.StartError
+		var startErr *StartError
 		if errors.As(err, &startErr) {
 			return nil, &startHTTPError{
 				Status:   http.StatusInternalServerError,
@@ -118,21 +114,21 @@ func (s *Server) start(_ context.Context, input *startInput) (*startOutput, erro
 }
 
 type startHTTPError struct {
-	Status   int                           `json:"status"`
-	Title    string                        `json:"title"`
-	Detail   string                        `json:"detail"`
-	CAEnsure *gatewayfacade.CAEnsureResult `json:"caEnsure,omitempty"`
+	Status   int             `json:"status"`
+	Title    string          `json:"title"`
+	Detail   string          `json:"detail"`
+	CAEnsure *CAEnsureResult `json:"caEnsure,omitempty"`
 }
 
 func (e *startHTTPError) Error() string  { return e.Detail }
 func (e *startHTTPError) GetStatus() int { return e.Status }
 
-func (s *Server) stop(_ context.Context, _ *struct{}) (*stopOutput, error) {
-	result, err := s.facade.Stop()
+func (s *routerServer) stop(_ context.Context, _ *struct{}) (*stopOutput, error) {
+	result, err := s.handler.Stop()
 	if err != nil {
 		return nil, err
 	}
-	if result.Kind == gatewayfacade.StopResultStopped {
+	if result.Kind == StopResultStopped {
 		go func() {
 			time.Sleep(25 * time.Millisecond)
 			s.requestShutdown()
@@ -142,31 +138,31 @@ func (s *Server) stop(_ context.Context, _ *struct{}) (*stopOutput, error) {
 	return &stopOutput{Body: result}, nil
 }
 
-func (s *Server) status(_ context.Context, _ *struct{}) (*statusOutput, error) {
-	result, err := s.facade.Status(false)
+func (s *routerServer) status(_ context.Context, _ *struct{}) (*statusOutput, error) {
+	result, err := s.handler.Status(false)
 	if err != nil {
 		return nil, err
 	}
 	return &statusOutput{Body: result}, nil
 }
 
-func (s *Server) install(_ context.Context, _ *struct{}) (*installOutput, error) {
-	result, err := s.facade.Install()
+func (s *routerServer) install(_ context.Context, _ *struct{}) (*installOutput, error) {
+	result, err := s.handler.Install()
 	if err != nil {
 		return nil, err
 	}
 	return &installOutput{Body: result}, nil
 }
 
-func (s *Server) uninstall(_ context.Context, _ *struct{}) (*uninstallOutput, error) {
-	result, err := s.facade.Uninstall()
+func (s *routerServer) uninstall(_ context.Context, _ *struct{}) (*uninstallOutput, error) {
+	result, err := s.handler.Uninstall()
 	if err != nil {
 		return nil, err
 	}
 	return &uninstallOutput{Body: result}, nil
 }
 
-func (s *Server) requestShutdown() {
+func (s *routerServer) requestShutdown() {
 	select {
 	case <-s.shutdownCh:
 	default:
@@ -189,25 +185,25 @@ func gatewayRouterConfig() huma.Config {
 }
 
 type startInput struct {
-	Body *gatewayfacade.StartRequest
+	Body *StartRequest
 }
 
 type startOutput struct {
-	Body gatewayfacade.StartResult
+	Body StartResult
 }
 
 type stopOutput struct {
-	Body gatewayfacade.StopResult
+	Body StopResult
 }
 
 type statusOutput struct {
-	Body gatewayfacade.StatusResult
+	Body StatusResult
 }
 
 type installOutput struct {
-	Body gatewayfacade.InstallResult
+	Body InstallResult
 }
 
 type uninstallOutput struct {
-	Body gatewayfacade.UninstallResult
+	Body UninstallResult
 }

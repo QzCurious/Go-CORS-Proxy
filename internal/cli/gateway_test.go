@@ -15,9 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"seamless-cors/internal/gatewayclient"
-	"seamless-cors/internal/gatewaycoord"
-	"seamless-cors/internal/gatewayfacade"
+	"seamless-cors/internal/gateway"
+	"seamless-cors/internal/gatewaytest"
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
@@ -644,16 +643,11 @@ func TestRouterHostedStartOutlivesHTTPStartRequest(t *testing.T) {
 	go func() { done <- ServeWithContext(ctx, io.Discard, fake) }()
 	waitForFile(t, filepath.Join(home, ".seamless-cors", "runtime", "gateway-state-cache.json"))
 
-	coord, err := gatewaycoord.Default()
+	result, err := gateway.StartRouterHosted(context.Background(), gateway.StartRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := coord.Verify().Cache
-	result, err := gatewayclient.New(cache).Start(gatewayfacade.StartRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Kind != gatewayfacade.StartResultStarted {
+	if result.Kind != gateway.StartResultStarted {
 		t.Fatalf("start result = %s", result.Kind)
 	}
 	waitForStatusOutput(t, "seamless-cors status: running")
@@ -739,9 +733,7 @@ func TestServeOwnerExitsWhenGatewayStateLeaseIsLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coord := gatewaycoord.New(runtimeDir)
-
-	if err := coord.Remove(); err != nil {
+	if err := gatewaytest.RemoveState(runtimeDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -780,9 +772,7 @@ func TestRuntimeOwnerCleansUpWhenGatewayStateLeaseIsLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coord := gatewaycoord.New(runtimeDir)
-
-	if err := coord.Remove(); err != nil {
+	if err := gatewaytest.RemoveState(runtimeDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -832,11 +822,11 @@ func TestStopReportsOwnerCleanupFailureAndKeepsOwnerForRetry(t *testing.T) {
 		t.Fatalf("owner exited after failed cleanup: %v", err)
 	default:
 	}
-	target, err := gatewayclient.Discover()
+	result, err := gateway.Status(fake)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Kind != gatewayclient.TargetActive {
+	if result.Kind == gateway.GatewayStatusNotRunning || result.Kind == gateway.GatewayStatusStaleCache {
 		t.Fatal("owner was not reachable after failed cleanup")
 	}
 
@@ -877,6 +867,21 @@ func TestStatusAndStopDoNotBootstrapMissingConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(configDir); !os.IsNotExist(err) {
 		t.Fatalf("stop created config directory: %v", err)
+	}
+	if !strings.Contains(out.String(), "no running seamless-cors found") {
+		t.Fatalf("stop output = %q", out.String())
+	}
+}
+
+func TestStopReportsNoRunningGatewayBeforeLocalCleanupFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fake := &fakeAdapter{clearErr: errors.New("pac cleanup denied")}
+	var out bytes.Buffer
+
+	err := stop(&out, fake)
+	if err == nil || !strings.Contains(err.Error(), "pac cleanup denied") {
+		t.Fatalf("stop error = %v", err)
 	}
 	if !strings.Contains(out.String(), "no running seamless-cors found") {
 		t.Fatalf("stop output = %q", out.String())
@@ -1353,15 +1358,11 @@ func writeStaleRuntimeState(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coord := gatewaycoord.New(runtimeDir)
-	err = coord.Write(gatewaycoord.GatewayStateCache{
-		HTTPRouterListen: "127.0.0.1:1",
-		Token:            "stale-token",
-	})
+	statePath, err := gatewaytest.WriteStaleState(runtimeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(runtimeDir, gatewaycoord.StateFileName)
+	return statePath
 }
 
 func waitForFile(t *testing.T, path string) {

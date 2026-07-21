@@ -8,20 +8,20 @@ seamless-cors is a DEV/QA context for controlled browser-origin testing across c
 A local DEV/QA network tool that sits between the browser and configured upstream domains so browser requests can be tested under adjusted cross-origin behavior without changing application request URLs.
 _Avoid_: generic proxy, CORS middleware
 
-**Gateway Facade**:
-The surface-agnostic gateway command boundary that owns start, stop, status, check, and Installed User CA lifecycle commands for CLI and HTTP control surfaces. It coordinates Gateway Coordination, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, and UserCA lifecycle behavior without owning the Gateway Runtime internals.
-_Avoid_: Managed Gateway, lifecycle operation module, command service, app orchestration
+**Gateway Module**:
+The single internal module that owns start, serve, stop, status, check, and Installed User CA lifecycle commands for CLI and HTTP control surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing.
+_Avoid_: Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
 
 **Surface-Neutral Command Result**:
-A Gateway Facade operation result that describes successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting.
+A Gateway Module operation result that describes successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting.
 _Avoid_: CLI output, HTTP response model, stringly command result, terminal error text
 
 **Operation-Specific Result Kind**:
-A closed command result vocabulary scoped to one Gateway Facade operation, so each operation exposes only the outcomes that can actually happen for that command.
+A closed command result vocabulary scoped to one Gateway Module operation, so each operation exposes only the outcomes that can actually happen for that command.
 _Avoid_: global result code, shared outcome enum, impossible command state
 
 **Gateway Router**:
-An HTTP command surface that exposes user-facing gateway feature routes and renders Gateway Facade results as HTTP responses.
+The private authenticated-local-HTTP adapter inside the Gateway Module that exposes gateway feature routes and renders Surface-Neutral Command Results as HTTP responses.
 _Avoid_: runtime control endpoint, proxy route, daemon supervisor
 
 **Gateway Client**:
@@ -241,7 +241,7 @@ A user-facing command that controls gateway-owned state or reports on it, includ
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Facade start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads valid configuration, completes required CA Ensure only when effective configuration enables CA trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; the sequence composes independent CA and PAC lifecycle operations without merging their consent and is the only public route to Gateway Activation.
+The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads valid configuration, completes required CA Ensure only when effective configuration enables CA trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; the sequence composes independent CA and PAC lifecycle operations without merging their consent and is the only public route to Gateway Activation.
 _Avoid_: monolithic activation, public raw activation, combined consent, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:

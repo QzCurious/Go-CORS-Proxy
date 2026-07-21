@@ -1,4 +1,4 @@
-package gatewayclient
+package gateway
 
 import (
 	"encoding/json"
@@ -6,9 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"seamless-cors/internal/gatewaycoord"
-	"seamless-cors/internal/gatewayfacade"
 )
 
 func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
@@ -22,28 +19,28 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if got := r.Header.Get(tokenHeader); got != "owner-token" {
 			t.Fatalf("token header = %q", got)
 		}
-		var request gatewayfacade.StartRequest
+		var request StartRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
 		if request.PACReplacementConsent == nil || !request.PACReplacementConsent.Accepted || request.PACReplacementConsent.Fingerprint != "foreign-state-v1" {
 			t.Fatalf("request = %#v", request)
 		}
-		_ = json.NewEncoder(w).Encode(gatewayfacade.StartResult{Kind: gatewayfacade.StartResultStarted})
+		_ = json.NewEncoder(w).Encode(StartResult{Kind: StartResultStarted})
 	}))
 	defer server.Close()
 
-	client := New(gatewaycoord.GatewayStateCache{
+	client := newClient(stateCache{
 		HTTPRouterListen: server.Listener.Addr().String(),
 		Token:            "owner-token",
 	})
-	result, err := client.Start(gatewayfacade.StartRequest{
-		PACReplacementConsent: &gatewayfacade.PACReplacementConsentInput{Accepted: true, Fingerprint: "foreign-state-v1"},
+	result, err := client.Start(StartRequest{
+		PACReplacementConsent: &PACReplacementConsentInput{Accepted: true, Fingerprint: "foreign-state-v1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != gatewayfacade.StartResultStarted {
+	if result.Kind != StartResultStarted {
 		t.Fatalf("result = %s", result.Kind)
 	}
 }
@@ -55,14 +52,14 @@ func TestStartFailureReturnsCompletedCAEnsure(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":500,"detail":"PAC install failed","caEnsure":{"kind":"installed","expires":"0001-01-01T00:00:00Z"}}`))
 	}))
 	defer server.Close()
-	client := New(gatewaycoord.GatewayStateCache{HTTPRouterListen: server.Listener.Addr().String()})
+	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
 
-	result, err := client.Start(gatewayfacade.StartRequest{})
-	var startErr *gatewayfacade.StartError
+	result, err := client.Start(StartRequest{})
+	var startErr *StartError
 	if !errors.As(err, &startErr) {
 		t.Fatalf("error = %v, want StartError", err)
 	}
-	if result.CAEnsure == nil || result.CAEnsure.Kind != gatewayfacade.CAEnsureResultInstalled {
+	if result.CAEnsure == nil || result.CAEnsure.Kind != CAEnsureResultInstalled {
 		t.Fatalf("CA result = %#v", result.CAEnsure)
 	}
 }
@@ -73,7 +70,7 @@ func TestStatusReportsHTTPFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(gatewaycoord.GatewayStateCache{
+	client := newClient(stateCache{
 		HTTPRouterListen: server.Listener.Addr().String(),
 		Token:            "bad-token",
 	})
