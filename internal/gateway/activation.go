@@ -7,7 +7,6 @@ import (
 
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/platform"
 	"seamless-cors/internal/userca"
 )
 
@@ -20,7 +19,7 @@ type startSequence struct {
 // independent even though start composes them.
 func (s startSequence) Execute(ctx context.Context, request StartRequest) (StartResult, error) {
 	if !s.lifecycle.takeStartCleanupComplete() {
-		if failure := cleanManagedPAC(s.lifecycle.adapter); failure != nil {
+		if failure := cleanManagedPAC(ctx, s.lifecycle.managedPACSettings); failure != nil {
 			return StartResult{
 				Kind:            StartResultCleanupFailed,
 				CleanupFailures: []CleanupFailureDetail{*failure},
@@ -43,9 +42,9 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 			return StartResult{}, err
 		}
 		var ensured userca.EnsureResult
-		authority, ensured, err = userca.EnsureContext(ctx, caDir, s.lifecycle.adapter)
+		authority, ensured, err = userca.EnsureContext(ctx, caDir, s.lifecycle.userCATrustStore)
 		if err != nil {
-			if errors.Is(err, platform.ErrTrustApprovalDenied) {
+			if errors.Is(err, userca.ErrApprovalDenied) {
 				return StartResult{Kind: StartResultPlatformApprovalDenied}, nil
 			}
 			if ctx.Err() != nil {
@@ -67,7 +66,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return StartResult{CAEnsure: caEnsure}, &StartError{Diagnostic: err.Error(), CAEnsure: caEnsure, Cause: err}
 	}
 
-	assessment, err := managedpac.Assess(s.lifecycle.adapter)
+	assessment, err := managedpac.Assess(ctx, s.lifecycle.managedPACSettings)
 	if err != nil {
 		return postCAFailure(err)
 	}
@@ -135,7 +134,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	// Trusted Runtime Admission adopts the currently usable authority. This
 	// closes the race with independent CA commands without a start-wide lock.
 	if live.CATrusted() {
-		admitted, report, admissionErr := userca.LoadUsableContext(ctx, caDir, s.lifecycle.adapter)
+		admitted, report, admissionErr := userca.LoadUsableContext(ctx, caDir, s.lifecycle.userCATrustStore)
 		if admissionErr != nil {
 			withdraw()
 			s.lifecycle.caAdmissionMu.Unlock()
@@ -185,7 +184,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	default:
 	}
 
-	session, err := managedpac.Prepare(s.lifecycle.adapter, assessment.ServiceSet, engine.PACURL())
+	session, err := managedpac.Prepare(s.lifecycle.managedPACSettings, assessment.ServiceSet, engine.PACURL())
 	if err != nil {
 		withdraw()
 		return postCAFailure(err)
@@ -199,7 +198,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	}
 	active.pac = session
 	s.lifecycle.mu.Unlock()
-	pacStart, err := session.Install()
+	pacStart, err := session.Install(ctx)
 	if err != nil {
 		withdraw()
 		if failure := s.cleanupFailedPACInstall(); failure != nil {
@@ -252,5 +251,5 @@ func caEnsureResult(result userca.EnsureResult) *CAEnsureResult {
 }
 
 func (s startSequence) cleanupFailedPACInstall() *CleanupFailureDetail {
-	return cleanManagedPAC(s.lifecycle.adapter)
+	return cleanManagedPAC(context.Background(), s.lifecycle.managedPACSettings)
 }

@@ -1,23 +1,17 @@
 package managedpac
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
-
-	"seamless-cors/internal/platform"
 )
 
 var (
 	ErrManagedPACLeaseLost = errors.New("managed PAC lease lost")
 	ErrSessionClosed       = errors.New("managed PAC session closed")
 )
-
-type Adapter interface {
-	ApplyPAC(url string, services []string) ([]platform.PACServiceUpdate, error)
-	CurrentPACState() ([]platform.PACServiceState, error)
-}
 
 type Ownership string
 
@@ -27,25 +21,25 @@ const (
 	OwnershipForeign Ownership = "foreign"
 )
 
-type ServiceState struct {
+type ServiceAssessment struct {
 	ServiceName string
 	Enabled     bool
-	URL         string
+	PACURL      string
 	Ownership   Ownership
 }
 
 type Assessment struct {
 	ServiceSet          []string
-	States              []ServiceState
+	Services            []ServiceAssessment
 	ReplacementRequired bool
 }
 
-func Assess(adapter Adapter) (Assessment, error) {
-	states, err := adapter.CurrentPACState()
+func Assess(ctx context.Context, settings SystemSettings) (Assessment, error) {
+	states, err := settings.Snapshot(ctx)
 	if err != nil {
 		return Assessment{}, err
 	}
-	managedStates := serviceStates(states)
+	managedStates := serviceAssessments(states)
 	serviceSet := make([]string, 0, len(managedStates))
 	replacementRequired := false
 	for _, state := range managedStates {
@@ -57,7 +51,7 @@ func Assess(adapter Adapter) (Assessment, error) {
 	sort.Strings(serviceSet)
 	return Assessment{
 		ServiceSet:          serviceSet,
-		States:              managedStates,
+		Services:            managedStates,
 		ReplacementRequired: replacementRequired,
 	}, nil
 }
@@ -65,7 +59,7 @@ func Assess(adapter Adapter) (Assessment, error) {
 type Session struct {
 	mutationMu   sync.Mutex
 	mu           sync.RWMutex
-	adapter      Adapter
+	settings     SystemSettings
 	services     []string
 	currentURL   string
 	attemptedURL string
@@ -76,12 +70,12 @@ type StartResult struct {
 	InstalledServices []string
 }
 
-func Start(adapter Adapter, services []string, pacURL string) (*Session, StartResult, error) {
-	session, err := Prepare(adapter, services, pacURL)
+func Start(ctx context.Context, settings SystemSettings, services []string, pacURL string) (*Session, StartResult, error) {
+	session, err := Prepare(settings, services, pacURL)
 	if err != nil {
 		return nil, StartResult{}, err
 	}
-	result, err := session.Install()
+	result, err := session.Install(ctx)
 	if err != nil {
 		return nil, StartResult{}, err
 	}
@@ -90,25 +84,25 @@ func Start(adapter Adapter, services []string, pacURL string) (*Session, StartRe
 
 // Prepare creates the mutation owner before the first platform write. This
 // lets lifecycle cancellation close the sequence even while install races it.
-func Prepare(adapter Adapter, services []string, pacURL string) (*Session, error) {
+func Prepare(settings SystemSettings, services []string, pacURL string) (*Session, error) {
 	selected := sortedStrings(services)
 	if len(selected) == 0 {
 		return nil, fmt.Errorf("managed PAC service set is empty")
 	}
-	return &Session{adapter: adapter, services: selected, currentURL: pacURL}, nil
+	return &Session{settings: settings, services: selected, currentURL: pacURL}, nil
 }
 
-func (s *Session) Install() (StartResult, error) {
+func (s *Session) Install(ctx context.Context) (StartResult, error) {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	if s.isClosed() {
 		return StartResult{}, ErrSessionClosed
 	}
-	updates, err := s.adapter.ApplyPAC(s.currentURL, s.services)
+	result, err := s.settings.Apply(ctx, s.currentURL, s.services)
 	if err != nil {
 		return StartResult{}, err
 	}
-	installed := appliedServices(updates)
+	installed := result.AppliedServices
 	if len(installed) == 0 {
 		return StartResult{}, fmt.Errorf("managed PAC install updated no services")
 	}
@@ -116,7 +110,7 @@ func (s *Session) Install() (StartResult, error) {
 	return StartResult{InstalledServices: installed}, nil
 }
 
-func (s *Session) Refresh(nextURL string) error {
+func (s *Session) Refresh(ctx context.Context, nextURL string) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	if s.isClosed() {
@@ -127,14 +121,14 @@ func (s *Session) Refresh(nextURL string) error {
 	services := append([]string(nil), s.services...)
 	currentURL := s.currentURL
 	s.mu.Unlock()
-	states, err := s.adapter.CurrentPACState()
+	states, err := s.settings.Snapshot(ctx)
 	if err != nil {
 		return RefreshError{FromURL: currentURL, ToURL: nextURL, Err: fmt.Errorf("managed PAC lease inspection failed: %w", err)}
 	}
 	if _, err := selectedOwnedDrift(states, currentURL, services); err != nil {
 		return RefreshError{FromURL: currentURL, ToURL: nextURL, Err: err}
 	}
-	if _, err := s.adapter.ApplyPAC(nextURL, services); err != nil {
+	if _, err := s.settings.Apply(ctx, nextURL, services); err != nil {
 		return RefreshError{
 			FromURL: currentURL,
 			ToURL:   nextURL,
@@ -148,17 +142,7 @@ func (s *Session) Refresh(nextURL string) error {
 	return nil
 }
 
-func appliedServices(updates []platform.PACServiceUpdate) []string {
-	var applied []string
-	for _, update := range updates {
-		if update.Outcome == platform.PACApplyOutcomeApplied {
-			applied = append(applied, update.ServiceName)
-		}
-	}
-	return applied
-}
-
-func (s *Session) RequireLease() error {
+func (s *Session) RequireLease(ctx context.Context) error {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	if s.isClosed() {
@@ -166,7 +150,7 @@ func (s *Session) RequireLease() error {
 	}
 	currentURL := s.CurrentURL()
 	services := s.Services()
-	states, err := s.adapter.CurrentPACState()
+	states, err := s.settings.Snapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("managed PAC lease inspection failed: %w", err)
 	}
@@ -177,26 +161,26 @@ func (s *Session) RequireLease() error {
 	if len(reattach) == 0 {
 		return nil
 	}
-	if _, err := s.adapter.ApplyPAC(currentURL, sortedStrings(reattach)); err != nil {
+	if _, err := s.settings.Apply(ctx, currentURL, sortedStrings(reattach)); err != nil {
 		return fmt.Errorf("managed PAC reattachment failed: %w", err)
 	}
 	return nil
 }
 
-func selectedOwnedDrift(states []platform.PACServiceState, currentURL string, services []string) ([]string, error) {
+func selectedOwnedDrift(states []ServiceSnapshot, currentURL string, services []string) ([]string, error) {
 	selected := stringSet(services)
 	var reattach []string
 	for _, state := range states {
-		if _, ok := selected[state.Name]; !ok {
+		if _, ok := selected[state.ServiceName]; !ok {
 			continue
 		}
-		if state.Enabled && state.URL == currentURL {
+		if state.Enabled && state.PACURL == currentURL {
 			continue
 		}
-		if OwnershipForURL(state.URL) != OwnershipOwned {
+		if OwnershipForURL(state.PACURL) != OwnershipOwned {
 			return nil, ErrManagedPACLeaseLost
 		}
-		reattach = append(reattach, state.Name)
+		reattach = append(reattach, state.ServiceName)
 	}
 	return sortedStrings(reattach), nil
 }
@@ -247,14 +231,14 @@ func (e RefreshError) Unwrap() error {
 	return e.Err
 }
 
-func serviceStates(states []platform.PACServiceState) []ServiceState {
-	out := make([]ServiceState, 0, len(states))
+func serviceAssessments(states []ServiceSnapshot) []ServiceAssessment {
+	out := make([]ServiceAssessment, 0, len(states))
 	for _, state := range states {
-		out = append(out, ServiceState{
-			ServiceName: state.Name,
+		out = append(out, ServiceAssessment{
+			ServiceName: state.ServiceName,
 			Enabled:     state.Enabled,
-			URL:         state.URL,
-			Ownership:   OwnershipForURL(state.URL),
+			PACURL:      state.PACURL,
+			Ownership:   OwnershipForURL(state.PACURL),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

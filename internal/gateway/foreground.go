@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"seamless-cors/internal/platform"
+	"seamless-cors/internal/managedpac"
+	"seamless-cors/internal/userca"
 )
 
 type owner struct {
@@ -20,15 +21,15 @@ type owner struct {
 	router    *routerServer
 }
 
-func newOwner(adapter platform.Adapter) (*owner, error) {
+func newOwner(settings managedpac.SystemSettings, trustStore userca.TrustStore) (*owner, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, err
 	}
-	return newOwnerWithCoordinator(adapter, coord)
+	return newOwnerWithCoordinator(settings, trustStore, coord)
 }
 
-func newOwnerWithCoordinator(adapter platform.Adapter, coord *coordinator) (*owner, error) {
+func newOwnerWithCoordinator(settings managedpac.SystemSettings, trustStore userca.TrustStore, coord *coordinator) (*owner, error) {
 	token, err := randomToken()
 	if err != nil {
 		return nil, err
@@ -38,7 +39,7 @@ func newOwnerWithCoordinator(adapter platform.Adapter, coord *coordinator) (*own
 		return nil, fmt.Errorf("router listener unavailable: %w", err)
 	}
 	routerListen := listener.Addr().String()
-	lifecycle, err := newLifecycle(adapter, coord, routerListen)
+	lifecycle, err := newLifecycle(settings, trustStore, coord, routerListen)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err
@@ -67,14 +68,14 @@ func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) erro
 	event := superviseOwner(ctx, afterPublish, leaseLost, o.router.ShutdownRequested(), o.lifecycle.FatalRuntimeErrors(), errs)
 	switch event.kind {
 	case ownerEventContextDone, ownerEventLeaseLost:
-		_, _ = o.lifecycle.Stop()
+		_, _ = o.lifecycle.Stop(context.Background())
 		_ = o.router.Close(context.Background())
 		return nil
 	case ownerEventShutdownRequested:
 		_ = o.router.Close(context.Background())
 		return nil
 	case ownerEventFatalRuntime:
-		_, _ = o.lifecycle.Stop()
+		_, _ = o.lifecycle.Stop(context.Background())
 		_ = o.router.Close(context.Background())
 		return event.err
 	case ownerEventRouterStopped:
@@ -166,7 +167,7 @@ func cancelAndWait(cancel context.CancelFunc, activationDone <-chan error) {
 }
 
 func (o *owner) Shutdown(ctx context.Context) error {
-	_, _ = o.lifecycle.Stop()
+	_, _ = o.lifecycle.Stop(ctx)
 	return o.closeOwnerOnly(ctx)
 }
 

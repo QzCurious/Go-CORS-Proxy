@@ -97,7 +97,7 @@ func TestStartPlanRouteDoesNotExist(t *testing.T) {
 	}
 }
 
-func TestStartUsesOwnerLifecycleContext(t *testing.T) {
+func TestStartPropagatesRequestContext(t *testing.T) {
 	handler := &fakeCommandHandler{}
 	server := newRouter("token", handler)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -114,8 +114,8 @@ func TestStartUsesOwnerLifecycleContext(t *testing.T) {
 	if handler.startContext == nil {
 		t.Fatal("command handler ExecuteStart was not called")
 	}
-	if err := handler.startContext.Err(); err != nil {
-		t.Fatalf("start context err = %v, want nil", err)
+	if err := handler.startContext.Err(); err != context.Canceled {
+		t.Fatalf("start context err = %v, want %v", err, context.Canceled)
 	}
 }
 
@@ -196,19 +196,19 @@ func (f *fakeCommandHandler) ExecuteStart(ctx context.Context, request StartRequ
 	return StartResult{Kind: StartResultStarted}, f.startErr
 }
 
-func (f *fakeCommandHandler) Stop() (StopResult, error) {
+func (f *fakeCommandHandler) Stop(context.Context) (StopResult, error) {
 	return StopResult{Kind: StopResultCleanupFailed}, nil
 }
 
-func (f *fakeCommandHandler) Status(bool) (StatusResult, error) {
+func (f *fakeCommandHandler) Status(context.Context, bool) (StatusResult, error) {
 	f.statusCalled = true
 	return StatusResult{Kind: GatewayStatusRouterOnly}, nil
 }
 
-func (f *fakeCommandHandler) Install() (InstallResult, error) {
+func (f *fakeCommandHandler) Install(context.Context) (InstallResult, error) {
 	return InstallResult{Kind: InstallResultAlreadyUsable}, nil
 }
 
-func (f *fakeCommandHandler) Uninstall() (UninstallResult, error) {
+func (f *fakeCommandHandler) Uninstall(context.Context) (UninstallResult, error) {
 	return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
 }

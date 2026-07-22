@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"seamless-cors/internal/platform"
+	"seamless-cors/internal/managedpac"
+	"seamless-cors/internal/userca"
 )
 
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
@@ -15,11 +16,11 @@ type StartHooks struct {
 	Started               func(StartResult)
 }
 
-func Start(ctx context.Context, adapter platform.Adapter, hooks StartHooks) (StartResult, error) {
-	adapter = adapterOrDefault(adapter)
-	if err := requireSupported(adapter.Capabilities()); err != nil {
-		return StartResult{}, err
-	}
+func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
+	return start(ctx, managedpac.NewSystemSettings(), userca.NewTrustStore(), hooks)
+}
+
+func start(ctx context.Context, settings managedpac.SystemSettings, trustStore userca.TrustStore, hooks StartHooks) (StartResult, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return StartResult{}, err
@@ -27,14 +28,14 @@ func Start(ctx context.Context, adapter platform.Adapter, hooks StartHooks) (Sta
 	if coord.Verify().Status == stateActive {
 		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
 	}
-	failures, err := cleanRuntime(adapter)
+	failures, err := cleanRuntime(ctx, settings)
 	if err != nil {
 		return StartResult{}, err
 	}
 	if len(failures) > 0 {
 		return StartResult{Kind: StartResultCleanupFailed, CleanupFailures: failures}, nil
 	}
-	owner, err := newOwnerWithCoordinator(adapter, coord)
+	owner, err := newOwnerWithCoordinator(settings, trustStore, coord)
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -57,11 +58,11 @@ func Start(ctx context.Context, adapter platform.Adapter, hooks StartHooks) (Sta
 	return result, err
 }
 
-func Serve(ctx context.Context, adapter platform.Adapter, ready func()) error {
-	adapter = adapterOrDefault(adapter)
-	if err := requireSupported(adapter.Capabilities()); err != nil {
-		return err
-	}
+func Serve(ctx context.Context, ready func()) error {
+	return serve(ctx, managedpac.NewSystemSettings(), userca.NewTrustStore(), ready)
+}
+
+func serve(ctx context.Context, settings managedpac.SystemSettings, trustStore userca.TrustStore, ready func()) error {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return err
@@ -69,7 +70,7 @@ func Serve(ctx context.Context, adapter platform.Adapter, ready func()) error {
 	if coord.Verify().Status == stateActive {
 		return fmt.Errorf("gateway owner already running")
 	}
-	owner, err := newOwnerWithCoordinator(adapter, coord)
+	owner, err := newOwnerWithCoordinator(settings, trustStore, coord)
 	if err != nil {
 		return err
 	}
@@ -96,7 +97,7 @@ func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks
 			result.Kind = StartResultStarted
 			return result, nil
 		case StartResultPlatformApprovalDenied:
-			return result, platform.ErrTrustApprovalDenied
+			return result, userca.ErrApprovalDenied
 		case StartResultStopCancelled, StartResultCleanupFailed:
 			return result, nil
 		case StartResultConsentRequired:
@@ -124,27 +125,10 @@ func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks
 	}
 }
 
-func cleanRuntime(adapter platform.Adapter) ([]CleanupFailureDetail, error) {
+func cleanRuntime(ctx context.Context, settings managedpac.SystemSettings) ([]CleanupFailureDetail, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, err
 	}
-	return cleanGatewayFootprint(adapter, coord, nil), nil
-}
-
-func requireSupported(report platform.CapabilityReport) error {
-	if report.Supported &&
-		report.PACManagement == platform.CapabilitySupported &&
-		report.CATrustManagement == platform.CapabilitySupported &&
-		report.RuntimeCleanup == platform.CapabilitySupported {
-		return nil
-	}
-	return fmt.Errorf("platform unsupported: run `seamless-cors check` for details")
-}
-
-func adapterOrDefault(adapter platform.Adapter) platform.Adapter {
-	if adapter == nil {
-		return platform.CurrentAdapter
-	}
-	return adapter
+	return cleanGatewayFootprint(ctx, settings, coord, nil), nil
 }

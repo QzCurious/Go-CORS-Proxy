@@ -9,7 +9,7 @@ A local DEV/QA network tool that sits between the browser and configured upstrea
 _Avoid_: generic proxy, CORS middleware
 
 **Gateway Module**:
-The single internal module that owns start, serve, stop, status, check, and Installed User CA lifecycle commands for CLI and HTTP control surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing.
+The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands for CLI and HTTP control surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing.
 _Avoid_: Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
 
 **Surface-Neutral Command Result**:
@@ -96,29 +96,9 @@ _Avoid_: cross-platform binary
 A supported operating system where the gateway can configure PAC Routing and user trust on behalf of the user.
 _Avoid_: manual platform, manual proxy fallback, all-platform parity without adapters
 
-**Platform Capability Check**:
-A preflight lifecycle behavior where the gateway verifies that the current platform can manage required PAC and user trust operations before making lifecycle changes.
-_Avoid_: partial platform setup, trust install on unsupported platform, continue-anyway platform prompt
-
-**Capability Check Command**:
-A local, read-only user-facing command that reports whether the current system can run the managed gateway lifecycle before the user attempts installation or start, without routing through an existing Gateway Owner.
-_Avoid_: hidden compatibility discovery, lifecycle-only platform errors, mutating compatibility check
-
-**Capability-Only Check**:
-A command boundary where `check` reports platform capability without reporting or repairing current Installed User CA state.
-_Avoid_: check-as-status, check-triggered CA inspection side effects
-
-**Footprint-Free Check**:
-A command boundary where `check` reports platform capability without creating configuration, runtime, CA, or home config files and directories.
-_Avoid_: check-time bootstrap, check-time cleanup, check-time CA storage
-
-**Detailed Capability Report**:
-A capability reporting behavior that shows both an overall support result and individual platform capability results for managed PAC, CA trust, and cleanup.
-_Avoid_: opaque unsupported result, single-error compatibility check
-
 **Best-Effort Stop**:
-A stop behavior where Gateway Footprint Cleanup still attempts to remove seamless-cors-owned active PAC state, live coordination cache, and the Gateway Owner even when capability checks are limited or reporting platform problems.
-_Avoid_: capability-blocked cleanup, leaving owned runtime state behind, router-only stop
+A stop behavior where Gateway Footprint Cleanup attempts every cleanup subject, including seamless-cors-owned active PAC state, live coordination cache, and the Gateway Owner, even when another cleanup subject reports a platform operation failure.
+_Avoid_: failure-blocked cleanup, leaving owned runtime state behind, router-only stop
 
 **Owner Stop**:
 A stop behavior where `stop` and `/stop` tear down the Gateway Owner itself, including a router-only owner, and close Gateway Runtime before Gateway Footprint Cleanup so no new gateway traffic is accepted after runtime close completes.
@@ -237,7 +217,7 @@ A configuration behavior where an invalid, missing, or unreadable config file ca
 _Avoid_: silent config fallback, stale config after invalid edit
 
 **Gateway Control Command**:
-A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, check, UserCA install, and UserCA uninstall.
+A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, UserCA install, and UserCA uninstall.
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
@@ -509,7 +489,7 @@ A read-only gateway status vocabulary that describes whether the Gateway Owner a
 _Avoid_: cleanup status, CA health status, start result, runtime state file truth
 
 **CA Health Status**:
-A read-only status vocabulary for Installed User CA state using stable values such as usable, missing, expired, expiring-soon, invalid, multiple, mismatched-material, unsupported, and unknown.
+A read-only status vocabulary for Installed User CA state using stable values such as usable, missing, expired, expiring-soon, invalid, multiple, mismatched-material, and unknown.
 _Avoid_: prose-only CA state, status-triggered CA repair
 
 **Diagnostic Runtime Endpoint**:

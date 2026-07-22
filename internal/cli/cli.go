@@ -10,7 +10,6 @@ import (
 )
 
 const usage = `Usage:
-  seamless-cors check
   seamless-cors install
   seamless-cors uninstall
   seamless-cors serve
@@ -22,7 +21,6 @@ const usage = `Usage:
 // Run dispatches the v1 Minimal Command Surface.
 func Run(args []string, stdout, stderr io.Writer) error {
 	return run(args, stdout, stderr, commandHandlers{
-		check:     Check,
 		install:   Install,
 		uninstall: Uninstall,
 		serve:     Serve,
@@ -33,7 +31,6 @@ func Run(args []string, stdout, stderr io.Writer) error {
 }
 
 type commandHandlers struct {
-	check     func(io.Writer, io.Writer) error
 	install   func(io.Writer, io.Writer) error
 	uninstall func(io.Writer, io.Writer) error
 	serve     func(io.Writer, io.Writer) error
@@ -49,11 +46,6 @@ func run(args []string, stdout, stderr io.Writer, commands commandHandlers) erro
 	}
 
 	switch args[0] {
-	case "check":
-		if err := rejectUnexpectedArgs(stderr, "check", args[1:]); err != nil {
-			return err
-		}
-		return reportCommandError(stderr, commands.check(stdout, stderr))
 	case "install":
 		if err := rejectUnexpectedArgs(stderr, "install", args[1:]); err != nil {
 			return err

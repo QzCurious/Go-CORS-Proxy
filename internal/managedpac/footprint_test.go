@@ -1,29 +1,32 @@
 package managedpac
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
-
-	"seamless-cors/internal/platform"
 )
 
 type footprintFakeAdapter struct {
-	states       []platform.PACServiceState
+	states       []ServiceSnapshot
 	inspectErr   error
 	clearErr     error
-	changedState *platform.PACServiceState
+	changedState *ServiceSnapshot
 	clearCalls   int
 }
 
-func (f *footprintFakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
+func (f *footprintFakeAdapter) Snapshot(context.Context) ([]ServiceSnapshot, error) {
 	if f.inspectErr != nil {
 		return nil, f.inspectErr
 	}
-	return append([]platform.PACServiceState(nil), f.states...), nil
+	return append([]ServiceSnapshot(nil), f.states...), nil
 }
 
-func (f *footprintFakeAdapter) ClearPACIfMatches(expected []platform.PACServiceState) error {
+func (f *footprintFakeAdapter) Apply(context.Context, string, []string) (ApplyResult, error) {
+	return ApplyResult{}, nil
+}
+
+func (f *footprintFakeAdapter) ClearIfUnchanged(_ context.Context, expected []ServiceSnapshot) error {
 	f.clearCalls++
 	if f.clearErr != nil {
 		return f.clearErr
@@ -62,10 +65,10 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 }
 
 func TestInspectFootprintIgnoresDisabledOwnedURL(t *testing.T) {
-	adapter := &footprintFakeAdapter{states: []platform.PACServiceState{{
-		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false,
+	adapter := &footprintFakeAdapter{states: []ServiceSnapshot{{
+		ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false,
 	}}}
-	inspection, err := InspectFootprint(adapter)
+	inspection, err := InspectFootprint(context.Background(), adapter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,11 +78,11 @@ func TestInspectFootprintIgnoresDisabledOwnedURL(t *testing.T) {
 }
 
 func TestClearFootprintRemovesOnlyExpectedOwnedState(t *testing.T) {
-	adapter := &footprintFakeAdapter{states: []platform.PACServiceState{
-		{Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
-		{Name: "VPN", URL: "http://corp.example/proxy.pac", Enabled: true},
+	adapter := &footprintFakeAdapter{states: []ServiceSnapshot{
+		{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
+		{ServiceName: "VPN", PACURL: "http://corp.example/proxy.pac", Enabled: true},
 	}}
-	if err := ClearFootprint(adapter); err != nil {
+	if err := ClearFootprint(context.Background(), adapter); err != nil {
 		t.Fatal(err)
 	}
 	if adapter.states[0].Enabled || !adapter.states[1].Enabled {
@@ -88,12 +91,12 @@ func TestClearFootprintRemovesOnlyExpectedOwnedState(t *testing.T) {
 }
 
 func TestClearFootprintPreservesStateChangedAfterInspection(t *testing.T) {
-	foreign := platform.PACServiceState{Name: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true}
+	foreign := ServiceSnapshot{ServiceName: "Wi-Fi", PACURL: "http://corp.example/proxy.pac", Enabled: true}
 	adapter := &footprintFakeAdapter{
-		states:       []platform.PACServiceState{{Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true}},
+		states:       []ServiceSnapshot{{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true}},
 		changedState: &foreign,
 	}
-	if err := ClearFootprint(adapter); err != nil {
+	if err := ClearFootprint(context.Background(), adapter); err != nil {
 		t.Fatal(err)
 	}
 	if adapter.states[0] != foreign {
@@ -102,12 +105,12 @@ func TestClearFootprintPreservesStateChangedAfterInspection(t *testing.T) {
 }
 
 func TestClearFootprintFailsVerificationWhenChangedStateIsStillOwned(t *testing.T) {
-	changed := platform.PACServiceState{Name: "Wi-Fi", URL: "http://127.0.0.1:9000/seamless-cors.pac?v=2", Enabled: true}
+	changed := ServiceSnapshot{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:9000/seamless-cors.pac?v=2", Enabled: true}
 	adapter := &footprintFakeAdapter{
-		states:       []platform.PACServiceState{{Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true}},
+		states:       []ServiceSnapshot{{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true}},
 		changedState: &changed,
 	}
-	err := ClearFootprint(adapter)
+	err := ClearFootprint(context.Background(), adapter)
 	if err == nil || !strings.Contains(err.Error(), "footprint remains") {
 		t.Fatalf("verification error = %v", err)
 	}
@@ -118,13 +121,13 @@ func TestClearFootprintFailsVerificationWhenChangedStateIsStillOwned(t *testing.
 
 func TestClearFootprintReportsInspectionAndClearFailures(t *testing.T) {
 	adapter := &footprintFakeAdapter{inspectErr: errors.New("inspection denied")}
-	if err := ClearFootprint(adapter); err == nil || !strings.Contains(err.Error(), "inspection denied") {
+	if err := ClearFootprint(context.Background(), adapter); err == nil || !strings.Contains(err.Error(), "inspection denied") {
 		t.Fatalf("inspection error = %v", err)
 	}
 	adapter.inspectErr = nil
-	adapter.states = []platform.PACServiceState{{Name: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}}
+	adapter.states = []ServiceSnapshot{{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}}
 	adapter.clearErr = errors.New("clear denied")
-	if err := ClearFootprint(adapter); err == nil || !strings.Contains(err.Error(), "clear denied") {
+	if err := ClearFootprint(context.Background(), adapter); err == nil || !strings.Contains(err.Error(), "clear denied") {
 		t.Fatalf("clear error = %v", err)
 	}
 }

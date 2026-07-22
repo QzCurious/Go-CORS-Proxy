@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"seamless-cors/internal/platform"
+	"seamless-cors/internal/managedpac"
+	"seamless-cors/internal/userca"
 )
 
 func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
@@ -26,11 +27,11 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adapter := &lifecycleTestAdapter{states: []platform.PACServiceState{
-		{Name: "Wi-Fi", Enabled: true, URL: "http://corp.example/a.pac"},
-		{Name: "Ethernet"},
+	settings := &lifecycleTestSystemSettings{states: []managedpac.ServiceSnapshot{
+		{ServiceName: "Wi-Fi", Enabled: true, PACURL: "http://corp.example/a.pac"},
+		{ServiceName: "Ethernet"},
 	}}
-	lifecycle, err := newLifecycle(adapter, newCoordinator(filepath.Join(configDir, "runtime")), "")
+	lifecycle, err := newLifecycle(settings, emptyTestTrustStore{}, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 		t.Fatal("consent fingerprint is empty")
 	}
 
-	adapter.states[1].URL = "http://corp.example/b.pac"
+	settings.states[1].PACURL = "http://corp.example/b.pac"
 	changed, err := lifecycle.ExecuteStart(context.Background(), StartRequest{
 		PACReplacementConsent: &PACReplacementConsentInput{Accepted: true, Fingerprint: detail.Fingerprint},
 	})
@@ -66,46 +67,32 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 	if changed.PACReplacementConsent.Fingerprint == detail.Fingerprint {
 		t.Fatal("changed foreign PAC URL retained old consent fingerprint")
 	}
-	if adapter.applied != 0 {
-		t.Fatalf("state-mismatched consent applied PAC %d times", adapter.applied)
+	if settings.applied != 0 {
+		t.Fatalf("state-mismatched consent applied PAC %d times", settings.applied)
 	}
 }
 
-type lifecycleTestAdapter struct {
-	states   []platform.PACServiceState
+type lifecycleTestSystemSettings struct {
+	states   []managedpac.ServiceSnapshot
 	applied  int
 	stateErr error
 	clearErr error
 	cleared  int
 }
 
-func (f *lifecycleTestAdapter) Capabilities() platform.CapabilityReport {
-	return platform.CapabilityReport{
-		Platform:          "test/test",
-		Supported:         true,
-		PACManagement:     platform.CapabilitySupported,
-		CATrustManagement: platform.CapabilitySupported,
-		RuntimeCleanup:    platform.CapabilitySupported,
-	}
-}
-
-func (f *lifecycleTestAdapter) ApplyPAC(_ string, services []string) ([]platform.PACServiceUpdate, error) {
+func (f *lifecycleTestSystemSettings) Apply(_ context.Context, _ string, services []string) (managedpac.ApplyResult, error) {
 	f.applied++
-	updates := make([]platform.PACServiceUpdate, 0, len(services))
-	for _, service := range services {
-		updates = append(updates, platform.PACServiceUpdate{ServiceName: service, Outcome: platform.PACApplyOutcomeApplied})
-	}
-	return updates, nil
+	return managedpac.ApplyResult{AppliedServices: append([]string(nil), services...)}, nil
 }
 
-func (f *lifecycleTestAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
+func (f *lifecycleTestSystemSettings) Snapshot(context.Context) ([]managedpac.ServiceSnapshot, error) {
 	if f.stateErr != nil {
 		return nil, f.stateErr
 	}
-	return append([]platform.PACServiceState(nil), f.states...), nil
+	return append([]managedpac.ServiceSnapshot(nil), f.states...), nil
 }
 
-func (f *lifecycleTestAdapter) ClearPACIfMatches(expected []platform.PACServiceState) error {
+func (f *lifecycleTestSystemSettings) ClearIfUnchanged(_ context.Context, expected []managedpac.ServiceSnapshot) error {
 	f.cleared++
 	if f.clearErr != nil {
 		return f.clearErr
@@ -119,18 +106,23 @@ func (f *lifecycleTestAdapter) ClearPACIfMatches(expected []platform.PACServiceS
 	}
 	return nil
 }
-func (f *lifecycleTestAdapter) TrustedCAs() ([]platform.CARecord, error)  { return nil, nil }
-func (f *lifecycleTestAdapter) TrustCA(context.Context, []byte) error     { return nil }
-func (f *lifecycleTestAdapter) RemoveCAs(context.Context, []string) error { return nil }
+
+type emptyTestTrustStore struct{}
+
+func (emptyTestTrustStore) TrustedCertificates(context.Context) ([]userca.TrustedCertificate, error) {
+	return nil, nil
+}
+func (emptyTestTrustStore) Trust(context.Context, []byte) error    { return nil }
+func (emptyTestTrustStore) Remove(context.Context, []string) error { return nil }
 
 func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
-	adapter := &lifecycleTestAdapter{
-		states: []platform.PACServiceState{{
-			Name: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true,
+	settings := &lifecycleTestSystemSettings{
+		states: []managedpac.ServiceSnapshot{{
+			ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1/seamless-cors.pac", Enabled: true,
 		}},
 		clearErr: errors.New("cleanup denied"),
 	}
-	lifecycle, err := newLifecycle(adapter, newCoordinator(t.TempDir()), "")
+	lifecycle, err := newLifecycle(settings, emptyTestTrustStore{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}

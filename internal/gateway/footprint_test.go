@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -8,9 +9,9 @@ import (
 
 func TestCleanupStatusPreservesMixedNeededAndUnknownSubjectStates(t *testing.T) {
 	coord := newCoordinator(t.TempDir())
-	adapter := &lifecycleTestAdapter{stateErr: errors.New("PAC inspection denied")}
+	settings := &lifecycleTestSystemSettings{stateErr: errors.New("PAC inspection denied")}
 
-	status := inspectGatewayFootprint(adapter, coord, true, false, stateCache{})
+	status := inspectGatewayFootprint(context.Background(), settings, coord, true, false, stateCache{})
 
 	if status.State != CleanupStatusNeeded {
 		t.Fatalf("overall cleanup state = %s, want %s", status.State, CleanupStatusNeeded)
@@ -29,9 +30,9 @@ func TestCleanupStatusPreservesMixedNeededAndUnknownSubjectStates(t *testing.T) 
 
 func TestCleanupStatusIsUnknownWhenNoSubjectIsKnownNeeded(t *testing.T) {
 	coord := newCoordinator(t.TempDir())
-	adapter := &lifecycleTestAdapter{stateErr: errors.New("PAC inspection denied")}
+	settings := &lifecycleTestSystemSettings{stateErr: errors.New("PAC inspection denied")}
 
-	status := inspectGatewayFootprint(adapter, coord, false, false, stateCache{})
+	status := inspectGatewayFootprint(context.Background(), settings, coord, false, false, stateCache{})
 
 	if status.State != CleanupStatusUnknown {
 		t.Fatalf("overall cleanup state = %s, want %s", status.State, CleanupStatusUnknown)

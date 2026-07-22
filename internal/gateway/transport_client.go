@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,9 +61,9 @@ func newClient(cache stateCache) *client {
 	}
 }
 
-func (c *client) Start(request StartRequest) (StartResult, error) {
+func (c *client) Start(ctx context.Context, request StartRequest) (StartResult, error) {
 	var result StartResult
-	err := c.callJSON(http.MethodPost, "/start", request, &result)
+	err := c.callJSON(ctx, http.MethodPost, "/start", request, &result)
 	var responseErr *responseError
 	if errors.As(err, &responseErr) {
 		var failure struct {
@@ -77,31 +78,31 @@ func (c *client) Start(request StartRequest) (StartResult, error) {
 	return result, err
 }
 
-func (c *client) Stop() (StopResult, error) {
+func (c *client) Stop(ctx context.Context) (StopResult, error) {
 	var result StopResult
-	err := c.callJSON(http.MethodPost, "/stop", nil, &result)
+	err := c.callJSON(ctx, http.MethodPost, "/stop", nil, &result)
 	return result, err
 }
 
-func (c *client) Status() (StatusResult, error) {
+func (c *client) Status(ctx context.Context) (StatusResult, error) {
 	var result StatusResult
-	err := c.callJSON(http.MethodGet, "/status", nil, &result)
+	err := c.callJSON(ctx, http.MethodGet, "/status", nil, &result)
 	return result, err
 }
 
-func (c *client) Install() (InstallResult, error) {
+func (c *client) Install(ctx context.Context) (InstallResult, error) {
 	var result InstallResult
-	err := c.callJSON(http.MethodPost, "/install", nil, &result)
+	err := c.callJSON(ctx, http.MethodPost, "/install", nil, &result)
 	return result, err
 }
 
-func (c *client) Uninstall() (UninstallResult, error) {
+func (c *client) Uninstall(ctx context.Context) (UninstallResult, error) {
 	var result UninstallResult
-	err := c.callJSON(http.MethodPost, "/uninstall", nil, &result)
+	err := c.callJSON(ctx, http.MethodPost, "/uninstall", nil, &result)
 	return result, err
 }
 
-func (c *client) callJSON(method, path string, body any, out any) error {
+func (c *client) callJSON(ctx context.Context, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -110,7 +111,7 @@ func (c *client) callJSON(method, path string, body any, out any) error {
 		}
 		reader = bytes.NewReader(data)
 	}
-	req, err := http.NewRequest(method, "http://"+c.cache.HTTPRouterListen+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+c.cache.HTTPRouterListen+path, reader)
 	if err != nil {
 		return err
 	}

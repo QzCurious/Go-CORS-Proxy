@@ -14,10 +14,10 @@ import (
 
 type commandHandler interface {
 	ExecuteStart(context.Context, StartRequest) (StartResult, error)
-	Stop() (StopResult, error)
-	Status(bool) (StatusResult, error)
-	Install() (InstallResult, error)
-	Uninstall() (UninstallResult, error)
+	Stop(context.Context) (StopResult, error)
+	Status(context.Context, bool) (StatusResult, error)
+	Install(context.Context) (InstallResult, error)
+	Uninstall(context.Context) (UninstallResult, error)
 }
 
 type routerServer struct {
@@ -92,12 +92,12 @@ func (s *routerServer) health(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *routerServer) start(_ context.Context, input *startInput) (*startOutput, error) {
+func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutput, error) {
 	request := StartRequest{}
 	if input.Body != nil {
 		request = *input.Body
 	}
-	result, err := s.handler.ExecuteStart(context.Background(), request)
+	result, err := s.handler.ExecuteStart(ctx, request)
 	if err != nil {
 		var startErr *StartError
 		if errors.As(err, &startErr) {
@@ -123,8 +123,8 @@ type startHTTPError struct {
 func (e *startHTTPError) Error() string  { return e.Detail }
 func (e *startHTTPError) GetStatus() int { return e.Status }
 
-func (s *routerServer) stop(_ context.Context, _ *struct{}) (*stopOutput, error) {
-	result, err := s.handler.Stop()
+func (s *routerServer) stop(ctx context.Context, _ *struct{}) (*stopOutput, error) {
+	result, err := s.handler.Stop(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -138,24 +138,24 @@ func (s *routerServer) stop(_ context.Context, _ *struct{}) (*stopOutput, error)
 	return &stopOutput{Body: result}, nil
 }
 
-func (s *routerServer) status(_ context.Context, _ *struct{}) (*statusOutput, error) {
-	result, err := s.handler.Status(false)
+func (s *routerServer) status(ctx context.Context, _ *struct{}) (*statusOutput, error) {
+	result, err := s.handler.Status(ctx, false)
 	if err != nil {
 		return nil, err
 	}
 	return &statusOutput{Body: result}, nil
 }
 
-func (s *routerServer) install(_ context.Context, _ *struct{}) (*installOutput, error) {
-	result, err := s.handler.Install()
+func (s *routerServer) install(ctx context.Context, _ *struct{}) (*installOutput, error) {
+	result, err := s.handler.Install(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &installOutput{Body: result}, nil
 }
 
-func (s *routerServer) uninstall(_ context.Context, _ *struct{}) (*uninstallOutput, error) {
-	result, err := s.handler.Uninstall()
+func (s *routerServer) uninstall(ctx context.Context, _ *struct{}) (*uninstallOutput, error) {
+	result, err := s.handler.Uninstall(ctx)
 	if err != nil {
 		return nil, err
 	}

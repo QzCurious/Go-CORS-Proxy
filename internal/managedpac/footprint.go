@@ -1,67 +1,61 @@
 package managedpac
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
 	"path"
 	"sort"
 	"strings"
-
-	"seamless-cors/internal/platform"
 )
 
 const FootprintFileName = "seamless-cors.pac"
 
-type FootprintAdapter interface {
-	CurrentPACState() ([]platform.PACServiceState, error)
-	ClearPACIfMatches(expected []platform.PACServiceState) error
-}
-
 type FootprintInspection struct {
-	OwnedStates []platform.PACServiceState
+	OwnedSnapshots []ServiceSnapshot
 }
 
 func (i FootprintInspection) Needed() bool {
-	return len(i.OwnedStates) > 0
+	return len(i.OwnedSnapshots) > 0
 }
 
-func InspectFootprint(adapter interface {
-	CurrentPACState() ([]platform.PACServiceState, error)
+func InspectFootprint(ctx context.Context, settings interface {
+	Snapshot(context.Context) ([]ServiceSnapshot, error)
 }) (FootprintInspection, error) {
-	states, err := adapter.CurrentPACState()
+	states, err := settings.Snapshot(ctx)
 	if err != nil {
 		return FootprintInspection{}, fmt.Errorf("managed PAC footprint inspection failed: %w", err)
 	}
-	owned := make([]platform.PACServiceState, 0, len(states))
+	owned := make([]ServiceSnapshot, 0, len(states))
 	for _, state := range states {
-		if state.Enabled && IsOwnedURL(state.URL) {
+		if state.Enabled && IsOwnedURL(state.PACURL) {
 			owned = append(owned, state)
 		}
 	}
-	sort.Slice(owned, func(i, j int) bool { return owned[i].Name < owned[j].Name })
-	return FootprintInspection{OwnedStates: owned}, nil
+	sort.Slice(owned, func(i, j int) bool { return owned[i].ServiceName < owned[j].ServiceName })
+	return FootprintInspection{OwnedSnapshots: owned}, nil
 }
 
-func ClearFootprint(adapter FootprintAdapter) error {
-	inspection, err := InspectFootprint(adapter)
+func ClearFootprint(ctx context.Context, settings SystemSettings) error {
+	inspection, err := InspectFootprint(ctx, settings)
 	if err != nil {
 		return err
 	}
 	if !inspection.Needed() {
 		return nil
 	}
-	if err := adapter.ClearPACIfMatches(inspection.OwnedStates); err != nil {
+	if err := settings.ClearIfUnchanged(ctx, inspection.OwnedSnapshots); err != nil {
 		return fmt.Errorf("managed PAC footprint clear failed: %w", err)
 	}
-	after, err := InspectFootprint(adapter)
+	after, err := InspectFootprint(ctx, settings)
 	if err != nil {
 		return fmt.Errorf("managed PAC footprint verification failed: %w", err)
 	}
 	if after.Needed() {
-		services := make([]string, 0, len(after.OwnedStates))
-		for _, state := range after.OwnedStates {
-			services = append(services, state.Name)
+		services := make([]string, 0, len(after.OwnedSnapshots))
+		for _, state := range after.OwnedSnapshots {
+			services = append(services, state.ServiceName)
 		}
 		return fmt.Errorf("managed PAC footprint remains on services: %s", strings.Join(services, ", "))
 	}

@@ -17,8 +17,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"seamless-cors/internal/platform"
 )
 
 const (
@@ -31,12 +29,6 @@ const (
 	LeafCacheMaxAge = 24 * time.Hour
 )
 
-type TrustStore interface {
-	TrustedCAs() ([]platform.CARecord, error)
-	TrustCA(ctx context.Context, certPEM []byte) error
-	RemoveCAs(ctx context.Context, fingerprints []string) error
-}
-
 type Health string
 
 const (
@@ -47,7 +39,6 @@ const (
 	HealthInvalid            Health = "invalid"
 	HealthMultiple           Health = "multiple"
 	HealthMismatchedMaterial Health = "mismatched-material"
-	HealthUnsupported        Health = "unsupported"
 	HealthUnknown            Health = "unknown"
 )
 
@@ -72,7 +63,12 @@ type Authority struct {
 }
 
 func Inspect(dir string, store TrustStore) (Report, error) {
-	report, _, err := inspect(dir, store, false)
+	return InspectContext(context.Background(), dir, store)
+
+}
+
+func InspectContext(ctx context.Context, dir string, store TrustStore) (Report, error) {
+	report, _, err := inspect(ctx, dir, store, false)
 	return report, err
 }
 
@@ -90,7 +86,7 @@ func EnsureContext(ctx context.Context, dir string, store TrustStore) (*Authorit
 }
 
 func ensureLocked(ctx context.Context, dir string, store TrustStore) (*Authority, EnsureResult, error) {
-	report, authority, err := inspect(dir, store, true)
+	report, authority, err := inspect(ctx, dir, store, true)
 	if err != nil {
 		return nil, EnsureResult{Report: report}, err
 	}
@@ -127,7 +123,7 @@ func ensureLocked(ctx context.Context, dir string, store TrustStore) (*Authority
 }
 
 func reconcileCancelledEnsure(dir string, store TrustStore, cancellation error) (*Authority, EnsureResult, error) {
-	report, authority, err := inspect(dir, store, true)
+	report, authority, err := inspect(context.Background(), dir, store, true)
 	if err == nil && report.Health == HealthUsable {
 		return authority, ensureResult(authority, report, true), nil
 	}
@@ -161,12 +157,12 @@ func UninstallContext(ctx context.Context, dir string, store TrustStore) error {
 }
 
 func uninstallLocked(ctx context.Context, dir string, store TrustStore) error {
-	records, trustErr := store.TrustedCAs()
+	records, trustErr := store.TrustedCertificates(ctx)
 	var fingerprints []string
 	for _, record := range records {
-		fingerprints = append(fingerprints, record.SHA1)
+		fingerprints = append(fingerprints, record.Fingerprint)
 	}
-	removeErr := store.RemoveCAs(ctx, fingerprints)
+	removeErr := store.Remove(ctx, fingerprints)
 	fileErr := errors.Join(os.RemoveAll(dir), os.RemoveAll(stagingDir(dir)))
 	return errors.Join(trustErr, removeErr, fileErr)
 }
@@ -200,7 +196,7 @@ func LoadUsableContext(ctx context.Context, dir string, store TrustStore) (*Auth
 		return nil, Report{Health: HealthUnknown}, err
 	}
 	defer func() { _ = lease.release() }()
-	report, authority, err := inspect(dir, store, true)
+	report, authority, err := inspect(ctx, dir, store, true)
 	if err != nil {
 		return nil, report, err
 	}
@@ -228,8 +224,8 @@ func (a *Authority) TLSCertificate() (tls.Certificate, error) {
 	return cert, nil
 }
 
-func inspect(dir string, store TrustStore, repairPermissions bool) (Report, *Authority, error) {
-	records, err := store.TrustedCAs()
+func inspect(ctx context.Context, dir string, store TrustStore, repairPermissions bool) (Report, *Authority, error) {
+	records, err := store.TrustedCertificates(ctx)
 	if err != nil {
 		return Report{Health: HealthUnknown}, nil, err
 	}
@@ -248,7 +244,7 @@ func inspect(dir string, store TrustStore, repairPermissions bool) (Report, *Aut
 		return Report{Health: HealthInvalid}, nil, nil
 	}
 	fingerprint, err := SHA1Fingerprint(authority.CertPEM)
-	if err != nil || fingerprint != records[0].SHA1 {
+	if err != nil || fingerprint != records[0].Fingerprint {
 		return Report{Health: HealthMismatchedMaterial}, nil, nil
 	}
 	now := time.Now()
@@ -312,7 +308,7 @@ func createFresh(ctx context.Context, dir string, store TrustStore) (*Authority,
 	if err := os.WriteFile(stagedKeyPath, keyPEM, 0o600); err != nil {
 		return nil, err
 	}
-	if err := store.TrustCA(ctx, certPEM); err != nil {
+	if err := store.Trust(ctx, certPEM); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(staging, dir); err != nil {

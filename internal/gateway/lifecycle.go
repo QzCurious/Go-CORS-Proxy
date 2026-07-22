@@ -11,7 +11,6 @@ import (
 
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/platform"
 	"seamless-cors/internal/userca"
 )
 
@@ -253,22 +252,14 @@ const (
 	CAHealthInvalid            CAHealthStatus = "invalid"
 	CAHealthMultiple           CAHealthStatus = "multiple"
 	CAHealthMismatchedMaterial CAHealthStatus = "mismatched-material"
-	CAHealthUnsupported        CAHealthStatus = "unsupported"
 	CAHealthUnknown            CAHealthStatus = "unknown"
 )
-
-type CheckResult struct {
-	Platform          string                    `json:"platform"`
-	Supported         bool                      `json:"supported"`
-	PACManagement     platform.CapabilityStatus `json:"pacManagement"`
-	CATrustManagement platform.CapabilityStatus `json:"caTrustManagement"`
-	RuntimeCleanup    platform.CapabilityStatus `json:"runtimeCleanup"`
-}
 
 type lifecycle struct {
 	mu                   sync.Mutex
 	caAdmissionMu        sync.Mutex
-	adapter              platform.Adapter
+	managedPACSettings   managedpac.SystemSettings
+	userCATrustStore     userca.TrustStore
 	coord                *coordinator
 	runtimeDir           string
 	routerListen         string
@@ -297,10 +288,7 @@ const (
 	runtimePhaseRunning  runtimePhase = "running"
 )
 
-func newLifecycle(adapter platform.Adapter, coord *coordinator, routerListen string) (*lifecycle, error) {
-	if adapter == nil {
-		adapter = platform.CurrentAdapter
-	}
+func newLifecycle(settings managedpac.SystemSettings, trustStore userca.TrustStore, coord *coordinator, routerListen string) (*lifecycle, error) {
 	if coord == nil {
 		var err error
 		coord, err = defaultCoordinator()
@@ -309,11 +297,12 @@ func newLifecycle(adapter platform.Adapter, coord *coordinator, routerListen str
 		}
 	}
 	return &lifecycle{
-		adapter:      adapter,
-		coord:        coord,
-		runtimeDir:   coord.RuntimeDirPath(),
-		routerListen: routerListen,
-		fatal:        make(chan error, 1),
+		managedPACSettings: settings,
+		userCATrustStore:   trustStore,
+		coord:              coord,
+		runtimeDir:         coord.RuntimeDirPath(),
+		routerListen:       routerListen,
+		fatal:              make(chan error, 1),
 	}, nil
 }
 
@@ -381,7 +370,7 @@ func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (Sta
 	return startSequence{lifecycle: f}.Execute(startCtx, request)
 }
 
-func (f *lifecycle) Stop() (StopResult, error) {
+func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	var warnings []CommandWarning
 	f.mu.Lock()
 	startCancel := f.startCancel
@@ -409,7 +398,7 @@ func (f *lifecycle) Stop() (StopResult, error) {
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
 		ownedCache = &ownerCache
 	}
-	cleanupFailures := cleanGatewayFootprint(f.adapter, f.coord, ownedCache)
+	cleanupFailures := cleanGatewayFootprint(ctx, f.managedPACSettings, f.coord, ownedCache)
 	if len(cleanupFailures) > 0 {
 		return StopResult{
 			Kind:            StopResultCleanupFailed,
@@ -420,7 +409,7 @@ func (f *lifecycle) Stop() (StopResult, error) {
 	return StopResult{Kind: StopResultStopped, Warnings: warnings}, nil
 }
 
-func (f *lifecycle) Status(stale bool) (StatusResult, error) {
+func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error) {
 	f.mu.Lock()
 	active := f.runtime
 	ownerCache := f.ownerCache
@@ -433,12 +422,12 @@ func (f *lifecycle) Status(stale bool) (StatusResult, error) {
 	f.mu.Unlock()
 	result := StatusResult{
 		Kind:        GatewayStatusNotRunning,
-		Cleanup:     f.cleanupStatus(stale, active != nil, ownerCache),
-		InstalledCA: f.installedCAStatus(),
+		Cleanup:     f.cleanupStatus(ctx, stale, active != nil, ownerCache),
+		InstalledCA: f.installedCAStatus(ctx),
 	}
 	if active != nil {
 		if phase == runtimePhaseRunning {
-			if err := pac.RequireLease(); err != nil {
+			if err := pac.RequireLease(ctx); err != nil {
 				f.reportFatalRuntimeError(active, err)
 				return StatusResult{}, err
 			}
@@ -470,7 +459,7 @@ func (f *lifecycle) Status(stale bool) (StatusResult, error) {
 	return result, nil
 }
 
-func (f *lifecycle) Install() (InstallResult, error) {
+func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	f.caAdmissionMu.Lock()
 	defer f.caAdmissionMu.Unlock()
 	caDir, err := liveconfig.CADir()
@@ -478,7 +467,7 @@ func (f *lifecycle) Install() (InstallResult, error) {
 		return InstallResult{}, err
 	}
 	if f.activeRuntimeCATrusted() {
-		report, inspectErr := userca.Inspect(caDir, f.adapter)
+		report, inspectErr := userca.InspectContext(ctx, caDir, f.userCATrustStore)
 		if inspectErr != nil {
 			return InstallResult{}, inspectErr
 		}
@@ -491,7 +480,7 @@ func (f *lifecycle) Install() (InstallResult, error) {
 		}
 		return InstallResult{Kind: InstallResultBlockedRuntimeActive}, nil
 	}
-	_, result, err := userca.Ensure(caDir, f.adapter)
+	_, result, err := userca.EnsureContext(ctx, caDir, f.userCATrustStore)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -506,7 +495,7 @@ func (f *lifecycle) Install() (InstallResult, error) {
 	}, nil
 }
 
-func (f *lifecycle) Uninstall() (UninstallResult, error) {
+func (f *lifecycle) Uninstall(ctx context.Context) (UninstallResult, error) {
 	f.caAdmissionMu.Lock()
 	defer f.caAdmissionMu.Unlock()
 	if f.activeRuntimeCATrusted() {
@@ -516,11 +505,11 @@ func (f *lifecycle) Uninstall() (UninstallResult, error) {
 	if err != nil {
 		return UninstallResult{}, err
 	}
-	before, _ := userca.Inspect(caDir, f.adapter)
-	if err := userca.Uninstall(caDir, f.adapter); err != nil {
+	before, _ := userca.InspectContext(ctx, caDir, f.userCATrustStore)
+	if err := userca.UninstallContext(ctx, caDir, f.userCATrustStore); err != nil {
 		return UninstallResult{}, err
 	}
-	after, err := userca.Inspect(caDir, f.adapter)
+	after, err := userca.InspectContext(ctx, caDir, f.userCATrustStore)
 	if err != nil {
 		return UninstallResult{}, err
 	}
@@ -539,24 +528,13 @@ func (f *lifecycle) activeRuntimeCATrusted() bool {
 	return f.runtime != nil && f.runtime.live.CATrusted()
 }
 
-func (f *lifecycle) Check() CheckResult {
-	report := f.adapter.Capabilities()
-	return CheckResult{
-		Platform:          report.Platform,
-		Supported:         report.Supported,
-		PACManagement:     report.PACManagement,
-		CATrustManagement: report.CATrustManagement,
-		RuntimeCleanup:    report.RuntimeCleanup,
-	}
-}
-
 func (f *lifecycle) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case nextURL := <-active.engine.PACURLUpdates():
-			if err := active.pac.Refresh(nextURL); err != nil {
+			if err := active.pac.Refresh(ctx, nextURL); err != nil {
 				f.reportFatalRuntimeError(active, err)
 				return
 			}
@@ -577,12 +555,12 @@ func (f *lifecycle) reportFatalRuntimeError(active *activeRuntime, err error) {
 }
 
 func (f *lifecycle) pacReplacementConsentDetail(assessment managedpac.Assessment) *PACReplacementConsentDetail {
-	out := make([]ManagedPACServiceState, 0, len(assessment.States))
-	for _, state := range assessment.States {
+	out := make([]ManagedPACServiceState, 0, len(assessment.Services))
+	for _, state := range assessment.Services {
 		out = append(out, ManagedPACServiceState{
 			ServiceName:                state.ServiceName,
 			Enabled:                    state.Enabled,
-			URL:                        state.URL,
+			URL:                        state.PACURL,
 			Ownership:                  pacOwnership(state.Ownership),
 			ReplacementConsentRequired: state.Ownership == managedpac.OwnershipForeign,
 		})
@@ -590,18 +568,18 @@ func (f *lifecycle) pacReplacementConsentDetail(assessment managedpac.Assessment
 	return &PACReplacementConsentDetail{
 		CurrentPACState: out,
 		CleanupMode:     CleanupModeNoPACRestoration,
-		Fingerprint:     pacConsentFingerprint(assessment.States),
+		Fingerprint:     pacConsentFingerprint(assessment.Services),
 	}
 }
 
-func pacConsentFingerprint(states []managedpac.ServiceState) PACConsentFingerprint {
+func pacConsentFingerprint(states []managedpac.ServiceAssessment) PACConsentFingerprint {
 	h := sha256.New()
 	var size [8]byte
 	for _, state := range states {
 		if state.Ownership != managedpac.OwnershipForeign {
 			continue
 		}
-		for _, value := range []string{state.ServiceName, state.URL} {
+		for _, value := range []string{state.ServiceName, state.PACURL} {
 			binary.BigEndian.PutUint64(size[:], uint64(len(value)))
 			_, _ = h.Write(size[:])
 			_, _ = h.Write([]byte(value))
@@ -628,19 +606,16 @@ func pacOwnership(ownership managedpac.Ownership) PACOwnership {
 	}
 }
 
-func (f *lifecycle) cleanupStatus(stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
-	return inspectGatewayFootprint(f.adapter, f.coord, stale, runtimeActive, ownerCache)
+func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
+	return inspectGatewayFootprint(ctx, f.managedPACSettings, f.coord, stale, runtimeActive, ownerCache)
 }
 
-func (f *lifecycle) installedCAStatus() InstalledCAStatusDetail {
-	if f.adapter.Capabilities().CATrustManagement != platform.CapabilitySupported {
-		return InstalledCAStatusDetail{Health: CAHealthUnsupported}
-	}
+func (f *lifecycle) installedCAStatus(ctx context.Context) InstalledCAStatusDetail {
 	caDir, err := liveconfig.CADir()
 	if err != nil {
 		return InstalledCAStatusDetail{Health: CAHealthUnknown}
 	}
-	report, err := userca.Inspect(caDir, f.adapter)
+	report, err := userca.InspectContext(ctx, caDir, f.userCATrustStore)
 	if err != nil {
 		return InstalledCAStatusDetail{Health: CAHealthUnknown}
 	}
@@ -663,8 +638,6 @@ func caHealthStatus(health userca.Health) CAHealthStatus {
 		return CAHealthMultiple
 	case userca.HealthMismatchedMaterial:
 		return CAHealthMismatchedMaterial
-	case userca.HealthUnsupported:
-		return CAHealthUnsupported
 	default:
 		return CAHealthUnknown
 	}

@@ -1,22 +1,22 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 
 	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/platform"
 )
 
-func cleanManagedPAC(adapter managedpac.FootprintAdapter) *CleanupFailureDetail {
-	if err := managedpac.ClearFootprint(adapter); err != nil {
+func cleanManagedPAC(ctx context.Context, settings managedpac.SystemSettings) *CleanupFailureDetail {
+	if err := managedpac.ClearFootprint(ctx, settings); err != nil {
 		return &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
 	return nil
 }
 
-func cleanGatewayFootprint(adapter managedpac.FootprintAdapter, coord *coordinator, ownedCache *stateCache) []CleanupFailureDetail {
+func cleanGatewayFootprint(ctx context.Context, settings managedpac.SystemSettings, coord *coordinator, ownedCache *stateCache) []CleanupFailureDetail {
 	var failures []CleanupFailureDetail
-	if failure := cleanManagedPAC(adapter); failure != nil {
+	if failure := cleanManagedPAC(ctx, settings); failure != nil {
 		failures = append(failures, *failure)
 	}
 	if ownedCache != nil && len(failures) > 0 {
@@ -37,9 +37,7 @@ func cleanGatewayFootprint(adapter managedpac.FootprintAdapter, coord *coordinat
 	return failures
 }
 
-func inspectGatewayFootprint(adapter interface {
-	CurrentPACState() ([]platform.PACServiceState, error)
-}, coord *coordinator, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
+func inspectGatewayFootprint(ctx context.Context, settings managedpac.SystemSettings, coord *coordinator, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
 	cacheState := CleanupStatusNone
 	ownerCacheActive := ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" && coord.Owns(ownerCache)
 	if stale || (coord.Exists() && !ownerCacheActive) {
@@ -48,7 +46,7 @@ func inspectGatewayFootprint(adapter interface {
 
 	pac := CleanupSubjectStatusDetail{Subject: CleanupSubjectManagedPAC, State: CleanupStatusNone}
 	if !runtimeActive {
-		inspection, err := managedpac.InspectFootprint(adapter)
+		inspection, err := managedpac.InspectFootprint(ctx, settings)
 		if err != nil {
 			pac.State = CleanupStatusUnknown
 			pac.Diagnostic = err.Error()

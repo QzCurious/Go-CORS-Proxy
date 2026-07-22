@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -34,7 +35,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		HTTPRouterListen: server.Listener.Addr().String(),
 		Token:            "owner-token",
 	})
-	result, err := client.Start(StartRequest{
+	result, err := client.Start(context.Background(), StartRequest{
 		PACReplacementConsent: &PACReplacementConsentInput{Accepted: true, Fingerprint: "foreign-state-v1"},
 	})
 	if err != nil {
@@ -54,7 +55,7 @@ func TestStartFailureReturnsCompletedCAEnsure(t *testing.T) {
 	defer server.Close()
 	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
 
-	result, err := client.Start(StartRequest{})
+	result, err := client.Start(context.Background(), StartRequest{})
 	var startErr *StartError
 	if !errors.As(err, &startErr) {
 		t.Fatalf("error = %v, want StartError", err)
@@ -74,7 +75,7 @@ func TestStatusReportsHTTPFailure(t *testing.T) {
 		HTTPRouterListen: server.Listener.Addr().String(),
 		Token:            "bad-token",
 	})
-	if _, err := client.Status(); err == nil {
+	if _, err := client.Status(context.Background()); err == nil {
 		t.Fatal("expected status error")
 	}
 }

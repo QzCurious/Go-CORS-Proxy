@@ -1,6 +1,6 @@
 //go:build darwin
 
-package platform
+package userca
 
 import (
 	"context"
@@ -55,18 +55,18 @@ func (f *fakeRunner) run(ctx context.Context, name string, args ...string) ([]by
 func TestDarwinCATrustMutationsObserveCancellation(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		run  func(context.Context, *DarwinAdapter) error
+		run  func(context.Context, *darwinTrustStore) error
 	}{
 		{
 			name: "trust",
-			run: func(ctx context.Context, adapter *DarwinAdapter) error {
-				return adapter.TrustCA(ctx, testCertificate(t, installedCACommonName, true))
+			run: func(ctx context.Context, adapter *darwinTrustStore) error {
+				return adapter.Trust(ctx, testCertificate(t, CommonName, true))
 			},
 		},
 		{
 			name: "remove",
-			run: func(ctx context.Context, adapter *DarwinAdapter) error {
-				return adapter.RemoveCAs(ctx, []string{"ABCDEF"})
+			run: func(ctx context.Context, adapter *darwinTrustStore) error {
+				return adapter.Remove(ctx, []string{"ABCDEF"})
 			},
 		},
 	} {
@@ -77,7 +77,7 @@ func TestDarwinCATrustMutationsObserveCancellation(t *testing.T) {
 				<-ctx.Done()
 				return nil, ctx.Err()
 			}}
-			adapter := &DarwinAdapter{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+			adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() { done <- test.run(ctx, adapter) }()
@@ -95,107 +95,12 @@ func TestDarwinCATrustMutationsObserveCancellation(t *testing.T) {
 	}
 }
 
-func TestDarwinAdapterReportsAbsentServiceAndPreservesPartialResults(t *testing.T) {
-	runner := &fakeRunner{}
-	runner.runFunc = func(_ string, args ...string) ([]byte, error) {
-		switch args[1] {
-		case "Ethernet":
-			return nil, nil
-		case "Missing VPN":
-			return []byte("Missing VPN is not a recognized network service."), errors.New("exit status 1")
-		default:
-			return []byte("permission denied"), errors.New("exit status 1")
-		}
-	}
-	adapter := &DarwinAdapter{runner: runner}
-
-	updates, err := adapter.ApplyPAC("http://127.0.0.1:8079/seamless-cors.pac", []string{"Ethernet", "Missing VPN", "Wi-Fi"})
-
-	if err == nil || !strings.Contains(err.Error(), "permission denied") {
-		t.Fatalf("apply error = %v", err)
-	}
-	want := []PACServiceUpdate{
-		{ServiceName: "Ethernet", Outcome: PACApplyOutcomeApplied},
-		{ServiceName: "Missing VPN", Outcome: PACApplyOutcomeAbsent},
-	}
-	if len(updates) != len(want) {
-		t.Fatalf("updates = %#v", updates)
-	}
-	for i := range want {
-		if updates[i] != want[i] {
-			t.Fatalf("updates[%d] = %#v, want %#v", i, updates[i], want[i])
-		}
-	}
-}
-
-func TestDarwinAdapterInstallsPACDirectlyWithSetAutoProxyURL(t *testing.T) {
-	runner := &fakeRunner{}
-	adapter := &DarwinAdapter{runner: runner}
-
-	if _, err := adapter.ApplyPAC("http://127.0.0.1:8079/seamless-cors.pac", []string{"Wi-Fi"}); err != nil {
-		t.Fatal(err)
-	}
-
-	joined := strings.Join(runner.calls, "\n")
-	want := "networksetup -setautoproxyurl Wi-Fi http://127.0.0.1:8079/seamless-cors.pac"
-	if !strings.Contains(joined, want) {
-		t.Fatalf("missing call %q in:\n%s", want, joined)
-	}
-	for _, unwanted := range []string{"-listallnetworkservices", "-getautoproxyurl", "-setautoproxystate"} {
-		if strings.Contains(joined, unwanted) {
-			t.Fatalf("PAC installation should not call %q:\n%s", unwanted, joined)
-		}
-	}
-}
-
-func TestDarwinAdapterClearsOnlyMatchingPACState(t *testing.T) {
-	runner := &fakeRunner{}
-	adapter := &DarwinAdapter{runner: runner}
-
-	if err := adapter.ClearPACIfMatches([]PACServiceState{{Name: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}}); err != nil {
-		t.Fatal(err)
-	}
-
-	joined := strings.Join(runner.calls, "\n")
-	if strings.Contains(joined, "-setautoproxystate Wi-Fi off") {
-		t.Fatalf("foreign PAC should not be cleared:\n%s", joined)
-	}
-}
-
-func TestDarwinAdapterClearsMatchingPACStateAcrossServices(t *testing.T) {
-	runner := &fakeRunner{
-		autoProxyOut: []byte("URL: http://127.0.0.1:52144/nested/seamless-cors.pac\nEnabled: Yes\n"),
-	}
-	adapter := &DarwinAdapter{runner: runner}
-
-	expected := []PACServiceState{
-		{Name: "Wi-Fi", URL: "http://127.0.0.1:52144/nested/seamless-cors.pac", Enabled: true},
-		{Name: "Thunderbolt Bridge", URL: "http://127.0.0.1:52144/nested/seamless-cors.pac", Enabled: true},
-	}
-	if err := adapter.ClearPACIfMatches(expected); err != nil {
-		t.Fatal(err)
-	}
-
-	joined := strings.Join(runner.calls, "\n")
-	for _, want := range []string{
-		"networksetup -setautoproxystate Wi-Fi off",
-		"networksetup -setautoproxystate Thunderbolt Bridge off",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("missing call %q in:\n%s", want, joined)
-		}
-	}
-	if strings.Contains(joined, "-setautoproxyurl") {
-		t.Fatalf("cleanup should not attempt to blank PAC URLs:\n%s", joined)
-	}
-}
-
-func TestDarwinAdapterMapsTrustApprovalCancellation(t *testing.T) {
+func TestDarwinTrustStoreMapsTrustApprovalCancellation(t *testing.T) {
 	runner := &fakeRunner{
 		out: []byte("SecTrustSettingsSetTrustSettings: The authorization was canceled by the user."),
 		err: errors.New("exit status 1"),
 	}
-	adapter := &DarwinAdapter{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 	certPEM := []byte(`-----BEGIN CERTIFICATE-----
 MIIBhTCCASugAwIBAgIBATAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlkZXYtdGVz
 dDAeFw0yNjAxMDEwMDAwMDBaFw0yNjAxMDIwMDAwMDBaMBQxEjAQBgNVBAMTCWRl
@@ -208,14 +113,14 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 -----END CERTIFICATE-----
 `)
 
-	if err := adapter.TrustCA(context.Background(), certPEM); !errors.Is(err, ErrTrustApprovalDenied) {
+	if err := adapter.Trust(context.Background(), certPEM); !errors.Is(err, ErrApprovalDenied) {
 		t.Fatalf("trust error = %v", err)
 	}
 }
 
-func TestDarwinAdapterTrustsAndRemovesInstalledCAInUserKeychain(t *testing.T) {
-	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, installedCACommonName, true))}
-	adapter := &DarwinAdapter{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+func TestDarwinTrustStoreTrustsAndRemovesInstalledCAInUserKeychain(t *testing.T) {
+	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, CommonName, true))}
+	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 	certPEM := []byte(`-----BEGIN CERTIFICATE-----
 MIIBhTCCASugAwIBAgIBATAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlkZXYtdGVz
 dDAeFw0yNjAxMDEwMDAwMDBaFw0yNjAxMDIwMDAwMDBaMBQxEjAQBgNVBAMTCWRl
@@ -228,10 +133,14 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 -----END CERTIFICATE-----
 `)
 
-	if err := adapter.TrustCA(context.Background(), certPEM); err != nil {
+	if err := adapter.Trust(context.Background(), certPEM); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.RemoveCAs(context.Background(), nil); err != nil {
+	certificates, err := adapter.TrustedCertificates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Remove(context.Background(), []string{certificates[0].Fingerprint}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -249,12 +158,16 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 	}
 }
 
-func TestDarwinAdapterDoesNotRemoveSameNameNonCAFootprint(t *testing.T) {
-	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, installedCACommonName, false))}
-	adapter := &DarwinAdapter{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+func TestDarwinTrustStoreDoesNotRemoveSameNameNonCAFootprint(t *testing.T) {
+	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, CommonName, false))}
+	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 
-	if err := adapter.RemoveCAs(context.Background(), nil); err != nil {
+	certificates, err := adapter.TrustedCertificates(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(certificates) != 0 {
+		t.Fatalf("trusted certificates = %#v, want none", certificates)
 	}
 
 	joined := strings.Join(runner.calls, "\n")

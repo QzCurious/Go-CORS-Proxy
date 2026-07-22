@@ -13,31 +13,43 @@ import (
 
 	"seamless-cors/internal/gateway"
 	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/platform"
+	"seamless-cors/internal/userca"
 )
 
 var ErrPACReplacementConsentDeclined = errors.New("PAC replacement consent declined")
 
+type startCommand func(context.Context, gateway.StartHooks) (gateway.StartResult, error)
+type serveCommand func(context.Context, func()) error
+type stopCommand func(context.Context) (gateway.StopResult, error)
+type statusCommand func(context.Context) (gateway.StatusResult, error)
+type installCACommand func(context.Context) (gateway.InstallResult, error)
+type uninstallCACommand func(context.Context) (gateway.UninstallResult, error)
+
 func Start(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return StartWithContextAndInput(ctx, os.Stdin, stdout, platform.CurrentAdapter)
+	return StartWithContextAndInput(ctx, os.Stdin, stdout)
 }
 
-func StartWithContext(ctx context.Context, stdout io.Writer, adapter platform.Adapter) error {
-	return StartWithContextAndInput(ctx, nil, stdout, adapter)
+func StartWithContext(ctx context.Context, stdout io.Writer) error {
+	return StartWithContextAndInput(ctx, nil, stdout)
 }
 
-func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer, adapter platform.Adapter) error {
+func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	return startWithContextAndInput(ctx, stdin, stdout, gateway.Start)
+}
+
+func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer, command startCommand) error {
 	stdout = writerOrDiscard(stdout)
-	result, err := gateway.Start(ctx, adapter, gateway.StartHooks{
+	hooks := gateway.StartHooks{
 		ConfirmPACReplacement: func(detail gateway.PACReplacementConsentDetail) (bool, error) {
 			return confirmPACReplacementConsent(stdin, stdout, &detail)
 		},
 		Started: func(result gateway.StartResult) {
 			renderStartResult(stdout, result)
 		},
-	})
+	}
+	result, err := command(ctx, hooks)
 	if result.Kind == gateway.StartResultOwnerAlreadyRunning {
 		fmt.Fprintln(stdout, "gateway owner already running")
 		return fmt.Errorf("gateway owner already running")
@@ -54,46 +66,46 @@ func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 func Serve(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return ServeWithContext(ctx, stdout, platform.CurrentAdapter)
+	return ServeWithContext(ctx, stdout)
 }
 
-func ServeWithContext(ctx context.Context, stdout io.Writer, adapter platform.Adapter) error {
+func ServeWithContext(ctx context.Context, stdout io.Writer) error {
+	return serveWithContext(ctx, stdout, gateway.Serve)
+}
+
+func serveWithContext(ctx context.Context, stdout io.Writer, command serveCommand) error {
 	stdout = writerOrDiscard(stdout)
-	return gateway.Serve(ctx, adapter, func() {
+	ready := func() {
 		fmt.Fprintln(stdout, "gateway owner running")
-	})
-}
-
-func Check(stdout, _ io.Writer) error {
-	writeCapabilityReport(stdout, gateway.Check(platform.CurrentAdapter))
-	return nil
+	}
+	return command(ctx, ready)
 }
 
 func Install(stdout, _ io.Writer) error {
-	adapter := platform.CurrentAdapter
-	if err := requireSupported(adapter.Capabilities()); err != nil {
-		return err
-	}
-	return InstallCA(stdout, adapter)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return InstallCA(ctx, stdout)
 }
 
 func Uninstall(stdout, _ io.Writer) error {
-	adapter := platform.CurrentAdapter
-	report := adapter.Capabilities()
-	if report.CATrustManagement != platform.CapabilitySupported {
-		return fmt.Errorf("CA trust management is unsupported on this platform")
-	}
-	return UninstallCA(stdout, adapter)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return UninstallCA(ctx, stdout)
 }
 
 func Stop(stdout, _ io.Writer) error {
-	return stop(stdout, platform.CurrentAdapter)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return stopGateway(ctx, stdout)
 }
 
-func stop(stdout io.Writer, adapter platform.Adapter) error {
+func stopGateway(ctx context.Context, stdout io.Writer) error {
+	return stopGatewayWithCommand(ctx, stdout, gateway.Stop)
+}
+
+func stopGatewayWithCommand(ctx context.Context, stdout io.Writer, command stopCommand) error {
 	stdout = writerOrDiscard(stdout)
-	adapter = adapterOrDefault(adapter)
-	result, err := gateway.Stop(adapter)
+	result, err := command(ctx)
 	if err != nil {
 		return err
 	}
@@ -105,13 +117,18 @@ func stop(stdout io.Writer, adapter platform.Adapter) error {
 }
 
 func Status(stdout, _ io.Writer) error {
-	return status(stdout, platform.CurrentAdapter)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return status(ctx, stdout)
 }
 
-func status(stdout io.Writer, adapter platform.Adapter) error {
+func status(ctx context.Context, stdout io.Writer) error {
+	return statusWithCommand(ctx, stdout, gateway.Status)
+}
+
+func statusWithCommand(ctx context.Context, stdout io.Writer, command statusCommand) error {
 	stdout = writerOrDiscard(stdout)
-	adapter = adapterOrDefault(adapter)
-	result, err := gateway.Status(adapter)
+	result, err := command(ctx)
 	if err != nil {
 		return err
 	}
@@ -122,12 +139,15 @@ func status(stdout io.Writer, adapter platform.Adapter) error {
 	return nil
 }
 
-func InstallCA(stdout io.Writer, adapter platform.Adapter) error {
+func InstallCA(ctx context.Context, stdout io.Writer) error {
+	return installCAWithCommand(ctx, stdout, gateway.InstallCA)
+}
+
+func installCAWithCommand(ctx context.Context, stdout io.Writer, command installCACommand) error {
 	stdout = writerOrDiscard(stdout)
-	adapter = adapterOrDefault(adapter)
-	result, err := gateway.InstallCA(adapter)
+	result, err := command(ctx)
 	if err != nil {
-		if errors.Is(err, platform.ErrTrustApprovalDenied) {
+		if errors.Is(err, userca.ErrApprovalDenied) {
 			fmt.Fprintln(stdout, "Certificate trust was not approved.")
 			fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
 		}
@@ -140,10 +160,13 @@ func InstallCA(stdout io.Writer, adapter platform.Adapter) error {
 	return nil
 }
 
-func UninstallCA(stdout io.Writer, adapter platform.Adapter) error {
+func UninstallCA(ctx context.Context, stdout io.Writer) error {
+	return uninstallCAWithCommand(ctx, stdout, gateway.UninstallCA)
+}
+
+func uninstallCAWithCommand(ctx context.Context, stdout io.Writer, command uninstallCACommand) error {
 	stdout = writerOrDiscard(stdout)
-	adapter = adapterOrDefault(adapter)
-	result, err := gateway.UninstallCA(adapter)
+	result, err := command(ctx)
 	if err != nil {
 		return err
 	}
@@ -154,27 +177,9 @@ func UninstallCA(stdout io.Writer, adapter platform.Adapter) error {
 	return nil
 }
 
-func requireSupported(report platform.CapabilityReport) error {
-	if report.Supported &&
-		report.PACManagement == platform.CapabilitySupported &&
-		report.CATrustManagement == platform.CapabilitySupported &&
-		report.RuntimeCleanup == platform.CapabilitySupported {
-		return nil
-	}
-	return fmt.Errorf("platform unsupported: run `seamless-cors check` for details")
-}
-
-func writeCapabilityReport(stdout io.Writer, report gateway.CheckResult) {
-	fmt.Fprintf(stdout, "platform: %s\n", report.Platform)
-	fmt.Fprintf(stdout, "supported: %t\n", report.Supported)
-	fmt.Fprintf(stdout, "pac-management: %s\n", report.PACManagement)
-	fmt.Fprintf(stdout, "ca-trust-management: %s\n", report.CATrustManagement)
-	fmt.Fprintf(stdout, "runtime-cleanup: %s\n", report.RuntimeCleanup)
-}
-
 type pacReplacementConsentRequest struct {
 	ManagedPAC      bool
-	CurrentPACState []platform.PACServiceState
+	CurrentPACState []managedpac.ServiceSnapshot
 }
 
 func (r pacReplacementConsentRequest) needed() bool {
@@ -245,15 +250,15 @@ func readYes(stdin io.Reader) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-func pacStatesForPrompt(states []platform.PACServiceState) []gateway.ManagedPACServiceState {
+func pacStatesForPrompt(states []managedpac.ServiceSnapshot) []gateway.ManagedPACServiceState {
 	out := make([]gateway.ManagedPACServiceState, 0, len(states))
 	for _, state := range states {
 		out = append(out, gateway.ManagedPACServiceState{
-			ServiceName:                state.Name,
+			ServiceName:                state.ServiceName,
 			Enabled:                    state.Enabled,
-			URL:                        state.URL,
-			Ownership:                  pacOwnershipForPrompt(state.URL),
-			ReplacementConsentRequired: pacOwnershipForPrompt(state.URL) == gateway.PACOwnershipForeign,
+			URL:                        state.PACURL,
+			Ownership:                  pacOwnershipForPrompt(state.PACURL),
+			ReplacementConsentRequired: pacOwnershipForPrompt(state.PACURL) == gateway.PACOwnershipForeign,
 		})
 	}
 	return out
@@ -411,11 +416,4 @@ func writerOrDiscard(stdout io.Writer) io.Writer {
 		return io.Discard
 	}
 	return stdout
-}
-
-func adapterOrDefault(adapter platform.Adapter) platform.Adapter {
-	if adapter == nil {
-		return platform.CurrentAdapter
-	}
-	return adapter
 }

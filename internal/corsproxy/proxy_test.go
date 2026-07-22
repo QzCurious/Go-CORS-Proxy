@@ -9,11 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"seamless-cors/internal/userca"
 	"sync/atomic"
 	"testing"
-
-	"seamless-cors/internal/platform"
-	"seamless-cors/internal/userca"
 )
 
 func TestHTTPProxyForwardsRequestsAndRepairsAllStatuses(t *testing.T) {
@@ -220,14 +218,14 @@ func trustedProxyServer(t *testing.T, upstreamClient *http.Client) (*httptest.Se
 }
 
 type testTrustStore struct {
-	records []platform.CARecord
+	records []userca.TrustedCertificate
 }
 
-func (s *testTrustStore) TrustedCAs() ([]platform.CARecord, error) {
-	return append([]platform.CARecord(nil), s.records...), nil
+func (s *testTrustStore) TrustedCertificates(context.Context) ([]userca.TrustedCertificate, error) {
+	return append([]userca.TrustedCertificate(nil), s.records...), nil
 }
 
-func (s *testTrustStore) TrustCA(_ context.Context, certPEM []byte) error {
+func (s *testTrustStore) Trust(_ context.Context, certPEM []byte) error {
 	fingerprint, err := userca.SHA1Fingerprint(certPEM)
 	if err != nil {
 		return err
@@ -237,11 +235,11 @@ func (s *testTrustStore) TrustCA(_ context.Context, certPEM []byte) error {
 	if err != nil {
 		return err
 	}
-	s.records = []platform.CARecord{{SHA1: fingerprint, CertPEM: certPEM, NotAfter: cert.NotAfter}}
+	s.records = []userca.TrustedCertificate{{Fingerprint: fingerprint, CertificatePEM: certPEM, ExpiresAt: cert.NotAfter}}
 	return nil
 }
 
-func (s *testTrustStore) RemoveCAs(context.Context, []string) error {
+func (s *testTrustStore) Remove(context.Context, []string) error {
 	s.records = nil
 	return nil
 }

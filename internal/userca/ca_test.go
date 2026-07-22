@@ -11,12 +11,10 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"seamless-cors/internal/platform"
 )
 
 type fakeTrustStore struct {
-	records []platform.CARecord
+	records []TrustedCertificate
 	trusted int
 	removed int
 }
@@ -25,9 +23,11 @@ type crashingTrustStore struct {
 	marker string
 }
 
-func (f crashingTrustStore) TrustedCAs() ([]platform.CARecord, error)  { return nil, nil }
-func (f crashingTrustStore) RemoveCAs(context.Context, []string) error { return nil }
-func (f crashingTrustStore) TrustCA(context.Context, []byte) error {
+func (f crashingTrustStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
+	return nil, nil
+}
+func (f crashingTrustStore) Remove(context.Context, []string) error { return nil }
+func (f crashingTrustStore) Trust(context.Context, []byte) error {
 	if err := os.WriteFile(f.marker, []byte("holding"), 0o600); err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func TestCAMutationLeaseIsReleasedWhenHolderProcessExits(t *testing.T) {
 
 type blockingTrustStore struct {
 	mu                    sync.Mutex
-	records               []platform.CARecord
+	records               []TrustedCertificate
 	trustCalls            int
 	trustEntered          chan struct{}
 	releaseTrust          chan struct{}
@@ -88,13 +88,13 @@ type blockingTrustStore struct {
 	completeTrustOnCancel bool
 }
 
-func (f *blockingTrustStore) TrustedCAs() ([]platform.CARecord, error) {
+func (f *blockingTrustStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]platform.CARecord(nil), f.records...), nil
+	return append([]TrustedCertificate(nil), f.records...), nil
 }
 
-func (f *blockingTrustStore) TrustCA(ctx context.Context, certPEM []byte) error {
+func (f *blockingTrustStore) Trust(ctx context.Context, certPEM []byte) error {
 	f.mu.Lock()
 	f.trustCalls++
 	f.mu.Unlock()
@@ -119,7 +119,7 @@ func (f *blockingTrustStore) TrustCA(ctx context.Context, certPEM []byte) error 
 		return err
 	}
 	f.mu.Lock()
-	f.records = []platform.CARecord{{SHA1: fingerprint, CertPEM: certPEM, NotAfter: cert.NotAfter}}
+	f.records = []TrustedCertificate{{Fingerprint: fingerprint, CertificatePEM: certPEM, ExpiresAt: cert.NotAfter}}
 	err = f.trustErr
 	f.mu.Unlock()
 	return err
@@ -226,7 +226,7 @@ func TestFailedEnsureRemovesPartialTrustAndMaterial(t *testing.T) {
 	}
 }
 
-func (f *blockingTrustStore) RemoveCAs(context.Context, []string) error {
+func (f *blockingTrustStore) Remove(context.Context, []string) error {
 	f.mu.Lock()
 	f.records = nil
 	f.mu.Unlock()
@@ -280,19 +280,19 @@ func TestEnsureContextSerializesCAMutationAndWaitsCancellably(t *testing.T) {
 
 type cancellationAwareRemoveStore struct {
 	mu      sync.Mutex
-	records []platform.CARecord
+	records []TrustedCertificate
 	entered chan struct{}
 }
 
-func (f *cancellationAwareRemoveStore) TrustedCAs() ([]platform.CARecord, error) {
+func (f *cancellationAwareRemoveStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]platform.CARecord(nil), f.records...), nil
+	return append([]TrustedCertificate(nil), f.records...), nil
 }
 
-func (f *cancellationAwareRemoveStore) TrustCA(context.Context, []byte) error { return nil }
+func (f *cancellationAwareRemoveStore) Trust(context.Context, []byte) error { return nil }
 
-func (f *cancellationAwareRemoveStore) RemoveCAs(ctx context.Context, _ []string) error {
+func (f *cancellationAwareRemoveStore) Remove(ctx context.Context, _ []string) error {
 	select {
 	case f.entered <- struct{}{}:
 	default:
@@ -314,7 +314,7 @@ func TestCancelledUninstallFinishesRemovingCAState(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &cancellationAwareRemoveStore{
-		records: append([]platform.CARecord(nil), initial.records...),
+		records: append([]TrustedCertificate(nil), initial.records...),
 		entered: make(chan struct{}, 1),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -338,11 +338,11 @@ func TestCancelledUninstallFinishesRemovingCAState(t *testing.T) {
 	}
 }
 
-func (f *fakeTrustStore) TrustedCAs() ([]platform.CARecord, error) {
-	return append([]platform.CARecord(nil), f.records...), nil
+func (f *fakeTrustStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
+	return append([]TrustedCertificate(nil), f.records...), nil
 }
 
-func (f *fakeTrustStore) TrustCA(_ context.Context, certPEM []byte) error {
+func (f *fakeTrustStore) Trust(_ context.Context, certPEM []byte) error {
 	f.trusted++
 	fingerprint, err := SHA1Fingerprint(certPEM)
 	if err != nil {
@@ -356,15 +356,15 @@ func (f *fakeTrustStore) TrustCA(_ context.Context, certPEM []byte) error {
 	if err != nil {
 		return err
 	}
-	f.records = []platform.CARecord{{
-		SHA1:     fingerprint,
-		CertPEM:  certPEM,
-		NotAfter: cert.NotAfter,
+	f.records = []TrustedCertificate{{
+		Fingerprint:    fingerprint,
+		CertificatePEM: certPEM,
+		ExpiresAt:      cert.NotAfter,
 	}}
 	return nil
 }
 
-func (f *fakeTrustStore) RemoveCAs(context.Context, []string) error {
+func (f *fakeTrustStore) Remove(context.Context, []string) error {
 	f.removed++
 	f.records = nil
 	return nil
