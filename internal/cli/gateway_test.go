@@ -122,13 +122,15 @@ func (f *fakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
 	}
 	return append([]platform.PACServiceState(nil), f.pacStates...), nil
 }
-func (f *fakeAdapter) ClearOwnedPAC() error {
+func (f *fakeAdapter) ClearPACIfMatches(expected []platform.PACServiceState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clearedPAC++
-	for idx := range f.pacStates {
-		if f.pacStates[idx].Enabled && platform.IsManagedPACFootprint(f.pacStates[idx].URL) {
-			f.pacStates[idx].Enabled = false
+	for idx, state := range f.pacStates {
+		for _, want := range expected {
+			if state == want {
+				f.pacStates[idx].Enabled = false
+			}
 		}
 	}
 	return f.clearErr
@@ -380,7 +382,9 @@ func TestStartRunsCleanupBeforeInvalidConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("domain-list: \"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fake := &fakeAdapter{}
+	fake := &fakeAdapter{pacStates: []platform.PACServiceState{{
+		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
+	}}}
 
 	err := StartWithContextAndInput(context.Background(), bytes.NewBufferString(""), &bytes.Buffer{}, fake)
 	if err == nil || !strings.Contains(err.Error(), "domain-list") {
@@ -457,7 +461,7 @@ func TestStartCleansPartialPACInstallFailure(t *testing.T) {
 		t.Fatal("partial PAC install failure did not run marker-based cleanup")
 	}
 	for _, state := range fake.pacStates {
-		if state.Enabled && platform.IsManagedPACFootprint(state.URL) {
+		if state.Enabled && managedpac.IsOwnedURL(state.URL) {
 			t.Fatalf("partial PAC install cleanup left owned PAC enabled: %#v", state)
 		}
 	}
@@ -876,7 +880,12 @@ func TestStatusAndStopDoNotBootstrapMissingConfig(t *testing.T) {
 func TestStopReportsNoRunningGatewayBeforeLocalCleanupFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	fake := &fakeAdapter{clearErr: errors.New("pac cleanup denied")}
+	fake := &fakeAdapter{
+		clearErr: errors.New("pac cleanup denied"),
+		pacStates: []platform.PACServiceState{{
+			Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
+		}},
+	}
 	var out bytes.Buffer
 
 	err := stop(&out, fake)

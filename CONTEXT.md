@@ -241,7 +241,7 @@ A user-facing command that controls gateway-owned state or reports on it, includ
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads valid configuration, completes required CA Ensure only when effective configuration enables CA trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; the sequence composes independent CA and PAC lifecycle operations without merging their consent and is the only public route to Gateway Activation.
+The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads valid configuration, completes required CA Ensure only when effective configuration enables CA trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject. The sequence composes independent CA and PAC lifecycle operations without merging their consent and is the only public route to Gateway Activation.
 _Avoid_: monolithic activation, public raw activation, combined consent, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
@@ -307,6 +307,10 @@ _Avoid_: heuristic ownership, name-only matching, user intent guess
 **Marker-Based Cleanup**:
 A cleanup behavior where the gateway scans current machine state and removes resources only when an Ownership Marker proves the resource belongs to seamless-cors.
 _Avoid_: footprint-based cleanup, previous-state restoration, guessed ownership
+
+**Gateway Footprint Cleanup Status**:
+A subject-level three-state result describing whether owned gateway footprint is `none`, `needed`, or `unknown`; `unknown` means current machine state could not be inspected and must not be treated as clean. The overall state is derived as `needed` when any subject is needed, otherwise `unknown` when any subject is unknown, and otherwise `none`.
+_Avoid_: cleanup-needed boolean, assumed-clean inspection failure, suppressed cleanup inspection error
 
 **Managed PAC Ownership Marker**:
 The stable loopback HTTP PAC URL shape whose path ends in `seamless-cors.pac`, proving a current managed PAC setting belongs to seamless-cors without depending on a run-specific port.

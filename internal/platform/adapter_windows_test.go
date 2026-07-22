@@ -126,11 +126,12 @@ func TestWindowsAdapterCurrentPACState(t *testing.T) {
 	}
 }
 
-func TestWindowsAdapterClearsOnlyOwnedPACFootprint(t *testing.T) {
+func TestWindowsAdapterPreservesPACStateThatDoesNotMatchExpected(t *testing.T) {
 	runner := &fakeWindowsRunner{out: []byte(`{"Name":"Windows Current User","URL":"http://corp.example/proxy.pac","Enabled":true}`)}
 	adapter := &WindowsAdapter{runner: runner}
 
-	if err := adapter.ClearOwnedPAC(); err != nil {
+	expected := []PACServiceState{{Name: windowsPACServiceName, URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}}
+	if err := adapter.ClearPACIfMatches(expected); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(strings.Join(runner.calls, "\n"), "Remove-ItemProperty") {
@@ -138,7 +139,7 @@ func TestWindowsAdapterClearsOnlyOwnedPACFootprint(t *testing.T) {
 	}
 }
 
-func TestWindowsAdapterClearsOwnedPACFootprint(t *testing.T) {
+func TestWindowsAdapterClearsMatchingPACState(t *testing.T) {
 	runner := &fakeWindowsRunner{out: []byte(`{"Name":"Windows Current User","URL":"http://localhost:8079/seamless-cors.pac","Enabled":true}`)}
 	notified := false
 	adapter := &WindowsAdapter{runner: runner, notify: func() error {
@@ -146,7 +147,8 @@ func TestWindowsAdapterClearsOwnedPACFootprint(t *testing.T) {
 		return nil
 	}}
 
-	if err := adapter.ClearOwnedPAC(); err != nil {
+	expected := []PACServiceState{{Name: windowsPACServiceName, URL: "http://localhost:8079/seamless-cors.pac", Enabled: true}}
+	if err := adapter.ClearPACIfMatches(expected); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(runner.calls, "\n")

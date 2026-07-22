@@ -5,13 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
-	"seamless-cors/internal/cleanup"
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
@@ -29,6 +26,7 @@ const (
 	StartResultStartAlreadyMutating   StartResultKind = "start-already-mutating"
 	StartResultPlatformApprovalDenied StartResultKind = "platform-approval-denied"
 	StartResultStopCancelled          StartResultKind = "stop-cancelled"
+	StartResultCleanupFailed          StartResultKind = "cleanup-failed"
 )
 
 // StartError preserves a completed CA Ensure result when a later activation
@@ -51,6 +49,7 @@ type StartResult struct {
 	PACReplacementConsent *PACReplacementConsentDetail `json:"pacReplacementConsent,omitempty"`
 	CAEnsure              *CAEnsureResult              `json:"caEnsure,omitempty"`
 	Guidance              *StartGuidanceDetail         `json:"guidance,omitempty"`
+	CleanupFailures       []CleanupFailureDetail       `json:"cleanupFailures,omitempty"`
 }
 
 type CAEnsureResultKind string
@@ -109,9 +108,10 @@ type StartGuidanceDetail struct {
 type StopResultKind string
 
 const (
-	StopResultStopped       StopResultKind = "stopped"
-	StopResultNotRunning    StopResultKind = "not-running"
-	StopResultCleanupFailed StopResultKind = "cleanup-failed"
+	StopResultStopped                 StopResultKind = "stopped"
+	StopResultNotRunning              StopResultKind = "not-running"
+	StopResultCleanupFailed           StopResultKind = "cleanup-failed"
+	StopResultNotRunningCleanupFailed StopResultKind = "not-running-cleanup-failed"
 )
 
 type StopResult struct {
@@ -220,8 +220,22 @@ type PendingLifecycleChangeKind string
 const PendingLifecycleChangeCATrusted PendingLifecycleChangeKind = "ca-trusted"
 
 type CleanupStatusDetail struct {
-	Needed   bool                 `json:"needed"`
-	Subjects []CleanupSubjectKind `json:"subjects,omitempty"`
+	State    CleanupStatusState           `json:"state"`
+	Subjects []CleanupSubjectStatusDetail `json:"subjects"`
+}
+
+type CleanupStatusState string
+
+const (
+	CleanupStatusNone    CleanupStatusState = "none"
+	CleanupStatusNeeded  CleanupStatusState = "needed"
+	CleanupStatusUnknown CleanupStatusState = "unknown"
+)
+
+type CleanupSubjectStatusDetail struct {
+	Subject    CleanupSubjectKind `json:"subject"`
+	State      CleanupStatusState `json:"state"`
+	Diagnostic string             `json:"diagnostic,omitempty"`
 }
 
 type InstalledCAStatusDetail struct {
@@ -395,12 +409,12 @@ func (f *lifecycle) Stop() (StopResult, error) {
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
 		ownedCache = &ownerCache
 	}
-	cleanupErr := cleanGatewayFootprint(f.adapter, f.coord, ownedCache)
-	if cleanupErr != nil {
+	cleanupFailures := cleanGatewayFootprint(f.adapter, f.coord, ownedCache)
+	if len(cleanupFailures) > 0 {
 		return StopResult{
 			Kind:            StopResultCleanupFailed,
 			Warnings:        warnings,
-			CleanupFailures: cleanupFailures(cleanupErr),
+			CleanupFailures: cleanupFailures,
 		}, nil
 	}
 	return StopResult{Kind: StopResultStopped, Warnings: warnings}, nil
@@ -614,43 +628,8 @@ func pacOwnership(ownership managedpac.Ownership) PACOwnership {
 	}
 }
 
-func cleanupFailures(err error) []CleanupFailureDetail {
-	var cleanupErr cleanup.Error
-	if errors.As(err, &cleanupErr) {
-		failures := make([]CleanupFailureDetail, 0, len(cleanupErr.Causes))
-		for _, cause := range cleanupErr.Causes {
-			failures = append(failures, CleanupFailureDetail{
-				Subject:    cleanupSubjectForError(cause),
-				Diagnostic: cause.Error(),
-			})
-		}
-		return failures
-	}
-	return []CleanupFailureDetail{{
-		Subject:    CleanupSubjectGatewayStateCache,
-		Diagnostic: err.Error(),
-	}}
-}
-
-func cleanupSubjectForError(err error) CleanupSubjectKind {
-	text := strings.ToLower(err.Error())
-	if strings.Contains(text, "pac") {
-		return CleanupSubjectManagedPAC
-	}
-	return CleanupSubjectGatewayStateCache
-}
-
 func (f *lifecycle) cleanupStatus(stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
-	inspection := cleanup.Inspect(f.adapter)
-	var subjects []CleanupSubjectKind
-	ownerCacheActive := ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" && f.coord.Owns(ownerCache)
-	if stale || (f.coord.Exists() && !ownerCacheActive) {
-		subjects = append(subjects, CleanupSubjectGatewayStateCache)
-	}
-	if inspection.OwnedPAC && !runtimeActive {
-		subjects = append(subjects, CleanupSubjectManagedPAC)
-	}
-	return CleanupStatusDetail{Needed: len(subjects) > 0, Subjects: subjects}
+	return inspectGatewayFootprint(f.adapter, f.coord, stale, runtimeActive, ownerCache)
 }
 
 func (f *lifecycle) installedCAStatus() InstalledCAStatusDetail {

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"seamless-cors/internal/gateway"
+	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
 )
 
@@ -43,6 +44,9 @@ func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	}
 	if result.Kind == gateway.StartResultPACReplacementDeclined {
 		return ErrPACReplacementConsentDeclined
+	}
+	if result.Kind == gateway.StartResultCleanupFailed {
+		return fmt.Errorf("gateway start cleanup failed: %s", cleanupFailureText(result.CleanupFailures))
 	}
 	return err
 }
@@ -90,15 +94,11 @@ func stop(stdout io.Writer, adapter platform.Adapter) error {
 	stdout = writerOrDiscard(stdout)
 	adapter = adapterOrDefault(adapter)
 	result, err := gateway.Stop(adapter)
-	if result.Kind == gateway.StopResultNotRunning {
-		fmt.Fprintln(stdout, "seamless-cors stop requested; no running seamless-cors found")
-		return err
-	}
 	if err != nil {
 		return err
 	}
 	renderStopResult(stdout, result)
-	if result.Kind == gateway.StopResultStopped {
+	if result.Kind == gateway.StopResultStopped || result.Kind == gateway.StopResultNotRunning {
 		return nil
 	}
 	return fmt.Errorf("gateway stop failed: %s", cleanupFailureText(result.CleanupFailures))
@@ -260,13 +260,14 @@ func pacStatesForPrompt(states []platform.PACServiceState) []gateway.ManagedPACS
 }
 
 func pacOwnershipForPrompt(raw string) gateway.PACOwnership {
-	if raw == "" || raw == "(null)" {
+	switch managedpac.OwnershipForURL(raw) {
+	case managedpac.OwnershipEmpty:
 		return gateway.PACOwnershipEmpty
-	}
-	if platform.IsManagedPACFootprint(raw) {
+	case managedpac.OwnershipOwned:
 		return gateway.PACOwnershipOwned
+	default:
+		return gateway.PACOwnershipForeign
 	}
-	return gateway.PACOwnershipForeign
 }
 
 func renderStartResult(stdout io.Writer, result gateway.StartResult) {
@@ -291,6 +292,8 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 	case gateway.StartResultPlatformApprovalDenied:
 		fmt.Fprintln(stdout, "Certificate trust was not approved.")
 		fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
+	case gateway.StartResultCleanupFailed:
+		fmt.Fprintln(stdout, "seamless-cors start cleanup failed")
 	}
 }
 
@@ -302,6 +305,8 @@ func renderStopResult(stdout io.Writer, result gateway.StopResult) {
 		fmt.Fprintln(stdout, "seamless-cors stop requested; no running seamless-cors found")
 	case gateway.StopResultCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors stop cleanup failed")
+	case gateway.StopResultNotRunningCleanupFailed:
+		fmt.Fprintln(stdout, "seamless-cors stop cleanup failed; no running seamless-cors found")
 	}
 }
 
@@ -377,8 +382,15 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 	if !result.InstalledCA.Expires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCA.Expires.Format("2006-01-02"))
 	}
-	if result.Cleanup.Needed {
+	if result.Cleanup.State == gateway.CleanupStatusNeeded {
 		fmt.Fprintln(stdout, "cleanup-needed: run `seamless-cors stop` to clean seamless-cors-owned gateway footprint")
+	} else if result.Cleanup.State == gateway.CleanupStatusUnknown {
+		fmt.Fprintln(stdout, "cleanup-status: unknown")
+		for _, subject := range result.Cleanup.Subjects {
+			if subject.State == gateway.CleanupStatusUnknown && subject.Diagnostic != "" {
+				fmt.Fprintf(stdout, "cleanup-%s: unknown: %s\n", subject.Subject, subject.Diagnostic)
+			}
+		}
 	}
 }
 

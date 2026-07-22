@@ -28,12 +28,16 @@ func Stop(adapter platform.Adapter) (StopResult, error) {
 		return StopResult{}, err
 	}
 	if target.kind != targetActive {
-		err := cleanRuntime(adapter)
-		result := StopResult{Kind: StopResultNotRunning}
+		failures, err := cleanRuntime(adapter)
 		if err != nil {
-			result.CleanupFailures = cleanupFailures(err)
+			return StopResult{}, err
 		}
-		return result, err
+		result := StopResult{Kind: StopResultNotRunning}
+		if len(failures) > 0 {
+			result.Kind = StopResultNotRunningCleanupFailed
+			result.CleanupFailures = failures
+		}
+		return result, nil
 	}
 	result, err := target.client.Stop()
 	if err != nil {

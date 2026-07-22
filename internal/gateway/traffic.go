@@ -10,8 +10,8 @@ import (
 
 	"seamless-cors/internal/corsproxy"
 	"seamless-cors/internal/liveconfig"
+	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/pacrouting"
-	"seamless-cors/internal/platform"
 	"seamless-cors/internal/userca"
 )
 
@@ -221,7 +221,7 @@ func (r *trafficRuntime) pacURL(version uint64) string {
 	u := url.URL{
 		Scheme:   "http",
 		Host:     r.listeners[1].Addr().String(),
-		Path:     "/" + platform.PACFootprintFileName,
+		Path:     "/" + managedpac.FootprintFileName,
 		RawQuery: fmt.Sprintf("v=%d", version),
 	}
 	return u.String()

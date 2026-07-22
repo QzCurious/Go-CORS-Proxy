@@ -148,11 +148,11 @@ func TestDarwinAdapterInstallsPACDirectlyWithSetAutoProxyURL(t *testing.T) {
 	}
 }
 
-func TestDarwinAdapterClearsOnlyOwnedPACFootprints(t *testing.T) {
+func TestDarwinAdapterClearsOnlyMatchingPACState(t *testing.T) {
 	runner := &fakeRunner{}
 	adapter := &DarwinAdapter{runner: runner}
 
-	if err := adapter.ClearOwnedPAC(); err != nil {
+	if err := adapter.ClearPACIfMatches([]PACServiceState{{Name: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,13 +162,17 @@ func TestDarwinAdapterClearsOnlyOwnedPACFootprints(t *testing.T) {
 	}
 }
 
-func TestDarwinAdapterClearsOwnedPACFootprintsAcrossServices(t *testing.T) {
+func TestDarwinAdapterClearsMatchingPACStateAcrossServices(t *testing.T) {
 	runner := &fakeRunner{
 		autoProxyOut: []byte("URL: http://127.0.0.1:52144/nested/seamless-cors.pac\nEnabled: Yes\n"),
 	}
 	adapter := &DarwinAdapter{runner: runner}
 
-	if err := adapter.ClearOwnedPAC(); err != nil {
+	expected := []PACServiceState{
+		{Name: "Wi-Fi", URL: "http://127.0.0.1:52144/nested/seamless-cors.pac", Enabled: true},
+		{Name: "Thunderbolt Bridge", URL: "http://127.0.0.1:52144/nested/seamless-cors.pac", Enabled: true},
+	}
+	if err := adapter.ClearPACIfMatches(expected); err != nil {
 		t.Fatal(err)
 	}
 

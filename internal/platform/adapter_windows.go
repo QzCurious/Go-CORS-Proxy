@@ -118,12 +118,22 @@ if ($null -ne $prop -and $null -ne $prop.AutoConfigURL) {
 	return []PACServiceState{state}, nil
 }
 
-func (a *WindowsAdapter) ClearOwnedPAC() error {
+func (a *WindowsAdapter) ClearPACIfMatches(expected []PACServiceState) error {
 	states, err := a.CurrentPACState()
 	if err != nil {
 		return err
 	}
-	if !HasOwnedPACState(states) {
+	if len(states) != 1 {
+		return nil
+	}
+	matched := false
+	for _, state := range expected {
+		if state == states[0] {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return nil
 	}
 	script := fmt.Sprintf(`

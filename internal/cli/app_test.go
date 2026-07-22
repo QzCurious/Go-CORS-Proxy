@@ -69,8 +69,15 @@ func (f *appFakeAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
 	}
 	return f.pacStates, nil
 }
-func (f *appFakeAdapter) ClearOwnedPAC() error {
+func (f *appFakeAdapter) ClearPACIfMatches(expected []platform.PACServiceState) error {
 	f.clearedPAC++
+	for idx, state := range f.pacStates {
+		for _, want := range expected {
+			if state == want {
+				f.pacStates[idx].Enabled = false
+			}
+		}
+	}
 	return nil
 }
 func (f *appFakeAdapter) TrustedCAs() ([]platform.CARecord, error) {

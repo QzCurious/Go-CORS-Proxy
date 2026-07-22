@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-	"seamless-cors/internal/platform"
 	"testing"
+
+	"seamless-cors/internal/platform"
 )
 
 func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
@@ -72,6 +74,7 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 type lifecycleTestAdapter struct {
 	states   []platform.PACServiceState
 	applied  int
+	stateErr error
 	clearErr error
 	cleared  int
 }
@@ -96,13 +99,49 @@ func (f *lifecycleTestAdapter) ApplyPAC(_ string, services []string) ([]platform
 }
 
 func (f *lifecycleTestAdapter) CurrentPACState() ([]platform.PACServiceState, error) {
+	if f.stateErr != nil {
+		return nil, f.stateErr
+	}
 	return append([]platform.PACServiceState(nil), f.states...), nil
 }
 
-func (f *lifecycleTestAdapter) ClearOwnedPAC() error {
+func (f *lifecycleTestAdapter) ClearPACIfMatches(expected []platform.PACServiceState) error {
 	f.cleared++
-	return f.clearErr
+	if f.clearErr != nil {
+		return f.clearErr
+	}
+	for idx, state := range f.states {
+		for _, want := range expected {
+			if state == want {
+				f.states[idx].Enabled = false
+			}
+		}
+	}
+	return nil
 }
 func (f *lifecycleTestAdapter) TrustedCAs() ([]platform.CARecord, error)  { return nil, nil }
 func (f *lifecycleTestAdapter) TrustCA(context.Context, []byte) error     { return nil }
 func (f *lifecycleTestAdapter) RemoveCAs(context.Context, []string) error { return nil }
+
+func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
+	adapter := &lifecycleTestAdapter{
+		states: []platform.PACServiceState{{
+			Name: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true,
+		}},
+		clearErr: errors.New("cleanup denied"),
+	}
+	lifecycle, err := newLifecycle(adapter, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != StartResultCleanupFailed {
+		t.Fatalf("start kind = %s, want %s", result.Kind, StartResultCleanupFailed)
+	}
+	if len(result.CleanupFailures) != 1 || result.CleanupFailures[0].Subject != CleanupSubjectManagedPAC {
+		t.Fatalf("cleanup failures = %#v", result.CleanupFailures)
+	}
+}

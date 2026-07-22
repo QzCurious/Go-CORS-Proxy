@@ -193,7 +193,7 @@ func selectedOwnedDrift(states []platform.PACServiceState, currentURL string, se
 		if state.Enabled && state.URL == currentURL {
 			continue
 		}
-		if ownership(state.URL) != OwnershipOwned {
+		if OwnershipForURL(state.URL) != OwnershipOwned {
 			return nil, ErrManagedPACLeaseLost
 		}
 		reattach = append(reattach, state.Name)
@@ -254,7 +254,7 @@ func serviceStates(states []platform.PACServiceState) []ServiceState {
 			ServiceName: state.Name,
 			Enabled:     state.Enabled,
 			URL:         state.URL,
-			Ownership:   ownership(state.URL),
+			Ownership:   OwnershipForURL(state.URL),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -263,11 +263,11 @@ func serviceStates(states []platform.PACServiceState) []ServiceState {
 	return out
 }
 
-func ownership(raw string) Ownership {
+func OwnershipForURL(raw string) Ownership {
 	if raw == "" || raw == "(null)" {
 		return OwnershipEmpty
 	}
-	if platform.IsManagedPACFootprint(raw) {
+	if IsOwnedURL(raw) {
 		return OwnershipOwned
 	}
 	return OwnershipForeign

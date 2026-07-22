@@ -4,6 +4,8 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"seamless-cors/internal/platform"
 )
 
 func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
@@ -13,7 +15,9 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
 		t.Fatal(err)
 	}
-	adapter := &lifecycleTestAdapter{}
+	adapter := &lifecycleTestAdapter{states: []platform.PACServiceState{{
+		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
+	}}}
 
 	result, err := Stop(adapter)
 	if err != nil {
@@ -37,14 +41,19 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
 		t.Fatal(err)
 	}
-	adapter := &lifecycleTestAdapter{clearErr: errors.New("pac denied")}
+	adapter := &lifecycleTestAdapter{
+		clearErr: errors.New("pac denied"),
+		states: []platform.PACServiceState{{
+			Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
+		}},
+	}
 
 	result, err := Stop(adapter)
-	if err == nil {
-		t.Fatal("expected cleanup error")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result.Kind != StopResultNotRunning {
-		t.Fatalf("stop kind = %s, want %s", result.Kind, StopResultNotRunning)
+	if result.Kind != StopResultNotRunningCleanupFailed {
+		t.Fatalf("stop kind = %s, want %s", result.Kind, StopResultNotRunningCleanupFailed)
 	}
 	if len(result.CleanupFailures) != 1 || result.CleanupFailures[0].Subject != CleanupSubjectManagedPAC {
 		t.Fatalf("cleanup failures = %#v", result.CleanupFailures)

@@ -32,7 +32,7 @@ func (UnsupportedAdapter) CurrentPACState() ([]PACServiceState, error) {
 	return nil, nil
 }
 
-func (UnsupportedAdapter) ClearOwnedPAC() error {
+func (UnsupportedAdapter) ClearPACIfMatches([]PACServiceState) error {
 	return nil
 }
 

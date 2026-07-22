@@ -2,11 +2,13 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"seamless-cors/internal/cleanup"
 	"seamless-cors/internal/platform"
 )
+
+var errStartNotActivated = errors.New("gateway start did not activate runtime")
 
 type StartHooks struct {
 	ConfirmPACReplacement func(PACReplacementConsentDetail) (bool, error)
@@ -25,8 +27,12 @@ func Start(ctx context.Context, adapter platform.Adapter, hooks StartHooks) (Sta
 	if coord.Verify().Status == stateActive {
 		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
 	}
-	if err := cleanRuntime(adapter); err != nil {
+	failures, err := cleanRuntime(adapter)
+	if err != nil {
 		return StartResult{}, err
+	}
+	if len(failures) > 0 {
+		return StartResult{Kind: StartResultCleanupFailed, CleanupFailures: failures}, nil
 	}
 	owner, err := newOwnerWithCoordinator(adapter, coord)
 	if err != nil {
@@ -41,10 +47,13 @@ func Start(ctx context.Context, adapter platform.Adapter, hooks StartHooks) (Sta
 			return err
 		}
 		if start.Kind != StartResultStarted {
-			return fmt.Errorf("gateway start did not activate runtime: %s", start.Kind)
+			return fmt.Errorf("%w: %s", errStartNotActivated, start.Kind)
 		}
 		return nil
 	})
+	if errors.Is(err, errStartNotActivated) {
+		err = nil
+	}
 	return result, err
 }
 
@@ -88,7 +97,7 @@ func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks
 			return result, nil
 		case StartResultPlatformApprovalDenied:
 			return result, platform.ErrTrustApprovalDenied
-		case StartResultStopCancelled:
+		case StartResultStopCancelled, StartResultCleanupFailed:
 			return result, nil
 		case StartResultConsentRequired:
 			if result.PACReplacementConsent == nil {
@@ -115,35 +124,12 @@ func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks
 	}
 }
 
-func cleanRuntime(adapter cleanup.Adapter) error {
+func cleanRuntime(adapter platform.Adapter) ([]CleanupFailureDetail, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return cleanGatewayFootprint(adapter, coord, nil)
-}
-
-func cleanGatewayFootprint(adapter cleanup.Cleaner, coord *coordinator, ownedCache *stateCache) error {
-	var errs []error
-	if err := cleanup.Clean(adapter); err != nil {
-		errs = append(errs, err)
-	}
-	if ownedCache != nil && len(errs) > 0 {
-		return cleanup.Error{Causes: errs}
-	}
-	var err error
-	if ownedCache == nil {
-		err = coord.Remove()
-	} else {
-		err = coord.RemoveOwned(*ownedCache)
-	}
-	if err != nil {
-		errs = append(errs, fmt.Errorf("gateway state cache cleanup failed: %w", err))
-	}
-	if len(errs) > 0 {
-		return cleanup.Error{Causes: errs}
-	}
-	return nil
+	return cleanGatewayFootprint(adapter, coord, nil), nil
 }
 
 func requireSupported(report platform.CapabilityReport) error {

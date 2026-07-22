@@ -93,14 +93,18 @@ func (a *DarwinAdapter) CurrentPACState() ([]PACServiceState, error) {
 	return states, nil
 }
 
-func (a *DarwinAdapter) ClearOwnedPAC() error {
+func (a *DarwinAdapter) ClearPACIfMatches(expected []PACServiceState) error {
 	states, err := a.CurrentPACState()
 	if err != nil {
 		return err
 	}
-	var firstErr error
+	current := make(map[string]PACServiceState, len(states))
 	for _, state := range states {
-		if !state.Enabled || !IsManagedPACFootprint(state.URL) {
+		current[state.Name] = state
+	}
+	var firstErr error
+	for _, state := range expected {
+		if actual, ok := current[state.Name]; !ok || actual != state {
 			continue
 		}
 		if _, err := a.networksetup("-setautoproxystate", state.Name, "off"); err != nil && firstErr == nil {

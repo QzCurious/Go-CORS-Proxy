@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/platform"
@@ -19,8 +20,11 @@ type startSequence struct {
 // independent even though start composes them.
 func (s startSequence) Execute(ctx context.Context, request StartRequest) (StartResult, error) {
 	if !s.lifecycle.takeStartCleanupComplete() {
-		if err := s.lifecycle.adapter.ClearOwnedPAC(); err != nil {
-			return StartResult{}, fmt.Errorf("early managed PAC cleanup failed: %w", err)
+		if failure := cleanManagedPAC(s.lifecycle.adapter); failure != nil {
+			return StartResult{
+				Kind:            StartResultCleanupFailed,
+				CleanupFailures: []CleanupFailureDetail{*failure},
+			}, nil
 		}
 	}
 
@@ -198,7 +202,14 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	pacStart, err := session.Install()
 	if err != nil {
 		withdraw()
-		return postCAFailure(errors.Join(err, s.cleanupFailedPACInstall()))
+		if failure := s.cleanupFailedPACInstall(); failure != nil {
+			return StartResult{
+				Kind:            StartResultCleanupFailed,
+				CAEnsure:        caEnsure,
+				CleanupFailures: []CleanupFailureDetail{*failure},
+			}, nil
+		}
+		return postCAFailure(err)
 	}
 
 	s.lifecycle.mu.Lock()
@@ -240,9 +251,6 @@ func caEnsureResult(result userca.EnsureResult) *CAEnsureResult {
 	return &CAEnsureResult{Kind: kind, Expires: result.Expires}
 }
 
-func (s startSequence) cleanupFailedPACInstall() error {
-	if err := s.lifecycle.adapter.ClearOwnedPAC(); err != nil {
-		return fmt.Errorf("cleanup after failed managed PAC install failed: %w", err)
-	}
-	return nil
+func (s startSequence) cleanupFailedPACInstall() *CleanupFailureDetail {
+	return cleanManagedPAC(s.lifecycle.adapter)
 }

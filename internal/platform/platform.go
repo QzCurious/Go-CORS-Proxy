@@ -4,17 +4,12 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
-	"net"
-	"net/url"
-	"path"
-	"strings"
 	"time"
 )
 
 var ErrTrustApprovalDenied = errors.New("certificate trust approval denied")
 
 const (
-	PACFootprintFileName  = "seamless-cors.pac"
 	installedCACommonName = "seamless-cors Installed User CA"
 )
 
@@ -63,47 +58,13 @@ type Adapter interface {
 	Capabilities() CapabilityReport
 	ApplyPAC(url string, services []string) ([]PACServiceUpdate, error)
 	CurrentPACState() ([]PACServiceState, error)
-	ClearOwnedPAC() error
+	ClearPACIfMatches(expected []PACServiceState) error
 	TrustedCAs() ([]CARecord, error)
 	TrustCA(ctx context.Context, certPEM []byte) error
 	RemoveCAs(ctx context.Context, fingerprints []string) error
 }
 
 var CurrentAdapter Adapter = currentAdapter()
-
-func IsManagedPACFootprint(raw string) bool {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	if u.Scheme != "http" {
-		return false
-	}
-	host := u.Hostname()
-	if strings.EqualFold(host, "localhost") {
-		return path.Base(u.EscapedPath()) == PACFootprintFileName
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback() && path.Base(u.EscapedPath()) == PACFootprintFileName
-}
-
-func HasOwnedPACState(states []PACServiceState) bool {
-	for _, state := range states {
-		if state.Enabled && IsManagedPACFootprint(state.URL) {
-			return true
-		}
-	}
-	return false
-}
-
-func HasForeignEnabledPACState(states []PACServiceState) bool {
-	for _, state := range states {
-		if state.Enabled && state.URL != "" && state.URL != "(null)" && !IsManagedPACFootprint(state.URL) {
-			return true
-		}
-	}
-	return false
-}
 
 func isStrictCAFootprint(cert *x509.Certificate) bool {
 	if cert.Subject.CommonName != installedCACommonName {
