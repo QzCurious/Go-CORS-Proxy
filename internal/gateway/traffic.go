@@ -16,17 +16,17 @@ import (
 )
 
 type trafficRuntime struct {
-	mu         sync.RWMutex
-	live       liveconfig.Config
-	authority  *userca.Authority
-	proxy      *http.Server
-	pacHandler *pacrouting.DynamicHandler
-	pac        *http.Server
-	listeners  []net.Listener
-	liveConfig *liveconfig.Source
-	pacVersion uint64
-	pacUpdates chan string
-	routeSet   string
+	mu                        sync.RWMutex
+	live                      liveconfig.Config
+	authority                 *userca.Authority
+	proxy                     *http.Server
+	pacHandler                *pacrouting.DynamicHandler
+	pac                       *http.Server
+	listeners                 []net.Listener
+	liveConfig                *liveconfig.Source
+	pacVersion                uint64
+	pacUpdates                chan string
+	domainListEntriesRevision uint64
 }
 
 type serverError struct {
@@ -51,15 +51,15 @@ func newRuntime(source *liveconfig.Source, live liveconfig.Config) (*trafficRunt
 	pacBody := pacrouting.Generate(pacrouting.Options{ProxyListen: proxyListen, CATrusted: live.CATrusted(), Entries: entries})
 	pacHandler := pacrouting.NewDynamicHandler(pacBody)
 	return &trafficRuntime{
-		live:       live,
-		liveConfig: source,
-		pacHandler: pacHandler,
-		proxy:      &http.Server{},
-		pac:        &http.Server{Handler: pacHandler},
-		listeners:  []net.Listener{proxyListener, pacListener},
-		pacVersion: 1,
-		pacUpdates: make(chan string, 1),
-		routeSet:   pacrouting.RouteSetFingerprint(entries, live.CATrusted()),
+		live:                      live,
+		liveConfig:                source,
+		pacHandler:                pacHandler,
+		proxy:                     &http.Server{},
+		pac:                       &http.Server{Handler: pacHandler},
+		listeners:                 []net.Listener{proxyListener, pacListener},
+		pacVersion:                1,
+		pacUpdates:                make(chan string, 1),
+		domainListEntriesRevision: live.DomainListEntriesRevision(),
 	}, nil
 }
 
@@ -190,14 +190,15 @@ func (r *trafficRuntime) watchLiveConfig(ctx context.Context, errs chan<- server
 }
 
 func (r *trafficRuntime) applyLiveConfig(live liveconfig.Config) {
-	nextRouteSet := pacrouting.RouteSetFingerprint(live.Entries(), live.CATrusted())
 	r.mu.Lock()
+	routingInputsChanged := live.DomainListEntriesRevision() != r.domainListEntriesRevision ||
+		live.CATrusted() != r.live.CATrusted()
 	r.live = live
-	if nextRouteSet == r.routeSet {
+	if !routingInputsChanged {
 		r.mu.Unlock()
 		return
 	}
-	r.routeSet = nextRouteSet
+	r.domainListEntriesRevision = live.DomainListEntriesRevision()
 	r.pacVersion++
 	nextURL := r.pacURL(r.pacVersion)
 	r.mu.Unlock()

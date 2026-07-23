@@ -19,11 +19,12 @@ const DefaultConfigFileName = "config.yaml"
 const DefaultDomainListFileName = "domains.txt"
 
 type Config struct {
-	caTrusted        bool
-	configPath       string
-	domainListPath   string
-	entries          []domainlist.Entry
-	pendingLifecycle []string
+	caTrusted                 bool
+	configPath                string
+	domainListPath            string
+	entries                   []domainlist.Entry
+	domainListEntriesRevision uint64
+	pendingLifecycle          []string
 }
 
 type fileConfig struct {
@@ -98,7 +99,7 @@ func LoadOrBootstrap(configPath string, stdout io.Writer) (*Source, Config, erro
 	if err != nil {
 		return nil, Config{}, err
 	}
-	live := configFromLoadResult(loaded, entries, nil, loaded.Config.CATrusted)
+	live := configFromLoadResult(loaded, entries, 1, nil, loaded.Config.CATrusted)
 	source := newSource(loaded.Config, live, configData, domainData)
 	return source, live, nil
 }
@@ -112,7 +113,7 @@ func LoadExisting(configPath string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return configFromLoadResult(loaded, entries, nil, loaded.Config.CATrusted), nil
+	return configFromLoadResult(loaded, entries, 1, nil, loaded.Config.CATrusted), nil
 }
 
 func newSource(desired fileConfig, live Config, configData, domainData []byte) *Source {
@@ -142,23 +143,8 @@ func sameSemanticConfig(left, right Config) bool {
 		left.configPath != right.configPath ||
 		left.domainListPath != right.domainListPath ||
 		!sameStrings(left.pendingLifecycle, right.pendingLifecycle) ||
-		len(left.entries) != len(right.entries) {
+		!domainlist.SameEntries(left.entries, right.entries) {
 		return false
-	}
-	type entryIdentity struct {
-		scheme   string
-		host     string
-		port     string
-		wildcard bool
-	}
-	entries := make(map[entryIdentity]struct{}, len(left.entries))
-	for _, entry := range left.entries {
-		entries[entryIdentity{entry.Scheme, entry.Host, entry.Port, entry.Wildcard}] = struct{}{}
-	}
-	for _, entry := range right.entries {
-		if _, ok := entries[entryIdentity{entry.Scheme, entry.Host, entry.Port, entry.Wildcard}]; !ok {
-			return false
-		}
 	}
 	return true
 }
@@ -175,13 +161,14 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
-func configFromLoadResult(loaded loadResult, entries []domainlist.Entry, pending []string, activeCATrusted bool) Config {
+func configFromLoadResult(loaded loadResult, entries []domainlist.Entry, domainListEntriesRevision uint64, pending []string, activeCATrusted bool) Config {
 	return Config{
-		caTrusted:        activeCATrusted,
-		configPath:       loaded.ConfigPath,
-		domainListPath:   loaded.DomainPath,
-		entries:          append([]domainlist.Entry(nil), entries...),
-		pendingLifecycle: append([]string(nil), pending...),
+		caTrusted:                 activeCATrusted,
+		configPath:                loaded.ConfigPath,
+		domainListPath:            loaded.DomainPath,
+		entries:                   append([]domainlist.Entry(nil), entries...),
+		domainListEntriesRevision: domainListEntriesRevision,
+		pendingLifecycle:          append([]string(nil), pending...),
 	}
 }
 
@@ -363,6 +350,10 @@ func (c Config) CATrusted() bool {
 
 func (c Config) Entries() []domainlist.Entry {
 	return append([]domainlist.Entry(nil), c.entries...)
+}
+
+func (c Config) DomainListEntriesRevision() uint64 {
+	return c.domainListEntriesRevision
 }
 
 func (c Config) PendingLifecycle() []string {

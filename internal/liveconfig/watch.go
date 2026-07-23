@@ -297,13 +297,14 @@ func (w *watcherState) reconcile() (Event, bool, error) {
 	next := configFromLoadResult(
 		loaded,
 		entries,
+		current.DomainListEntriesRevision(),
 		lifecycleChanges(loaded.Config.CATrusted, w.source.baselineCATrusted),
 		w.source.baselineCATrusted,
 	)
 	if err := w.commitDomainTarget(loaded.DomainPath); err != nil {
 		return Event{}, false, err
 	}
-	semanticChanged := w.source.commit(next, loaded.Config, nextConfigFingerprint, nextDomainFingerprint)
+	next, semanticChanged := w.source.commit(next, loaded.Config, nextConfigFingerprint, nextDomainFingerprint)
 	if !semanticChanged {
 		return Event{}, false, nil
 	}
@@ -316,9 +317,12 @@ func (s *Source) snapshot() (Config, fileConfig, [sha256.Size]byte, [sha256.Size
 	return s.config, s.desiredConfig, s.configFingerprint, s.domainFingerprint
 }
 
-func (s *Source) commit(next Config, desired fileConfig, configFingerprint, domainFingerprint [sha256.Size]byte) bool {
+func (s *Source) commit(next Config, desired fileConfig, configFingerprint, domainFingerprint [sha256.Size]byte) (Config, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !domainlist.SameEntries(s.config.entries, next.entries) {
+		next.domainListEntriesRevision = s.config.domainListEntriesRevision + 1
+	}
 	semanticChanged := !sameSemanticConfig(s.config, next)
 	if semanticChanged {
 		s.config = next
@@ -326,7 +330,7 @@ func (s *Source) commit(next Config, desired fileConfig, configFingerprint, doma
 	s.desiredConfig = desired
 	s.configFingerprint = configFingerprint
 	s.domainFingerprint = domainFingerprint
-	return semanticChanged
+	return next, semanticChanged
 }
 
 func (w *watcherState) addTarget(path string, role targetRole) error {

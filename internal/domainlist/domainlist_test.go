@@ -47,3 +47,22 @@ func TestInlineCommentsRequireWhitespaceBeforeHash(t *testing.T) {
 		t.Fatalf("entries = %#v", entries)
 	}
 }
+
+func TestSameEntriesUsesNormalizedIdentityAndIgnoresOrder(t *testing.T) {
+	left, leftErrs := ParseList("api.example.test\nhttps://secure.example.test\n")
+	right, rightErrs := ParseList("https://secure.example.test\nAPI.EXAMPLE.TEST # same entry\n")
+	if len(leftErrs) != 0 || len(rightErrs) != 0 {
+		t.Fatalf("parse errors: left=%v right=%v", leftErrs, rightErrs)
+	}
+	if !SameEntries(left, right) {
+		t.Fatal("equivalent normalized entry sets should match")
+	}
+
+	different, differentErrs := ParseList("api.example.test\nhttp://secure.example.test\n")
+	if len(differentErrs) != 0 {
+		t.Fatalf("parse errors: %v", differentErrs)
+	}
+	if SameEntries(left, different) {
+		t.Fatal("different normalized entry sets should not match")
+	}
+}

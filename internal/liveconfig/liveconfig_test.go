@@ -30,6 +30,9 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if initial.CATrusted() {
 		t.Fatal("initial CA trust = true")
 	}
+	if initial.DomainListEntriesRevision() != 1 {
+		t.Fatalf("initial Domain List Entries Revision = %d", initial.DomainListEntriesRevision())
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -47,6 +50,9 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	entries := live.Entries()
 	if len(entries) != 1 || entries[0].Host != "second.example.test" {
 		t.Fatalf("entries = %#v", entries)
+	}
+	if live.DomainListEntriesRevision() != 2 {
+		t.Fatalf("Domain List Entries Revision after path and entries change = %d", live.DomainListEntriesRevision())
 	}
 	if live.CATrusted() {
 		t.Fatal("restart-applied CA trust was hot-applied")
@@ -72,6 +78,9 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if got := strings.Join(live.PendingLifecycle(), ","); got != "ca-trusted" {
 		t.Fatalf("pending lifecycle after Domain List reload = %q", got)
 	}
+	if live.DomainListEntriesRevision() != 3 {
+		t.Fatalf("Domain List Entries Revision after entry change = %d", live.DomainListEntriesRevision())
+	}
 
 	writeConfig(t, configPath, secondDomainPath, false)
 	event = waitForEvent(t, events)
@@ -80,6 +89,9 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	}
 	if got := strings.Join(event.Config.PendingLifecycle(), ","); got != "" {
 		t.Fatalf("pending lifecycle after revert = %q", got)
+	}
+	if event.Config.DomainListEntriesRevision() != 3 {
+		t.Fatalf("pending lifecycle change advanced Domain List Entries Revision to %d", event.Config.DomainListEntriesRevision())
 	}
 }
 
@@ -109,6 +121,43 @@ func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
 	entries := event.Config.Entries()
 	if len(entries) != 1 || entries[0].Host != "changed.example.test" {
 		t.Fatalf("entries = %#v", entries)
+	}
+	if event.Config.DomainListEntriesRevision() != 2 {
+		t.Fatalf("Domain List Entries Revision = %d", event.Config.DomainListEntriesRevision())
+	}
+}
+
+func TestWatchDoesNotAdvanceDomainListEntriesRevisionForPathOnlyChange(t *testing.T) {
+	home := t.TempDir()
+	firstDomainPath := filepath.Join(home, "first-domains.txt")
+	secondDomainPath := filepath.Join(home, "second-domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, firstDomainPath, "api.example.test\n")
+	writeFile(t, secondDomainPath, "# same entries\nAPI.EXAMPLE.TEST\n")
+	writeConfig(t, configPath, firstDomainPath, false)
+
+	source, initial, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := source.Watch(ctx)
+
+	writeConfig(t, configPath, secondDomainPath, false)
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	if event.Config.DomainListPath() != secondDomainPath {
+		t.Fatalf("Domain List path = %q", event.Config.DomainListPath())
+	}
+	if event.Config.DomainListEntriesRevision() != initial.DomainListEntriesRevision() {
+		t.Fatalf(
+			"path-only change advanced Domain List Entries Revision from %d to %d",
+			initial.DomainListEntriesRevision(),
+			event.Config.DomainListEntriesRevision(),
+		)
 	}
 }
 
@@ -237,6 +286,9 @@ func TestWatchKeepsOnlyLatestUnconsumedSnapshot(t *testing.T) {
 	entries := event.Config.Entries()
 	if len(entries) != 1 || entries[0].Host != "latest.example.test" {
 		t.Fatalf("entries = %#v", entries)
+	}
+	if event.Config.DomainListEntriesRevision() != 3 {
+		t.Fatalf("coalesced Domain List Entries Revision = %d", event.Config.DomainListEntriesRevision())
 	}
 }
 

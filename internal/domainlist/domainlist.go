@@ -77,6 +77,22 @@ func keyForEntry(entry Entry) entryKey {
 	}
 }
 
+func SameEntries(left, right []Entry) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	entries := make(map[entryKey]struct{}, len(left))
+	for _, entry := range left {
+		entries[keyForEntry(entry)] = struct{}{}
+	}
+	for _, entry := range right {
+		if _, ok := entries[keyForEntry(entry)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func ParseEntry(text string) (Entry, error) {
 	text = strings.TrimSpace(text)
 	if strings.Contains(text, "://") {

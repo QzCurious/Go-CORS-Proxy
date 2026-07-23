@@ -193,12 +193,16 @@ A lifecycle default where generated configuration starts with `ca-trusted: true`
 _Avoid_: silent trust installation, disabled-by-default HTTPS interception, config-only trust
 
 **Live Configuration**:
-A gateway module and code boundary that owns observing, reading, and interpreting user-editable configuration sources and exposes only validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and Domain List without requiring the user to manually restart or reload the browser or gateway.
-_Avoid_: external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
+A gateway module and code boundary that exclusively owns observing, reading, validating, and interpreting user-editable configuration sources, including Domain List syntax, and exposes only validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and Domain List without requiring the user to manually restart or reload the browser or gateway.
+_Avoid_: external Domain List parser, consumer-created Domain List Entry, external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
 
 **Live Configuration Snapshot**:
 The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, pending lifecycle intent, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
 _Avoid_: configuration event history, raw YAML config, file-change event, content fingerprint, watcher notification
+
+**Domain List Entries Revision**:
+A run-local, non-persistent monotonic identity exposed with Live Configuration, beginning with the initial validated Domain List Entries and advancing only when the normalized, deduplicated entry set changes. It allows consumers to apply the newest coalesced routing input without treating Domain List path changes or representation-only edits as routing changes.
+_Avoid_: persisted Domain List revision, Domain List file revision, PAC content comparison, source-content fingerprint, path-change revision
 
 **Config File**:
 The user-editable YAML source read by Live Configuration for gateway settings such as Domain List location and Trusted HTTPS Interception intent; it is an ordinary file addressed by a cleaned absolute path and is not a separate code boundary from Live Configuration. Live change observation is supported only when the file is hosted on a local filesystem.
