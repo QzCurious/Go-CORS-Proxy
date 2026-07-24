@@ -1,10 +1,13 @@
 package pacrouting
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
-	"seamless-cors/internal/domainlist"
+	"seamless-cors/internal/liveconfig"
 )
 
 func TestDeriveRouteBucketsUsesNormalizedDomainListEntries(t *testing.T) {
@@ -64,15 +67,29 @@ func TestDeriveRouteBucketsExcludesUntrustedHTTPS(t *testing.T) {
 	}
 }
 
-func mustParseEntries(t *testing.T, texts ...string) []domainlist.Entry {
-	t.Helper()
-	entries := make([]domainlist.Entry, 0, len(texts))
-	for _, text := range texts {
-		entry, err := domainlist.ParseEntry(text)
-		if err != nil {
-			t.Fatal(err)
+func TestDeriveRouteBucketsRejectsZeroValueDomainListEntry(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("zero-value Domain List Entry did not fail fast")
 		}
-		entries = append(entries, entry)
+	}()
+	deriveRouteBuckets([]liveconfig.DomainListEntry{{}}, true)
+}
+
+func mustParseEntries(t *testing.T, texts ...string) []liveconfig.DomainListEntry {
+	t.Helper()
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	if err := os.WriteFile(domainPath, []byte(strings.Join(texts, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	return entries
+	if err := os.WriteFile(configPath, []byte("domain-list: "+domainPath+"\nca-trusted: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := liveconfig.LoadExisting(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot.DomainListEntries()
 }

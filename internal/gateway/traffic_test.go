@@ -41,14 +41,14 @@ func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {
 
 	writeTrafficTestFile(t, configPath, "domain-list: "+secondDomainPath+"\nca-trusted: false\n")
 	pathOnly := waitForTrafficConfigEvent(t, events)
-	runtime.applyLiveConfig(pathOnly.Config)
+	runtime.applyLiveConfig(pathOnly.Snapshot)
 	if runtime.PACURL() != initialPACURL {
 		t.Fatalf("path-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
 	}
 
 	writeTrafficTestFile(t, secondDomainPath, "changed.example.test\n")
 	entriesChanged := waitForTrafficConfigEvent(t, events)
-	runtime.applyLiveConfig(entriesChanged.Config)
+	runtime.applyLiveConfig(entriesChanged.Snapshot)
 	if runtime.PACURL() == initialPACURL {
 		t.Fatalf("Domain List Entries Revision change did not advance PAC URL %q", initialPACURL)
 	}

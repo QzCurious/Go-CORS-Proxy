@@ -6,13 +6,13 @@ import (
 	"strings"
 	"text/template"
 
-	"seamless-cors/internal/domainlist"
+	"seamless-cors/internal/liveconfig"
 )
 
 type Options struct {
-	ProxyListen string
-	CATrusted   bool
-	Entries     []domainlist.Entry
+	ProxyListen       string
+	CATrusted         bool
+	DomainListEntries []liveconfig.DomainListEntry
 }
 
 //go:embed proxy.pac.tmpl
@@ -21,7 +21,7 @@ var pacTemplateSource string
 var pacTemplate = template.Must(template.New("proxy.pac.tmpl").Parse(pacTemplateSource))
 
 func Generate(opts Options) string {
-	buckets := deriveRouteBuckets(opts.Entries, opts.CATrusted)
+	buckets := deriveRouteBuckets(opts.DomainListEntries, opts.CATrusted)
 	type pacTemplateData struct {
 		Proxy           string
 		ExactHosts      string

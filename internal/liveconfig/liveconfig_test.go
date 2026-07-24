@@ -43,12 +43,12 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	live := event.Config
+	live := event.Snapshot
 	if live.DomainListPath() != secondDomainPath {
 		t.Fatalf("domain list path = %q", live.DomainListPath())
 	}
-	entries := live.Entries()
-	if len(entries) != 1 || entries[0].Host != "second.example.test" {
+	entries := live.DomainListEntries()
+	if len(entries) != 1 || entries[0].Hostname() != "second.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
 	if live.DomainListEntriesRevision() != 2 {
@@ -61,7 +61,7 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 		t.Fatalf("pending lifecycle = %q", got)
 	}
 
-	cached := source.Config()
+	cached := source.Current()
 	if cached.DomainListPath() != secondDomainPath {
 		t.Fatalf("cached domain list path = %q", cached.DomainListPath())
 	}
@@ -71,7 +71,7 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	live = event.Config
+	live = event.Snapshot
 	if live.CATrusted() {
 		t.Fatal("Domain List reload hot-applied CA trust")
 	}
@@ -87,11 +87,11 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if got := strings.Join(event.Config.PendingLifecycle(), ","); got != "" {
+	if got := strings.Join(event.Snapshot.PendingLifecycle(), ","); got != "" {
 		t.Fatalf("pending lifecycle after revert = %q", got)
 	}
-	if event.Config.DomainListEntriesRevision() != 3 {
-		t.Fatalf("pending lifecycle change advanced Domain List Entries Revision to %d", event.Config.DomainListEntriesRevision())
+	if event.Snapshot.DomainListEntriesRevision() != 3 {
+		t.Fatalf("pending lifecycle change advanced Domain List Entries Revision to %d", event.Snapshot.DomainListEntriesRevision())
 	}
 }
 
@@ -99,7 +99,7 @@ func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
 	home := t.TempDir()
 	domainPath := filepath.Join(home, "domains.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "api.example.test\n")
+	writeFile(t, domainPath, "api.example.test\nhttps://secure.example.test\n")
 	writeConfig(t, configPath, domainPath, false)
 
 	source, _, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
@@ -110,7 +110,7 @@ func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
 	defer cancel()
 	events := source.Watch(ctx)
 
-	writeFile(t, domainPath, "# same routes\nAPI.EXAMPLE.TEST\napi.example.test # duplicate\n")
+	writeFile(t, domainPath, "# same routes, reordered\nhttps://secure.example.test\nAPI.EXAMPLE.TEST\napi.example.test # duplicate\n")
 	assertNoEvent(t, events, 300*time.Millisecond)
 
 	writeFile(t, domainPath, "changed.example.test\n")
@@ -118,12 +118,12 @@ func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Config.Entries()
-	if len(entries) != 1 || entries[0].Host != "changed.example.test" {
+	entries := event.Snapshot.DomainListEntries()
+	if len(entries) != 1 || entries[0].Hostname() != "changed.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
-	if event.Config.DomainListEntriesRevision() != 2 {
-		t.Fatalf("Domain List Entries Revision = %d", event.Config.DomainListEntriesRevision())
+	if event.Snapshot.DomainListEntriesRevision() != 2 {
+		t.Fatalf("Domain List Entries Revision = %d", event.Snapshot.DomainListEntriesRevision())
 	}
 }
 
@@ -149,14 +149,14 @@ func TestWatchDoesNotAdvanceDomainListEntriesRevisionForPathOnlyChange(t *testin
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if event.Config.DomainListPath() != secondDomainPath {
-		t.Fatalf("Domain List path = %q", event.Config.DomainListPath())
+	if event.Snapshot.DomainListPath() != secondDomainPath {
+		t.Fatalf("Domain List path = %q", event.Snapshot.DomainListPath())
 	}
-	if event.Config.DomainListEntriesRevision() != initial.DomainListEntriesRevision() {
+	if event.Snapshot.DomainListEntriesRevision() != initial.DomainListEntriesRevision() {
 		t.Fatalf(
 			"path-only change advanced Domain List Entries Revision from %d to %d",
 			initial.DomainListEntriesRevision(),
-			event.Config.DomainListEntriesRevision(),
+			event.Snapshot.DomainListEntriesRevision(),
 		)
 	}
 }
@@ -184,8 +184,8 @@ func TestWatchConfirmsInvalidContentBeforeFailing(t *testing.T) {
 	if event.Err != nil {
 		t.Fatalf("transient invalid edit became fatal: %v", event.Err)
 	}
-	entries := event.Config.Entries()
-	if len(entries) != 1 || entries[0].Host != "recovered.example.test" {
+	entries := event.Snapshot.DomainListEntries()
+	if len(entries) != 1 || entries[0].Hostname() != "recovered.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
 }
@@ -253,8 +253,8 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Config.Entries()
-	if len(entries) != 1 || entries[0].Host != "replacement.example.test" {
+	entries := event.Snapshot.DomainListEntries()
+	if len(entries) != 1 || entries[0].Hostname() != "replacement.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
 }
@@ -283,12 +283,12 @@ func TestWatchKeepsOnlyLatestUnconsumedSnapshot(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Config.Entries()
-	if len(entries) != 1 || entries[0].Host != "latest.example.test" {
+	entries := event.Snapshot.DomainListEntries()
+	if len(entries) != 1 || entries[0].Hostname() != "latest.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
-	if event.Config.DomainListEntriesRevision() != 3 {
-		t.Fatalf("coalesced Domain List Entries Revision = %d", event.Config.DomainListEntriesRevision())
+	if event.Snapshot.DomainListEntriesRevision() != 3 {
+		t.Fatalf("coalesced Domain List Entries Revision = %d", event.Snapshot.DomainListEntriesRevision())
 	}
 }
 
@@ -313,9 +313,9 @@ func TestWatchEmitsErrorWithoutReplacingCachedConfig(t *testing.T) {
 	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Domain List Error") {
 		t.Fatalf("event error = %v", event.Err)
 	}
-	cached := source.Config()
-	entries := cached.Entries()
-	if len(entries) != 1 || entries[0].Host != "first.example.test" {
+	cached := source.Current()
+	entries := cached.DomainListEntries()
+	if len(entries) != 1 || entries[0].Hostname() != "first.example.test" {
 		t.Fatalf("cached entries = %#v", entries)
 	}
 }
@@ -473,8 +473,8 @@ func waitForCachedDomain(t *testing.T, source *liveconfig.Source, host string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		entries := source.Config().Entries()
-		if len(entries) == 1 && entries[0].Host == host {
+		entries := source.Current().DomainListEntries()
+		if len(entries) == 1 && entries[0].Hostname() == host {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

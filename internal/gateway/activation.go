@@ -27,7 +27,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}
 	}
 
-	source, live, err := liveconfigLoadOrBootstrap()
+	source, snapshot, err := liveconfigLoadOrBootstrap()
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -36,7 +36,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	var caEnsure *CAEnsureResult
 	var ensuredFingerprint string
 	var caDir string
-	if live.CATrusted() {
+	if snapshot.CATrusted() {
 		caDir, err = liveconfig.CADir()
 		if err != nil {
 			return StartResult{}, err
@@ -79,16 +79,16 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}, nil
 	}
 
-	latest, err := liveconfig.LoadExisting(live.ConfigPath())
+	latest, err := liveconfig.LoadExisting(snapshot.ConfigPath())
 	if err != nil {
 		return postCAFailure(fmt.Errorf("effective configuration revalidation failed: %w", err))
 	}
-	if !live.CATrusted() && latest.CATrusted() {
+	if !snapshot.CATrusted() && latest.CATrusted() {
 		return postCAFailure(fmt.Errorf("ca-trusted became enabled during start; retry to perform CA Ensure before activation"))
 	}
-	live = latest
+	snapshot = latest
 
-	engine, err := newRuntime(source, live)
+	engine, err := newRuntime(source, snapshot)
 	if err != nil {
 		return postCAFailure(err)
 	}
@@ -105,11 +105,11 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	active := &activeRuntime{
-		engine: engine,
-		live:   live,
-		cancel: cancel,
-		done:   done,
-		phase:  runtimePhaseStarting,
+		engine:   engine,
+		snapshot: snapshot,
+		cancel:   cancel,
+		done:     done,
+		phase:    runtimePhaseStarting,
 	}
 	// This short admission gate coordinates runtime publication with standalone
 	// CA mutation. It is not held across the Start Sequence.
@@ -133,7 +133,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 
 	// Trusted Runtime Admission adopts the currently usable authority. This
 	// closes the race with independent CA commands without a start-wide lock.
-	if live.CATrusted() {
+	if snapshot.CATrusted() {
 		admitted, report, admissionErr := userca.LoadUsableContext(ctx, caDir, s.lifecycle.userCATrustStore)
 		if admissionErr != nil {
 			withdraw()
@@ -229,11 +229,11 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		Kind:     StartResultStarted,
 		CAEnsure: caEnsure,
 		Guidance: &StartGuidanceDetail{
-			ConfigPath:         live.ConfigPath(),
-			DomainListPath:     live.DomainListPath(),
+			ConfigPath:         snapshot.ConfigPath(),
+			DomainListPath:     snapshot.DomainListPath(),
 			ManagedPACActive:   true,
 			ManagedPACServices: pacStart.InstalledServices,
-			CATrusted:          live.CATrusted(),
+			CATrusted:          snapshot.CATrusted(),
 		},
 	}, nil
 }

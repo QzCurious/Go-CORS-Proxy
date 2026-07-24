@@ -521,12 +521,12 @@ A live configuration behavior where an invalid, missing, or unreadable Domain Li
 _Avoid_: stale valid routing, partial valid routing, silent invalid entry
 
 **Domain List Entry**:
-A single line in the Domain List that may name a full origin or use hostname shorthand for easy DEV/QA configuration.
-_Avoid_: rule, matcher expression
+A validated semantic value produced only by Live Configuration from a single active Domain List line; it contains normalized routing meaning rather than the original source text and may identify a full origin or use hostname shorthand. Consumers can inspect it but cannot create or alter one independently.
+_Avoid_: source-text-bearing entry, public field bag, consumer-created entry, unvalidated entry, rule, matcher expression
 
 **Domain List Routing Policy**:
-A runtime interpretation owned by the PAC Routing module that decides whether normalized Domain List Entries send a browser request to the Proxy Listener.
-_Avoid_: proxy admission policy, raw string matching, duplicated PAC matchers
+A runtime interpretation owned by the PAC Routing module that decides whether normalized Domain List Entries send a browser request to the Proxy Listener. PAC Routing receives only validated routing inputs selected from the Live Configuration Snapshot, not the snapshot itself.
+_Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers
 
 **Hostname Shorthand**:
 A Domain List Entry that names a host without scheme so it matches that host across schemes and ports.

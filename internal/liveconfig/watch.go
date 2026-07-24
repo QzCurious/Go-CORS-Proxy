@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"seamless-cors/internal/domainlist"
-
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -90,7 +88,7 @@ func (s *Source) watch(ctx context.Context, output chan Event) {
 		confirmations: make(map[string]*confirmationState),
 	}
 	defer state.close()
-	current := s.Config()
+	current := s.Current()
 	if err := state.addTarget(current.ConfigPath(), configTarget); err != nil {
 		publishLatest(output, Event{Err: err})
 		return
@@ -287,14 +285,14 @@ func (w *watcherState) reconcile() (Event, bool, error) {
 		}
 		return Event{}, false, nil
 	}
-	entries := current.Entries()
+	entries := current.DomainListEntries()
 	if domainChanged {
 		entries, err = parseDomainList(domainData)
 		if err != nil {
 			return Event{}, false, invalidDomainError(loaded.DomainPath, err)
 		}
 	}
-	next := configFromLoadResult(
+	next := snapshotFromLoadResult(
 		loaded,
 		entries,
 		current.DomainListEntriesRevision(),
@@ -308,24 +306,24 @@ func (w *watcherState) reconcile() (Event, bool, error) {
 	if !semanticChanged {
 		return Event{}, false, nil
 	}
-	return Event{Config: next}, true, nil
+	return Event{Snapshot: next}, true, nil
 }
 
-func (s *Source) snapshot() (Config, fileConfig, [sha256.Size]byte, [sha256.Size]byte) {
+func (s *Source) snapshot() (Snapshot, fileConfig, [sha256.Size]byte, [sha256.Size]byte) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.config, s.desiredConfig, s.configFingerprint, s.domainFingerprint
+	return s.current, s.desiredConfig, s.configFingerprint, s.domainFingerprint
 }
 
-func (s *Source) commit(next Config, desired fileConfig, configFingerprint, domainFingerprint [sha256.Size]byte) (Config, bool) {
+func (s *Source) commit(next Snapshot, desired fileConfig, configFingerprint, domainFingerprint [sha256.Size]byte) (Snapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !domainlist.SameEntries(s.config.entries, next.entries) {
-		next.domainListEntriesRevision = s.config.domainListEntriesRevision + 1
+	if !sameDomainListEntries(s.current.domainListEntries, next.domainListEntries) {
+		next.domainListEntriesRevision = s.current.domainListEntriesRevision + 1
 	}
-	semanticChanged := !sameSemanticConfig(s.config, next)
+	semanticChanged := !sameSemanticSnapshot(s.current, next)
 	if semanticChanged {
-		s.config = next
+		s.current = next
 	}
 	s.desiredConfig = desired
 	s.configFingerprint = configFingerprint
@@ -373,7 +371,7 @@ func (w *watcherState) commitDomainTarget(path string) error {
 	path = filepath.Clean(path)
 	for targetPath, target := range w.targets {
 		switch {
-		case targetPath == w.source.Config().ConfigPath():
+		case targetPath == w.source.Current().ConfigPath():
 			target.role = configTarget
 		case targetPath == path:
 			target.role = domainTarget
@@ -428,12 +426,4 @@ func publishLatest(output chan Event, event Event) {
 	default:
 	}
 	output <- event
-}
-
-func parseDomainList(data []byte) ([]domainlist.Entry, error) {
-	entries, errs := domainlist.ParseList(string(data))
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("invalid Domain List:\n%s", formatDomainErrors(errs))
-	}
-	return entries, nil
 }

@@ -17,7 +17,7 @@ import (
 
 type trafficRuntime struct {
 	mu                        sync.RWMutex
-	live                      liveconfig.Config
+	currentSnapshot           liveconfig.Snapshot
 	authority                 *userca.Authority
 	proxy                     *http.Server
 	pacHandler                *pacrouting.DynamicHandler
@@ -34,8 +34,8 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(source *liveconfig.Source, live liveconfig.Config) (*trafficRuntime, error) {
-	entries := live.Entries()
+func newRuntime(source *liveconfig.Source, snapshot liveconfig.Snapshot) (*trafficRuntime, error) {
+	entries := snapshot.DomainListEntries()
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -48,10 +48,10 @@ func newRuntime(source *liveconfig.Source, live liveconfig.Config) (*trafficRunt
 
 	proxyListen := proxyListener.Addr().String()
 
-	pacBody := pacrouting.Generate(pacrouting.Options{ProxyListen: proxyListen, CATrusted: live.CATrusted(), Entries: entries})
+	pacBody := pacrouting.Generate(pacrouting.Options{ProxyListen: proxyListen, CATrusted: snapshot.CATrusted(), DomainListEntries: entries})
 	pacHandler := pacrouting.NewDynamicHandler(pacBody)
 	return &trafficRuntime{
-		live:                      live,
+		currentSnapshot:           snapshot,
 		liveConfig:                source,
 		pacHandler:                pacHandler,
 		proxy:                     &http.Server{},
@@ -59,14 +59,14 @@ func newRuntime(source *liveconfig.Source, live liveconfig.Config) (*trafficRunt
 		listeners:                 []net.Listener{proxyListener, pacListener},
 		pacVersion:                1,
 		pacUpdates:                make(chan string, 1),
-		domainListEntriesRevision: live.DomainListEntriesRevision(),
+		domainListEntriesRevision: snapshot.DomainListEntriesRevision(),
 	}, nil
 }
 
 func (r *trafficRuntime) SetAuthority(authority *userca.Authority) error {
 	r.authority = authority
 	proxyHandler, err := corsproxy.New(corsproxy.Options{
-		CATrusted: r.live.CATrusted(),
+		CATrusted: r.currentSnapshot.CATrusted(),
 		Authority: authority,
 	})
 	if err != nil {
@@ -184,28 +184,28 @@ func (r *trafficRuntime) watchLiveConfig(ctx context.Context, errs chan<- server
 				}
 				return
 			}
-			r.applyLiveConfig(event.Config)
+			r.applyLiveConfig(event.Snapshot)
 		}
 	}
 }
 
-func (r *trafficRuntime) applyLiveConfig(live liveconfig.Config) {
+func (r *trafficRuntime) applyLiveConfig(snapshot liveconfig.Snapshot) {
 	r.mu.Lock()
-	routingInputsChanged := live.DomainListEntriesRevision() != r.domainListEntriesRevision ||
-		live.CATrusted() != r.live.CATrusted()
-	r.live = live
+	routingInputsChanged := snapshot.DomainListEntriesRevision() != r.domainListEntriesRevision ||
+		snapshot.CATrusted() != r.currentSnapshot.CATrusted()
+	r.currentSnapshot = snapshot
 	if !routingInputsChanged {
 		r.mu.Unlock()
 		return
 	}
-	r.domainListEntriesRevision = live.DomainListEntriesRevision()
+	r.domainListEntriesRevision = snapshot.DomainListEntriesRevision()
 	r.pacVersion++
 	nextURL := r.pacURL(r.pacVersion)
 	r.mu.Unlock()
 	r.pacHandler.Set(pacrouting.Generate(pacrouting.Options{
-		ProxyListen: r.listeners[0].Addr().String(),
-		CATrusted:   live.CATrusted(),
-		Entries:     live.Entries(),
+		ProxyListen:       r.listeners[0].Addr().String(),
+		CATrusted:         snapshot.CATrusted(),
+		DomainListEntries: snapshot.DomainListEntries(),
 	}))
 	select {
 	case r.pacUpdates <- nextURL:
@@ -238,13 +238,13 @@ type runtimeState struct {
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
-	entries := r.live.Entries()
+	entries := r.currentSnapshot.DomainListEntries()
 	return runtimeState{
 		ProxyListen:      r.listeners[0].Addr().String(),
 		PACListen:        r.listeners[1].Addr().String(),
-		DomainList:       r.live.DomainListPath(),
-		CATrusted:        r.live.CATrusted(),
+		DomainList:       r.currentSnapshot.DomainListPath(),
+		CATrusted:        r.currentSnapshot.CATrusted(),
 		DomainCount:      len(entries),
-		PendingLifecycle: r.live.PendingLifecycle(),
+		PendingLifecycle: r.currentSnapshot.PendingLifecycle(),
 	}
 }

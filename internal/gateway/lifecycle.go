@@ -273,12 +273,12 @@ type lifecycle struct {
 }
 
 type activeRuntime struct {
-	engine *trafficRuntime
-	live   liveconfig.Config
-	pac    *managedpac.Session
-	cancel context.CancelFunc
-	done   chan error
-	phase  runtimePhase
+	engine   *trafficRuntime
+	snapshot liveconfig.Snapshot
+	pac      *managedpac.Session
+	cancel   context.CancelFunc
+	done     chan error
+	phase    runtimePhase
 }
 
 type runtimePhase string
@@ -306,7 +306,7 @@ func newLifecycle(settings managedpac.SystemSettings, trustStore userca.TrustSto
 	}, nil
 }
 
-func liveconfigLoadOrBootstrap() (*liveconfig.Source, liveconfig.Config, error) {
+func liveconfigLoadOrBootstrap() (*liveconfig.Source, liveconfig.Snapshot, error) {
 	return liveconfig.LoadOrBootstrap("", nil)
 }
 
@@ -525,7 +525,7 @@ func (f *lifecycle) Uninstall(ctx context.Context) (UninstallResult, error) {
 func (f *lifecycle) activeRuntimeCATrusted() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.runtime != nil && f.runtime.live.CATrusted()
+	return f.runtime != nil && f.runtime.snapshot.CATrusted()
 }
 
 func (f *lifecycle) watchPACRefreshes(ctx context.Context, active *activeRuntime) {

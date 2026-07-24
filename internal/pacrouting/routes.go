@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"seamless-cors/internal/domainlist"
+	"seamless-cors/internal/liveconfig"
 )
 
 func Handler(body string) http.Handler {
@@ -54,31 +54,31 @@ type originRoute struct {
 	Port   string `json:"port"`
 }
 
-func deriveRouteBuckets(entries []domainlist.Entry, caTrusted bool) routeBuckets {
+func deriveRouteBuckets(entries []liveconfig.DomainListEntry, caTrusted bool) routeBuckets {
 	buckets := routeBuckets{
 		exactHosts:      []hostRoute{},
 		wildcardParents: []hostRoute{},
 		origins:         []originRoute{},
 	}
 	for _, entry := range entries {
-		if entry.Scheme != "" {
-			if entry.Scheme == "https" && !caTrusted {
+		if entry.Scheme() != "" {
+			if entry.Scheme() == "https" && !caTrusted {
 				continue
 			}
 			buckets.origins = append(buckets.origins, originRoute{
-				Scheme: entry.Scheme,
-				Host:   entry.Host,
-				Port:   entry.Port,
+				Scheme: entry.Scheme(),
+				Host:   entry.Hostname(),
+				Port:   entry.Port(),
 			})
 			continue
 		}
 		route := hostRoute{
-			Host:       entry.Host,
+			Host:       entry.Hostname(),
 			AllowHTTP:  true,
 			AllowHTTPS: caTrusted,
 		}
-		if entry.Wildcard {
-			route.Host = strings.TrimPrefix(entry.Host, "*.")
+		if entry.IsWildcard() {
+			route.Host = strings.TrimPrefix(entry.Hostname(), "*.")
 			buckets.wildcardParents = append(buckets.wildcardParents, route)
 			continue
 		}
