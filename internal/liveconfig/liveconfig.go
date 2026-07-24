@@ -14,7 +14,7 @@ import (
 )
 
 const defaultConfigFileName = "config.yaml"
-const defaultDomainListFileName = "domains.txt"
+const defaultDomainList = "# One domain or origin per line.\n# api.dev.example.com\n"
 
 type Snapshot struct {
 	caTrusted                 bool
@@ -66,6 +66,9 @@ func defaultConfigPath() (string, error) {
 func Open(configPath string) (*Source, error) {
 	loaded, err := loadOrBootstrap(configPath)
 	if err != nil {
+		return nil, err
+	}
+	if err := bootstrapDomainList(loaded.DomainPath); err != nil {
 		return nil, err
 	}
 	entries, domainData, err := loadDomainList(loaded.DomainPath)
@@ -240,7 +243,7 @@ func parseFileConfig(configPath string, data []byte) (loadResult, error) {
 func defaultFileConfig() fileConfig {
 	return fileConfig{
 		DomainList: "~/.seamless-cors/domains.txt",
-		CATrusted:  true,
+		CATrusted:  false,
 	}
 }
 
@@ -301,13 +304,30 @@ func bootstrap(configPath string) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
-	domainPath := filepath.Join(home, defaultDomainListFileName)
-	if _, err := os.Stat(domainPath); os.IsNotExist(err) {
-		if err := os.WriteFile(domainPath, []byte("# One domain or origin per line.\n# api.dev.example.com\n"), 0o600); err != nil {
-			return err
-		}
-	}
 	return os.WriteFile(configPath, []byte(commentedDefaultConfig()), 0o600)
+}
+
+func bootstrapDomainList(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(defaultDomainList); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func commentedDefaultConfig() string {
@@ -315,7 +335,7 @@ func commentedDefaultConfig() string {
 domain-list: ~/.seamless-cors/domains.txt
 
 # Enable trusted HTTPS interception through the Installed User CA.
-ca-trusted: true
+ca-trusted: false
 `
 }
 

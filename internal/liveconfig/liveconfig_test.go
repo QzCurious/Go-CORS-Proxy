@@ -453,6 +453,9 @@ func TestLoadIgnoresUnknownConfigKeys(t *testing.T) {
 	if loaded.DomainListPath() != domainPath {
 		t.Fatalf("domain path = %q", loaded.DomainListPath())
 	}
+	if loaded.CATrusted() {
+		t.Fatal("omitted ca-trusted should default to false")
+	}
 }
 
 func TestLoadRejectsSymlinkedConfigFile(t *testing.T) {
@@ -481,8 +484,8 @@ func TestOpenCreatesCommentedDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded := source.Current()
-	if !loaded.CATrusted() {
-		t.Fatal("ca-trusted default should enable trusted HTTPS")
+	if loaded.CATrusted() {
+		t.Fatal("ca-trusted default should disable trusted HTTPS")
 	}
 	if loaded.DomainListPath() != filepath.Join(home, ".seamless-cors", "domains.txt") {
 		t.Fatalf("domain path = %q", loaded.DomainListPath())
@@ -493,6 +496,45 @@ func TestOpenCreatesCommentedDefaults(t *testing.T) {
 	}
 	if !bytes.Contains(configText, []byte("# One domain or origin per line.")) {
 		t.Fatalf("generated config is not commented:\n%s", configText)
+	}
+	if !bytes.Contains(configText, []byte("ca-trusted: false")) {
+		t.Fatalf("generated config does not disable trusted HTTPS:\n%s", configText)
+	}
+}
+
+func TestOpenCreatesMissingConfiguredDomainList(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "nested", "config", "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, configPath, "domain-list: "+domainPath+"\n")
+
+	source, err := liveconfig.Open(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := source.Current().DomainListEntries(); len(entries) != 0 {
+		t.Fatalf("bootstrapped Domain List entries = %#v", entries)
+	}
+	domainText, err := os.ReadFile(domainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(domainText) != "# One domain or origin per line.\n# api.dev.example.com\n" {
+		t.Fatalf("bootstrapped Domain List = %q", domainText)
+	}
+}
+
+func TestLoadExistingDoesNotCreateMissingConfiguredDomainList(t *testing.T) {
+	home := t.TempDir()
+	domainPath := filepath.Join(home, "nested", "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, configPath, "domain-list: "+domainPath+"\n")
+
+	if _, err := liveconfig.LoadExisting(configPath); !os.IsNotExist(err) {
+		t.Fatalf("load error = %v, want not-exist", err)
+	}
+	if _, err := os.Stat(filepath.Dir(domainPath)); !os.IsNotExist(err) {
+		t.Fatalf("passive load created Domain List parent: %v", err)
 	}
 }
 

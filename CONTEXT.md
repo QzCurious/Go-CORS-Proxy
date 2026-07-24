@@ -188,9 +188,9 @@ _Avoid_: Domain List-wide leaf certificate, wildcard-first certificate strategy,
 A lifecycle behavior where HTTPS traffic that reaches the Proxy Listener is intercepted only when `ca-trusted` is enabled and the Installed User CA is trusted for the current user.
 _Avoid_: untrusted HTTPS interception, broken MITM, Domain List gated interception
 
-**Default Trusted HTTPS**:
-A lifecycle default where generated configuration starts with `ca-trusted: true`, while Installed User CA trust is still added or replaced only through CA Ensure and required platform approval.
-_Avoid_: silent trust installation, disabled-by-default HTTPS interception, config-only trust
+**Explicit Trusted HTTPS**:
+A lifecycle default where generated configuration starts with `ca-trusted: false` and an omitted setting also resolves to false. HTTPS interception is enabled only by an explicit `ca-trusted: true`. Installed User CA trust is still added or replaced only through CA Ensure and required platform approval.
+_Avoid_: default HTTPS interception, silent trust installation, config-only trust
 
 **Live Configuration**:
 A gateway module and code boundary that exclusively owns observing, reading, validating, and interpreting user-editable configuration sources, including Domain List syntax, and exposes only validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and Domain List without requiring the user to manually restart or reload the browser or gateway.
@@ -336,12 +336,12 @@ _Avoid_: silent cleanup failure, false cleanup success, manual OS instructions f
 A gateway ownership rule where only one Gateway Owner may run for a user at a time, with the Gateway State Cache used as the first signal that an owner may already be active.
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
-**First-Start Bootstrap**:
-A startup behavior where missing default config and Domain List files are created automatically before validation continues, allowing the same start command to continue with an Empty Domain List when no active entries exist yet.
-_Avoid_: init command, manual file scaffolding
+**Configuration Bootstrap**:
+A start-only behavior where a missing default Config File and any missing configured Domain List are created automatically before validation continues, including required parent directories. The same start command continues with an Empty Domain List, while passive configuration reads remain non-mutating and an existing unsafe, non-file, or unreadable Domain List remains an error.
+_Avoid_: init command, manual file scaffolding, read-time mutation, default-path-only Domain List creation, replacing invalid paths
 
 **Commented Default Config**:
-A First-Start Bootstrap behavior where generated configuration includes short comments only for meaningful user-editable settings.
+A Configuration Bootstrap behavior where generated configuration includes short comments only for meaningful user-editable settings.
 _Avoid_: opaque default config, verbose manual, runtime listener settings
 
 **Start Guidance**:
@@ -676,7 +676,7 @@ QA engineer: "Trust-Aware PAC Routing does not send matched HTTPS traffic to the
 
 Developer: "Will the first run automatically trust a CA?"
 
-QA engineer: "Default Trusted HTTPS makes HTTPS interception the generated configuration default, but CA Ensure still requires platform approval before adding user trust."
+QA engineer: "Explicit Trusted HTTPS keeps HTTPS interception disabled in generated configuration until the user enables it, and CA Ensure still requires platform approval before adding user trust."
 
 Developer: "Will the gateway keep reusing the same development CA?"
 
@@ -812,7 +812,7 @@ QA engineer: "Yes, Empty Domain List is valid, so the gateway runs while PAC Rou
 
 Developer: "Do I need to run an init command first?"
 
-QA engineer: "No, First-Start Bootstrap creates the default files when needed, and Empty Domain List lets that same start command keep running with no matched upstreams yet."
+QA engineer: "No, Configuration Bootstrap creates a missing default Config File and any missing configured Domain List, and Empty Domain List lets that same start command keep running with no matched upstreams yet."
 
 Developer: "Will generated config explain the settings?"
 
