@@ -8,7 +8,21 @@ import (
 	"testing"
 
 	"seamless-cors/internal/managedpac"
+	"seamless-cors/internal/version"
 )
+
+func TestRunPrintsVersion(t *testing.T) {
+	var stdout bytes.Buffer
+
+	err := run([]string{"version"}, &stdout, io.Discard, commandHandlers{})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), version.Version+"\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
 
 func TestStartRejectsConfigurationFlags(t *testing.T) {
 	var stderr bytes.Buffer

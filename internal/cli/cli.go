@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"seamless-cors/internal/managedpac"
+	"seamless-cors/internal/version"
 )
 
 const usage = `Usage:
@@ -16,6 +17,7 @@ const usage = `Usage:
   seamless-cors start
   seamless-cors stop [flags]
   seamless-cors status [flags]
+  seamless-cors version
 `
 
 // Run dispatches the v1 Minimal Command Surface.
@@ -72,6 +74,12 @@ func run(args []string, stdout, stderr io.Writer, commands commandHandlers) erro
 		return reportCommandError(stderr, commands.stop(stdout, stderr))
 	case "status":
 		return reportCommandError(stderr, commands.status(stdout, stderr))
+	case "version":
+		if err := rejectUnexpectedArgs(stderr, "version", args[1:]); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, version.Version)
+		return nil
 	default:
 		err := fmt.Errorf("unknown command: %s", args[0])
 		fmt.Fprintln(stderr, err)

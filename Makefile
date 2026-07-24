@@ -1,7 +1,10 @@
 .PHONY: build test cross-build demo-simple demo-preflight
 
+VERSION ?= dev
+LDFLAGS := -s -w -X seamless-cors/internal/version.Version=$(VERSION)
+
 build:
-	go build -o bin/seamless-cors ./cmd/seamless-cors
+	go build -ldflags "$(LDFLAGS)" -o bin/seamless-cors ./cmd/seamless-cors
 
 test:
 	go test ./...
