@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,7 +35,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
         run: sh ./scripts/package-release.sh
       - uses: actions/upload-artifact@v6
         with:
@@ -42,14 +43,13 @@ jobs:
           path: seamless-cors-*.zip
           if-no-files-found: error
 
-  publish:
-    name: Publish GitHub release
+  release:
+    name: Prepare release bundle
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v6
         with:
           pattern: seamless-cors-*
@@ -58,7 +58,14 @@ jobs:
       - name: Create checksums
         working-directory: dist
         run: sha256sum *.zip > checksums.txt
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: seamless-cors-release
+          path: dist/*
+          if-no-files-found: error
       - name: Publish release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
