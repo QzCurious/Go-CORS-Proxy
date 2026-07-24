@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -67,6 +68,41 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestStartCommandShortensHomePaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var out bytes.Buffer
+	renderStartResult(&out, gateway.StartResult{
+		Kind: gateway.StartResultStarted,
+		Guidance: &gateway.StartGuidanceDetail{
+			ConfigPath:     filepath.Join(home, ".seamless-cors", "config.yaml"),
+			DomainListPath: filepath.Join(home, ".seamless-cors", "domains.txt"),
+		},
+	})
+
+	wantConfig := "config: " + filepath.Join("~", ".seamless-cors", "config.yaml")
+	wantDomains := "domain-list: " + filepath.Join("~", ".seamless-cors", "domains.txt")
+	for _, want := range []string{wantConfig, wantDomains} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("start output missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), home) {
+		t.Fatalf("start output contains home path %q:\n%s", home, out.String())
+	}
+}
+
+func TestHomeRelativePathLeavesPathsOutsideHomeUnchanged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	outside := filepath.Join(filepath.Dir(home), filepath.Base(home)+"-other", "config.yaml")
+
+	if got := homeRelativePath(outside); got != outside {
+		t.Fatalf("homeRelativePath(%q) = %q", outside, got)
 	}
 }
 

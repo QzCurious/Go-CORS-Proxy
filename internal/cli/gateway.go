@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -283,8 +284,8 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 	case gateway.StartResultStarted:
 		if result.Guidance != nil {
 			fmt.Fprintln(stdout, "seamless-cors running")
-			fmt.Fprintf(stdout, "config: %s\n", result.Guidance.ConfigPath)
-			fmt.Fprintf(stdout, "domain-list: %s\n", result.Guidance.DomainListPath)
+			fmt.Fprintf(stdout, "config: %s\n", homeRelativePath(result.Guidance.ConfigPath))
+			fmt.Fprintf(stdout, "domain-list: %s\n", homeRelativePath(result.Guidance.DomainListPath))
 			if result.Guidance.ManagedPACActive {
 				fmt.Fprintln(stdout, "managed-pac: active")
 				if len(result.Guidance.ManagedPACServices) > 0 {
@@ -300,6 +301,24 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 	case gateway.StartResultCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors start cleanup failed")
 	}
+}
+
+func homeRelativePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	relative, err := filepath.Rel(home, path)
+	if err != nil {
+		return path
+	}
+	if relative == "." {
+		return "~"
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return path
+	}
+	return filepath.Join("~", relative)
 }
 
 func renderStopResult(stdout io.Writer, result gateway.StopResult) {
