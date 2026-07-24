@@ -1,5 +1,7 @@
 # seamless-cors
 
+English | [繁體中文](README.zh-TW.md)
+
 `seamless-cors` is a local development and QA tool for testing browser requests
 across origins without changing application URLs or adding CORS support to the
 upstream server.
@@ -21,14 +23,15 @@ opt-in feature.
 A cross-origin `GET` that the browser sends directly to an API without CORS
 response headers.
 
-[Watch the simple request demo](demo/cors-simple-requests/cors-simple-requests.mp4)
+[![Simple request demo](demo/cors-simple-requests/cors-simple-requests.png)](
+demo/cors-simple-requests/cors-simple-requests.gif)
 
 ### Preflighted request
 
 A JSON `POST` that first causes the browser to send an `OPTIONS` preflight
 request.
 
-[Watch the preflighted request demo](demo/cors-preflighted-requests/cors-preflighted-requests.mp4)
+![Preflighted request demo](demo/cors-preflighted-requests/cors-preflighted-requests.gif)
 
 ## Quick Start
 
