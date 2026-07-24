@@ -40,7 +40,9 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: seamless-cors-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: seamless-cors-*.zip
+          path: |
+            seamless-cors-*.tar.gz
+            seamless-cors-*.exe
           if-no-files-found: error
 
   bundle:
@@ -55,7 +57,7 @@ jobs:
           merge-multiple: true
       - name: Create checksums
         working-directory: dist
-        run: sha256sum *.zip > checksums.txt
+        run: sha256sum seamless-cors-* > checksums.txt
       - name: Upload release bundle
         uses: actions/upload-artifact@v6
         with:
