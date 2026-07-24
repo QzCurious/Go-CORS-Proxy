@@ -197,7 +197,7 @@ A gateway module and code boundary that exclusively owns observing, reading, val
 _Avoid_: external Domain List parser, consumer-created Domain List Entry, external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
 
 **Live Configuration Snapshot**:
-The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, pending lifecycle intent, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
+The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, whether Trusted HTTPS Interception intent is pending until the next runtime, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
 _Avoid_: configuration event history, raw YAML config, file-change event, content fingerprint, watcher notification
 
 **Domain List Entries Revision**:
@@ -257,7 +257,7 @@ A configuration behavior where path fields support home-directory and environmen
 _Avoid_: arbitrary string expansion
 
 **Home Config Directory**:
-The default user configuration location at `.seamless-cors` under the user's home directory.
+The default seamless-cors location at `.seamless-cors` under the user's home directory. Live Configuration owns configuration sources within it, while Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
 _Avoid_: platform-native app config directory
 
 **Runtime State Directory**:

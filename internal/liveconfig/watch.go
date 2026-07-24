@@ -64,15 +64,16 @@ type confirmationState struct {
 	matured    bool
 }
 
-func (s *Source) watch(ctx context.Context, output chan Event) {
+type watchEvent struct {
+	snapshot Snapshot
+	err      error
+}
+
+func (s *Source) watch(ctx context.Context, output chan watchEvent) {
 	defer close(output)
-	if err := s.startWatch(); err != nil {
-		publishLatest(output, Event{Err: err})
-		return
-	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		publishLatest(output, Event{Err: fmt.Errorf("Live Configuration observation failed: %w", err)})
+		publishLatest(output, watchEvent{err: fmt.Errorf("Live Configuration observation failed: %w", err)})
 		return
 	}
 	defer watcher.Close()
@@ -90,11 +91,11 @@ func (s *Source) watch(ctx context.Context, output chan Event) {
 	defer state.close()
 	current := s.Current()
 	if err := state.addTarget(current.ConfigPath(), configTarget); err != nil {
-		publishLatest(output, Event{Err: err})
+		publishLatest(output, watchEvent{err: err})
 		return
 	}
 	if err := state.addTarget(current.DomainListPath(), domainTarget); err != nil {
-		publishLatest(output, Event{Err: err})
+		publishLatest(output, watchEvent{err: err})
 		return
 	}
 	if state.reconcileAndPublish(output) {
@@ -107,20 +108,20 @@ func (s *Source) watch(ctx context.Context, output chan Event) {
 			return
 		case event, ok := <-watcher.Events:
 			if !ok {
-				publishLatest(output, Event{Err: errors.New("Live Configuration observation stopped unexpectedly")})
+				publishLatest(output, watchEvent{err: errors.New("Live Configuration observation stopped unexpectedly")})
 				return
 			}
 			state.handleFilesystemEvent(event)
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {
-				publishLatest(output, Event{Err: errors.New("Live Configuration observation stopped unexpectedly")})
+				publishLatest(output, watchEvent{err: errors.New("Live Configuration observation stopped unexpectedly")})
 				return
 			}
 			if errors.Is(watchErr, fsnotify.ErrEventOverflow) {
 				state.scheduleAll()
 				continue
 			}
-			publishLatest(output, Event{Err: fmt.Errorf("Live Configuration observation failed: %w", watchErr)})
+			publishLatest(output, watchEvent{err: fmt.Errorf("Live Configuration observation failed: %w", watchErr)})
 			return
 		case settled := <-state.settled:
 			target, ok := state.targets[settled.path]
@@ -145,7 +146,7 @@ func (s *Source) watch(ctx context.Context, output chan Event) {
 	}
 }
 
-func (w *watcherState) reconcileAndPublish(output chan Event) bool {
+func (w *watcherState) reconcileAndPublish(output chan watchEvent) bool {
 	event, changed, err := w.reconcile()
 	if err != nil {
 		return w.confirmOrPublish(output, err)
@@ -208,15 +209,15 @@ func (w *watcherState) close() {
 	w.cancelAllConfirmations()
 }
 
-func (w *watcherState) confirmOrPublish(output chan Event, err error) bool {
+func (w *watcherState) confirmOrPublish(output chan watchEvent, err error) bool {
 	var invalid *invalidSourceError
 	if !errors.As(err, &invalid) {
-		publishLatest(output, Event{Err: err})
+		publishLatest(output, watchEvent{err: err})
 		return true
 	}
 	if confirmation, ok := w.confirmations[invalid.path]; ok {
 		if confirmation.matured {
-			publishLatest(output, Event{Err: err})
+			publishLatest(output, watchEvent{err: err})
 			return true
 		}
 		return false
@@ -251,11 +252,11 @@ func (w *watcherState) cancelAllConfirmations() {
 	}
 }
 
-func (w *watcherState) reconcile() (Event, bool, error) {
+func (w *watcherState) reconcile() (watchEvent, bool, error) {
 	current, desired, configFingerprint, domainFingerprint := w.source.snapshot()
 	configData, err := readRegularFile(current.ConfigPath())
 	if err != nil {
-		return Event{}, false, invalidConfigError(current.ConfigPath(), err)
+		return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
 	}
 	nextConfigFingerprint := sha256.Sum256(configData)
 	configChanged := nextConfigFingerprint != configFingerprint
@@ -267,46 +268,46 @@ func (w *watcherState) reconcile() (Event, bool, error) {
 	if configChanged {
 		loaded, err = parseFileConfig(current.ConfigPath(), configData)
 		if err != nil {
-			return Event{}, false, invalidConfigError(current.ConfigPath(), err)
+			return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
 		}
 	}
 	if err := w.setCandidateTarget(loaded.DomainPath); err != nil {
-		return Event{}, false, err
+		return watchEvent{}, false, err
 	}
 	domainData, err := readRegularFile(loaded.DomainPath)
 	if err != nil {
-		return Event{}, false, invalidDomainError(loaded.DomainPath, err)
+		return watchEvent{}, false, invalidDomainError(loaded.DomainPath, err)
 	}
 	nextDomainFingerprint := sha256.Sum256(domainData)
 	domainChanged := nextDomainFingerprint != domainFingerprint || loaded.DomainPath != current.DomainListPath()
 	if !configChanged && !domainChanged {
 		if err := w.commitDomainTarget(current.DomainListPath()); err != nil {
-			return Event{}, false, err
+			return watchEvent{}, false, err
 		}
-		return Event{}, false, nil
+		return watchEvent{}, false, nil
 	}
 	entries := current.DomainListEntries()
 	if domainChanged {
 		entries, err = parseDomainList(domainData)
 		if err != nil {
-			return Event{}, false, invalidDomainError(loaded.DomainPath, err)
+			return watchEvent{}, false, invalidDomainError(loaded.DomainPath, err)
 		}
 	}
 	next := snapshotFromLoadResult(
 		loaded,
 		entries,
 		current.DomainListEntriesRevision(),
-		lifecycleChanges(loaded.Config.CATrusted, w.source.baselineCATrusted),
+		loaded.Config.CATrusted != w.source.baselineCATrusted,
 		w.source.baselineCATrusted,
 	)
 	if err := w.commitDomainTarget(loaded.DomainPath); err != nil {
-		return Event{}, false, err
+		return watchEvent{}, false, err
 	}
 	next, semanticChanged := w.source.commit(next, loaded.Config, nextConfigFingerprint, nextDomainFingerprint)
 	if !semanticChanged {
-		return Event{}, false, nil
+		return watchEvent{}, false, nil
 	}
-	return Event{Snapshot: next}, true, nil
+	return watchEvent{snapshot: next}, true, nil
 }
 
 func (s *Source) snapshot() (Snapshot, fileConfig, [sha256.Size]byte, [sha256.Size]byte) {
@@ -415,7 +416,7 @@ func invalidDomainError(path string, err error) error {
 	return &invalidSourceError{path: path, err: fmt.Errorf("Fatal Domain List Error: %w", err)}
 }
 
-func publishLatest(output chan Event, event Event) {
+func publishLatest(output chan watchEvent, event watchEvent) {
 	select {
 	case output <- event:
 		return

@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"seamless-cors/internal/liveconfig"
 )
 
 const stateFileName = "gateway-state-cache.json"
@@ -34,11 +32,19 @@ type verification struct {
 type ownerVerifier func(stateCache) bool
 
 func defaultCoordinator() (*coordinator, error) {
-	runtimeDir, err := liveconfig.RuntimeDir()
+	runtimeDir, err := defaultRuntimeDir()
 	if err != nil {
 		return nil, err
 	}
 	return newCoordinator(runtimeDir), nil
+}
+
+func defaultRuntimeDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".seamless-cors", "runtime"), nil
 }
 
 type coordinator struct {

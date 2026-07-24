@@ -27,17 +27,18 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}
 	}
 
-	source, snapshot, err := liveconfigLoadOrBootstrap()
+	source, err := liveconfig.Open("")
 	if err != nil {
 		return StartResult{}, err
 	}
+	snapshot := source.Current()
 
 	var authority *userca.Authority
 	var caEnsure *CAEnsureResult
 	var ensuredFingerprint string
 	var caDir string
 	if snapshot.CATrusted() {
-		caDir, err = liveconfig.CADir()
+		caDir, err = userca.DefaultDir()
 		if err != nil {
 			return StartResult{}, err
 		}
@@ -79,7 +80,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}, nil
 	}
 
-	latest, err := liveconfig.LoadExisting(snapshot.ConfigPath())
+	latest, err := source.Reload()
 	if err != nil {
 		return postCAFailure(fmt.Errorf("effective configuration revalidation failed: %w", err))
 	}

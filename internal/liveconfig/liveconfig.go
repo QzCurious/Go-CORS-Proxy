@@ -3,8 +3,8 @@ package liveconfig
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultConfigFileName = "config.yaml"
-const DefaultDomainListFileName = "domains.txt"
+const defaultConfigFileName = "config.yaml"
+const defaultDomainListFileName = "domains.txt"
 
 type Snapshot struct {
 	caTrusted                 bool
@@ -22,7 +22,7 @@ type Snapshot struct {
 	domainListPath            string
 	domainListEntries         []DomainListEntry
 	domainListEntriesRevision uint64
-	pendingLifecycle          []string
+	caTrustPending            bool
 }
 
 type fileConfig struct {
@@ -31,15 +31,10 @@ type fileConfig struct {
 }
 
 type loadResult struct {
-	Config       fileConfig
-	ConfigPath   string
-	DomainPath   string
-	Bootstrapped bool
-}
-
-type Event struct {
-	Snapshot Snapshot
-	Err      error
+	Config     fileConfig
+	ConfigData []byte
+	ConfigPath string
+	DomainPath string
 }
 
 type Source struct {
@@ -52,7 +47,7 @@ type Source struct {
 	watchStarted      bool
 }
 
-func HomeDir() (string, error) {
+func homeConfigDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -60,46 +55,26 @@ func HomeDir() (string, error) {
 	return filepath.Join(home, ".seamless-cors"), nil
 }
 
-func DefaultConfigPath() (string, error) {
-	home, err := HomeDir()
+func defaultConfigPath() (string, error) {
+	home, err := homeConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, DefaultConfigFileName), nil
+	return filepath.Join(home, defaultConfigFileName), nil
 }
 
-func RuntimeDir() (string, error) {
-	home, err := HomeDir()
+func Open(configPath string) (*Source, error) {
+	loaded, err := loadOrBootstrap(configPath)
 	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "runtime"), nil
-}
-
-func CADir() (string, error) {
-	home, err := HomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "ca"), nil
-}
-
-func LoadOrBootstrap(configPath string, stdout io.Writer) (*Source, Snapshot, error) {
-	loaded, err := loadOrBootstrap(configPath, stdout)
-	if err != nil {
-		return nil, Snapshot{}, err
+		return nil, err
 	}
 	entries, domainData, err := loadDomainList(loaded.DomainPath)
 	if err != nil {
-		return nil, Snapshot{}, err
+		return nil, err
 	}
-	configData, err := readRegularFile(loaded.ConfigPath)
-	if err != nil {
-		return nil, Snapshot{}, err
-	}
-	snapshot := snapshotFromLoadResult(loaded, entries, 1, nil, loaded.Config.CATrusted)
-	source := newSource(loaded.Config, snapshot, configData, domainData)
-	return source, snapshot, nil
+	snapshot := snapshotFromLoadResult(loaded, entries, 1, false, loaded.Config.CATrusted)
+	source := newSource(loaded.Config, snapshot, loaded.ConfigData, domainData)
+	return source, nil
 }
 
 func LoadExisting(configPath string) (Snapshot, error) {
@@ -111,7 +86,7 @@ func LoadExisting(configPath string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return snapshotFromLoadResult(loaded, entries, 1, nil, loaded.Config.CATrusted), nil
+	return snapshotFromLoadResult(loaded, entries, 1, false, loaded.Config.CATrusted), nil
 }
 
 func newSource(desired fileConfig, snapshot Snapshot, configData, domainData []byte) *Source {
@@ -130,50 +105,77 @@ func (s *Source) Current() Snapshot {
 	return s.current
 }
 
-func (s *Source) Watch(ctx context.Context) <-chan Event {
-	events := make(chan Event, 1)
+func (s *Source) Reload() (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.watchStarted {
+		return Snapshot{}, errors.New("Live Configuration Reload must be called before Watch")
+	}
+	loaded, err := loadExisting(s.current.configPath)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	entries, domainData, err := loadDomainList(loaded.DomainPath)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	revision := s.current.domainListEntriesRevision
+	if !sameDomainListEntries(s.current.domainListEntries, entries) {
+		revision++
+	}
+	snapshot := snapshotFromLoadResult(loaded, entries, revision, false, loaded.Config.CATrusted)
+	s.current = snapshot
+	s.desiredConfig = loaded.Config
+	s.baselineCATrusted = loaded.Config.CATrusted
+	s.configFingerprint = sha256.Sum256(loaded.ConfigData)
+	s.domainFingerprint = sha256.Sum256(domainData)
+	return snapshot, nil
+}
+
+func (s *Source) Watch(ctx context.Context, apply func(Snapshot)) error {
+	if apply == nil {
+		return errors.New("Live Configuration Watch requires an apply function")
+	}
+	if err := s.startWatch(); err != nil {
+		return err
+	}
+	events := make(chan watchEvent, 1)
 	go s.watch(ctx, events)
-	return events
+	for event := range events {
+		if event.err != nil {
+			return event.err
+		}
+		apply(event.snapshot)
+	}
+	return nil
 }
 
 func sameSemanticSnapshot(left, right Snapshot) bool {
 	if left.caTrusted != right.caTrusted ||
 		left.configPath != right.configPath ||
 		left.domainListPath != right.domainListPath ||
-		!sameStrings(left.pendingLifecycle, right.pendingLifecycle) ||
+		left.caTrustPending != right.caTrustPending ||
 		!sameDomainListEntries(left.domainListEntries, right.domainListEntries) {
 		return false
 	}
 	return true
 }
 
-func sameStrings(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
-}
-
-func snapshotFromLoadResult(loaded loadResult, entries []DomainListEntry, domainListEntriesRevision uint64, pending []string, activeCATrusted bool) Snapshot {
+func snapshotFromLoadResult(loaded loadResult, entries []DomainListEntry, domainListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
 	return Snapshot{
 		caTrusted:                 activeCATrusted,
 		configPath:                loaded.ConfigPath,
 		domainListPath:            loaded.DomainPath,
 		domainListEntries:         append([]DomainListEntry(nil), entries...),
 		domainListEntriesRevision: domainListEntriesRevision,
-		pendingLifecycle:          append([]string(nil), pending...),
+		caTrustPending:            caTrustPending,
 	}
 }
 
-func loadOrBootstrap(configPath string, stdout io.Writer) (loadResult, error) {
+func loadOrBootstrap(configPath string) (loadResult, error) {
 	if configPath == "" {
 		var err error
-		configPath, err = DefaultConfigPath()
+		configPath, err = defaultConfigPath()
 		if err != nil {
 			return loadResult{}, err
 		}
@@ -183,7 +185,6 @@ func loadOrBootstrap(configPath string, stdout io.Writer) (loadResult, error) {
 		return loadResult{}, err
 	}
 
-	var bootstrapped bool
 	if _, err := os.Stat(configPath); err != nil {
 		if !os.IsNotExist(err) {
 			return loadResult{}, err
@@ -191,25 +192,15 @@ func loadOrBootstrap(configPath string, stdout io.Writer) (loadResult, error) {
 		if err := bootstrap(configPath); err != nil {
 			return loadResult{}, err
 		}
-		bootstrapped = true
-		if stdout != nil {
-			home, _ := HomeDir()
-			fmt.Fprintf(stdout, "Created:\n  %s\n  %s\n\n", configPath, filepath.Join(home, DefaultDomainListFileName))
-		}
 	}
 
-	loaded, err := loadExisting(configPath)
-	if err != nil {
-		return loadResult{}, err
-	}
-	loaded.Bootstrapped = bootstrapped
-	return loaded, nil
+	return loadExisting(configPath)
 }
 
 func loadExisting(configPath string) (loadResult, error) {
 	if configPath == "" {
 		var err error
-		configPath, err = DefaultConfigPath()
+		configPath, err = defaultConfigPath()
 		if err != nil {
 			return loadResult{}, err
 		}
@@ -230,7 +221,7 @@ func parseFileConfig(configPath string, data []byte) (loadResult, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return loadResult{}, fmt.Errorf("invalid config.yaml: %w", err)
 	}
-	domainPath, err := ExpandPath(cfg.DomainList)
+	domainPath, err := expandPath(cfg.DomainList)
 	if err != nil {
 		return loadResult{}, err
 	}
@@ -240,6 +231,7 @@ func parseFileConfig(configPath string, data []byte) (loadResult, error) {
 	}
 	return loadResult{
 		Config:     cfg,
+		ConfigData: data,
 		ConfigPath: configPath,
 		DomainPath: cfg.DomainList,
 	}, nil
@@ -259,7 +251,7 @@ func validateFileConfig(cfg fileConfig) error {
 	return nil
 }
 
-func ExpandPath(path string) (string, error) {
+func expandPath(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
@@ -304,19 +296,12 @@ func readRegularFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func lifecycleChanges(nextCATrusted, baselineCATrusted bool) []string {
-	if nextCATrusted != baselineCATrusted {
-		return []string{"ca-trusted"}
-	}
-	return nil
-}
-
 func bootstrap(configPath string) error {
 	home := filepath.Dir(configPath)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
-	domainPath := filepath.Join(home, DefaultDomainListFileName)
+	domainPath := filepath.Join(home, defaultDomainListFileName)
 	if _, err := os.Stat(domainPath); os.IsNotExist(err) {
 		if err := os.WriteFile(domainPath, []byte("# One domain or origin per line.\n# api.dev.example.com\n"), 0o600); err != nil {
 			return err
@@ -346,8 +331,8 @@ func (s Snapshot) DomainListEntriesRevision() uint64 {
 	return s.domainListEntriesRevision
 }
 
-func (s Snapshot) PendingLifecycle() []string {
-	return append([]string(nil), s.pendingLifecycle...)
+func (s Snapshot) CATrustPending() bool {
+	return s.caTrustPending
 }
 
 func (s Snapshot) ConfigPath() string {

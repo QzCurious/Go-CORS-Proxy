@@ -306,10 +306,6 @@ func newLifecycle(settings managedpac.SystemSettings, trustStore userca.TrustSto
 	}, nil
 }
 
-func liveconfigLoadOrBootstrap() (*liveconfig.Source, liveconfig.Snapshot, error) {
-	return liveconfig.LoadOrBootstrap("", nil)
-}
-
 func (f *lifecycle) FatalRuntimeErrors() <-chan error {
 	return f.fatal
 }
@@ -446,7 +442,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			DomainCount:        state.DomainCount,
 			CATrusted:          state.CATrusted,
 			ManagedPACServices: managedPACServices(pac),
-			PendingLifecycle:   pendingLifecycleKinds(state.PendingLifecycle),
+			PendingLifecycle:   pendingLifecycleKinds(state.CATrustPending),
 		}
 		return result, nil
 	}
@@ -462,7 +458,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	f.caAdmissionMu.Lock()
 	defer f.caAdmissionMu.Unlock()
-	caDir, err := liveconfig.CADir()
+	caDir, err := userca.DefaultDir()
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -501,7 +497,7 @@ func (f *lifecycle) Uninstall(ctx context.Context) (UninstallResult, error) {
 	if f.activeRuntimeCATrusted() {
 		return UninstallResult{Kind: UninstallResultBlockedRuntimeActive}, nil
 	}
-	caDir, err := liveconfig.CADir()
+	caDir, err := userca.DefaultDir()
 	if err != nil {
 		return UninstallResult{}, err
 	}
@@ -611,7 +607,7 @@ func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive
 }
 
 func (f *lifecycle) installedCAStatus(ctx context.Context) InstalledCAStatusDetail {
-	caDir, err := liveconfig.CADir()
+	caDir, err := userca.DefaultDir()
 	if err != nil {
 		return InstalledCAStatusDetail{Health: CAHealthUnknown}
 	}
@@ -643,14 +639,11 @@ func caHealthStatus(health userca.Health) CAHealthStatus {
 	}
 }
 
-func pendingLifecycleKinds(values []string) []PendingLifecycleChangeKind {
-	var kinds []PendingLifecycleChangeKind
-	for _, value := range values {
-		if value == string(PendingLifecycleChangeCATrusted) {
-			kinds = append(kinds, PendingLifecycleChangeCATrusted)
-		}
+func pendingLifecycleKinds(caTrustPending bool) []PendingLifecycleChangeKind {
+	if caTrustPending {
+		return []PendingLifecycleChangeKind{PendingLifecycleChangeCATrusted}
 	}
-	return kinds
+	return nil
 }
 
 func installAdvisories() []InstallAdvisory {

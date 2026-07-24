@@ -168,24 +168,13 @@ func (r *trafficRuntime) snapshot() runtimeState {
 }
 
 func (r *trafficRuntime) watchLiveConfig(ctx context.Context, errs chan<- serverError) {
-	events := r.liveConfig.Watch(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, ok := <-events:
-			if !ok {
-				return
-			}
-			if event.Err != nil {
-				select {
-				case errs <- serverError{source: "live-config", err: event.Err}:
-				case <-ctx.Done():
-				}
-				return
-			}
-			r.applyLiveConfig(event.Snapshot)
-		}
+	err := r.liveConfig.Watch(ctx, r.applyLiveConfig)
+	if err == nil {
+		return
+	}
+	select {
+	case errs <- serverError{source: "live-config", err: err}:
+	case <-ctx.Done():
 	}
 }
 
@@ -229,22 +218,22 @@ func (r *trafficRuntime) pacURL(version uint64) string {
 }
 
 type runtimeState struct {
-	ProxyListen      string
-	PACListen        string
-	DomainList       string
-	CATrusted        bool
-	DomainCount      int
-	PendingLifecycle []string
+	ProxyListen    string
+	PACListen      string
+	DomainList     string
+	CATrusted      bool
+	DomainCount    int
+	CATrustPending bool
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
 	entries := r.currentSnapshot.DomainListEntries()
 	return runtimeState{
-		ProxyListen:      r.listeners[0].Addr().String(),
-		PACListen:        r.listeners[1].Addr().String(),
-		DomainList:       r.currentSnapshot.DomainListPath(),
-		CATrusted:        r.currentSnapshot.CATrusted(),
-		DomainCount:      len(entries),
-		PendingLifecycle: r.currentSnapshot.PendingLifecycle(),
+		ProxyListen:    r.listeners[0].Addr().String(),
+		PACListen:      r.listeners[1].Addr().String(),
+		DomainList:     r.currentSnapshot.DomainListPath(),
+		CATrusted:      r.currentSnapshot.CATrusted(),
+		DomainCount:    len(entries),
+		CATrustPending: r.currentSnapshot.CATrustPending(),
 	}
 }

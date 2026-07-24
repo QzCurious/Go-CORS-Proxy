@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,10 +19,11 @@ func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {
 	writeTrafficTestFile(t, secondDomainPath, "# same entries\nAPI.EXAMPLE.TEST\n")
 	writeTrafficTestFile(t, configPath, "domain-list: "+firstDomainPath+"\nca-trusted: false\n")
 
-	source, initial, err := liveconfig.LoadOrBootstrap(configPath, io.Discard)
+	source, err := liveconfig.Open(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	initial := source.Current()
 	runtime, err := newRuntime(source, initial)
 	if err != nil {
 		t.Fatal(err)
@@ -36,19 +36,22 @@ func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := source.Watch(ctx)
+	errs := make(chan serverError, 1)
+	go runtime.watchLiveConfig(ctx, errs)
 	initialPACURL := runtime.PACURL()
 
 	writeTrafficTestFile(t, configPath, "domain-list: "+secondDomainPath+"\nca-trusted: false\n")
-	pathOnly := waitForTrafficConfigEvent(t, events)
-	runtime.applyLiveConfig(pathOnly.Snapshot)
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
+		return state.DomainList == secondDomainPath
+	})
 	if runtime.PACURL() != initialPACURL {
 		t.Fatalf("path-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
 	}
 
 	writeTrafficTestFile(t, secondDomainPath, "changed.example.test\n")
-	entriesChanged := waitForTrafficConfigEvent(t, events)
-	runtime.applyLiveConfig(entriesChanged.Snapshot)
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
+		return state.DomainCount == 1 && runtime.PACURL() != initialPACURL
+	})
 	if runtime.PACURL() == initialPACURL {
 		t.Fatalf("Domain List Entries Revision change did not advance PAC URL %q", initialPACURL)
 	}
@@ -61,19 +64,22 @@ func writeTrafficTestFile(t *testing.T, path, contents string) {
 	}
 }
 
-func waitForTrafficConfigEvent(t *testing.T, events <-chan liveconfig.Event) liveconfig.Event {
+func waitForTrafficConfig(t *testing.T, runtime *trafficRuntime, errs <-chan serverError, ready func(runtimeState) bool) {
 	t.Helper()
-	select {
-	case event, ok := <-events:
-		if !ok {
-			t.Fatal("Live Configuration event channel closed")
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if ready(runtime.snapshot()) {
+			return
 		}
-		if event.Err != nil {
-			t.Fatal(event.Err)
+		select {
+		case err := <-errs:
+			t.Fatal(err.err)
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatal("timed out waiting for Live Configuration update")
 		}
-		return event
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Live Configuration event")
-		return liveconfig.Event{}
 	}
 }
