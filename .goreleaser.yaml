@@ -1,0 +1,52 @@
+version: 2
+
+project_name: seamless-cors
+
+builds:
+  - id: seamless-cors
+    main: ./cmd/seamless-cors
+    binary: seamless-cors
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w -X seamless-cors/internal/version.Version={{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
+    goos:
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - ids:
+      - seamless-cors
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}-{{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}-{{ if eq .Os "darwin" }}macos-{{ if eq .Arch "amd64" }}intel{{ else }}apple-silicon{{ end }}{{ else }}windows-{{ if eq .Arch "amd64" }}x64{{ else }}arm64{{ end }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+      - README.zh-TW.md
+
+checksum:
+  name_template: >-
+    {{ .ProjectName }}-{{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}-checksums.txt
+
+snapshot:
+  version_template: dev-{{ .ShortCommit }}
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
