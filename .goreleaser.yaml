@@ -44,9 +44,4 @@ snapshot:
   version_template: dev-{{ .ShortCommit }}
 
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - '^docs:'
-      - '^test:'
-      - '^chore:'
+  disable: true
