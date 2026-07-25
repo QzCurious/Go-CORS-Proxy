@@ -30,7 +30,30 @@
 
 前往 [最新的 GitHub Release](https://github.com/QzCurious/seamless-cors/releases/latest)，下載符合你的作業系統與 CPU 架構的壓縮檔並解壓縮。
 
-將 `seamless-cors`（Windows 為 `seamless-cors.exe`）放進 `PATH` 中的任一目錄，然後啟動服務：
+### macOS
+
+將壓縮檔在 `~/Downloads` 解壓縮後，執行以下指令安裝：
+
+```sh
+mkdir -p ~/.local/bin
+mv ~/Downloads/seamless-cors ~/.local/bin/seamless-cors
+# 允許從可信任 GitHub Release 下載的版本在 macOS 上執行
+xattr -d com.apple.quarantine ~/.local/bin/seamless-cors
+```
+
+請確認你使用的 shell 已將 `~/.local/bin` 加入 `PATH`。
+
+### Windows
+
+將解壓縮後的 `seamless-cors.exe` 移到你擁有的目錄，例如
+`%USERPROFILE%\.local\bin`。在 Windows 的環境變數中，將該目錄加入使用者的
+`Path`，然後開啟新的終端機。
+
+未簽章的 Release 可能會出現 Windows SmartScreen 警告。若你確認下載來源是本
+專案的 GitHub Release，請選擇 **更多資訊**，再選擇 **仍要執行**；受管理的工作
+裝置可能不允許這個例外。
+
+### 啟動服務
 
 ```sh
 seamless-cors start

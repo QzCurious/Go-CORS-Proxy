@@ -38,8 +38,30 @@ Download the archive for your platform and processor from the
 [latest GitHub release](https://github.com/QzCurious/seamless-cors/releases/latest),
 then extract it.
 
-Move `seamless-cors` (`seamless-cors.exe` on Windows) to a directory in your
-`PATH`, then start the gateway:
+### macOS
+
+After extracting the archive in `~/Downloads`, install the binary:
+
+```sh
+mkdir -p ~/.local/bin
+mv ~/Downloads/seamless-cors ~/.local/bin/seamless-cors
+# Allow this trusted Release binary to run on macOS
+xattr -d com.apple.quarantine ~/.local/bin/seamless-cors
+```
+
+Ensure `~/.local/bin` is on the `PATH` for the shell you use.
+
+### Windows
+
+Move `seamless-cors.exe` from the extracted archive to a directory you own,
+such as `%USERPROFILE%\.local\bin`. Add that directory to your user `Path` in
+Windows Environment Variables, then open a new terminal.
+
+Windows may show a SmartScreen warning for an unsigned release. If you trust
+the download came from this project's GitHub Release, select **More info** and
+then **Run anyway**. A managed work device may not permit this exception.
+
+### Start the gateway
 
 ```sh
 seamless-cors start
