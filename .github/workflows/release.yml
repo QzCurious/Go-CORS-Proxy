@@ -7,82 +7,47 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
-    name: Build ${{ matrix.platform }}
+  release:
+    name: Build and release
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: darwin
-            goarch: amd64
-            platform: macos-intel
-          - goos: darwin
-            goarch: arm64
-            platform: macos-apple-silicon
-          - goos: windows
-            goarch: amd64
-            platform: windows-x64
-          - goos: windows
-            goarch: arm64
-            platform: windows-arm64
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - name: Build distribution
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
-        run: sh ./scripts/package-release.sh
-      - uses: actions/upload-artifact@v6
-        with:
-          name: seamless-cors-${{ matrix.platform }}
-          path: |
-            seamless-cors-*.tar.gz
-            seamless-cors-*.exe
-          if-no-files-found: error
 
-  bundle:
-    name: Prepare release bundle
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v7
+      - name: Publish tagged release
+        if: github.ref_type == 'tag'
+        uses: goreleaser/goreleaser-action@v7
         with:
-          pattern: seamless-cors-*
-          path: dist
-          merge-multiple: true
-      - name: Create checksums
-        working-directory: dist
-        run: sha256sum seamless-cors-* > checksums.txt
-      - name: Upload release bundle
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build snapshot
+        if: github.event_name == 'workflow_dispatch'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+
+      - name: Upload snapshot assets
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v6
         with:
-          name: seamless-cors-release
-          path: dist/*
+          name: seamless-cors-snapshot-${{ github.run_number }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*checksums.txt
           if-no-files-found: error
-
-  publish:
-    name: Publish GitHub release
-    if: github.event_name == 'push'
-    needs: bundle
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v7
-        with:
-          name: seamless-cors-release
-          path: dist
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/* --verify-tag --generate-notes --title "$TAG"
