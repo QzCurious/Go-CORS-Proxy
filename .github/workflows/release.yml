@@ -41,13 +41,34 @@ jobs:
           version: "~> v2"
           args: release --snapshot --clean
 
-      - name: Upload snapshot assets
+      - name: Upload macOS Intel snapshot
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v6
         with:
-          name: seamless-cors-snapshot-${{ github.run_number }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*checksums.txt
+          name: seamless-cors-snapshot-${{ github.run_number }}-macos-intel
+          path: dist/*-macos-intel.tar.gz
+          if-no-files-found: error
+
+      - name: Upload macOS Apple Silicon snapshot
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: seamless-cors-snapshot-${{ github.run_number }}-macos-apple-silicon
+          path: dist/*-macos-apple-silicon.tar.gz
+          if-no-files-found: error
+
+      - name: Upload Windows x64 snapshot
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: seamless-cors-snapshot-${{ github.run_number }}-windows-x64
+          path: dist/*-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Upload Windows ARM64 snapshot
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: seamless-cors-snapshot-${{ github.run_number }}-windows-arm64
+          path: dist/*-windows-arm64.zip
           if-no-files-found: error
