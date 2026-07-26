@@ -25,6 +25,30 @@ type Snapshot struct {
 	caTrustPending            bool
 }
 
+func (s Snapshot) CATrusted() bool {
+	return s.caTrusted
+}
+
+func (s Snapshot) DomainListEntries() []DomainListEntry {
+	return append([]DomainListEntry(nil), s.domainListEntries...)
+}
+
+func (s Snapshot) DomainListEntriesRevision() uint64 {
+	return s.domainListEntriesRevision
+}
+
+func (s Snapshot) CATrustPending() bool {
+	return s.caTrustPending
+}
+
+func (s Snapshot) ConfigPath() string {
+	return s.configPath
+}
+
+func (s Snapshot) DomainListPath() string {
+	return s.domainListPath
+}
+
 type fileConfig struct {
 	DomainList string `yaml:"domain-list"`
 	CATrusted  bool   `yaml:"ca-trusted"`
@@ -45,22 +69,6 @@ type Source struct {
 	configFingerprint [sha256.Size]byte
 	domainFingerprint [sha256.Size]byte
 	watchStarted      bool
-}
-
-func homeConfigDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".seamless-cors"), nil
-}
-
-func defaultConfigPath() (string, error) {
-	home, err := homeConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, defaultConfigFileName), nil
 }
 
 func Open(configPath string) (*Source, error) {
@@ -173,6 +181,22 @@ func snapshotFromLoadResult(loaded loadResult, entries []DomainListEntry, domain
 		domainListEntriesRevision: domainListEntriesRevision,
 		caTrustPending:            caTrustPending,
 	}
+}
+
+func homeConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".seamless-cors"), nil
+}
+
+func defaultConfigPath() (string, error) {
+	home, err := homeConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, defaultConfigFileName), nil
 }
 
 func loadOrBootstrap(configPath string) (loadResult, error) {
@@ -337,28 +361,4 @@ domain-list: ~/.seamless-cors/domains.txt
 # Enable trusted HTTPS interception through the Installed User CA.
 ca-trusted: false
 `
-}
-
-func (s Snapshot) CATrusted() bool {
-	return s.caTrusted
-}
-
-func (s Snapshot) DomainListEntries() []DomainListEntry {
-	return append([]DomainListEntry(nil), s.domainListEntries...)
-}
-
-func (s Snapshot) DomainListEntriesRevision() uint64 {
-	return s.domainListEntriesRevision
-}
-
-func (s Snapshot) CATrustPending() bool {
-	return s.caTrustPending
-}
-
-func (s Snapshot) ConfigPath() string {
-	return s.configPath
-}
-
-func (s Snapshot) DomainListPath() string {
-	return s.domainListPath
 }

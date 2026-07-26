@@ -45,15 +45,6 @@ func (s *darwinSystemSettings) Apply(ctx context.Context, pacURL string, service
 	return result, nil
 }
 
-func isMissingNetworkService(out []byte, err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(string(out) + " " + err.Error())
-	return strings.Contains(message, "not a recognized network service") ||
-		strings.Contains(message, "network service was not found")
-}
-
 func (s *darwinSystemSettings) Snapshot(ctx context.Context) ([]ServiceSnapshot, error) {
 	serviceNames, err := s.listServices(ctx)
 	if err != nil {
@@ -135,4 +126,13 @@ func (s *darwinSystemSettings) networksetup(ctx context.Context, args ...string)
 		return out, fmt.Errorf("networksetup %s failed: %s: %w", strings.Join(args, " "), bytes.TrimSpace(out), err)
 	}
 	return out, nil
+}
+
+func isMissingNetworkService(out []byte, err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(string(out) + " " + err.Error())
+	return strings.Contains(message, "not a recognized network service") ||
+		strings.Contains(message, "network service was not found")
 }

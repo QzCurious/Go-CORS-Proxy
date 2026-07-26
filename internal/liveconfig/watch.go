@@ -69,6 +69,16 @@ type watchEvent struct {
 	err      error
 }
 
+func (s *Source) startWatch() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.watchStarted {
+		return errors.New("Live Configuration Watch may only be called once")
+	}
+	s.watchStarted = true
+	return nil
+}
+
 func (s *Source) watch(ctx context.Context, output chan watchEvent) {
 	defer close(output)
 	watcher, err := fsnotify.NewWatcher()
@@ -156,16 +166,6 @@ func (w *watcherState) reconcileAndPublish(output chan watchEvent) bool {
 		publishLatest(output, event)
 	}
 	return false
-}
-
-func (s *Source) startWatch() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.watchStarted {
-		return errors.New("Live Configuration Watch may only be called once")
-	}
-	s.watchStarted = true
-	return nil
 }
 
 func (w *watcherState) handleFilesystemEvent(event fsnotify.Event) {

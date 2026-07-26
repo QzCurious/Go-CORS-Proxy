@@ -20,11 +20,6 @@ import (
 var ErrPACReplacementConsentDeclined = errors.New("PAC replacement consent declined")
 
 type startCommand func(context.Context, gateway.StartHooks) (gateway.StartResult, error)
-type serveCommand func(context.Context, func()) error
-type stopCommand func(context.Context) (gateway.StopResult, error)
-type statusCommand func(context.Context) (gateway.StatusResult, error)
-type installCACommand func(context.Context) (gateway.InstallResult, error)
-type uninstallCACommand func(context.Context) (gateway.UninstallResult, error)
 
 func Start(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -64,6 +59,8 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	return err
 }
 
+type serveCommand func(context.Context, func()) error
+
 func Serve(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -82,17 +79,7 @@ func serveWithContext(ctx context.Context, stdout io.Writer, command serveComman
 	return command(ctx, ready)
 }
 
-func Install(stdout, _ io.Writer) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return InstallCA(ctx, stdout)
-}
-
-func Uninstall(stdout, _ io.Writer) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return UninstallCA(ctx, stdout)
-}
+type stopCommand func(context.Context) (gateway.StopResult, error)
 
 func Stop(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -117,6 +104,8 @@ func stopGatewayWithCommand(ctx context.Context, stdout io.Writer, command stopC
 	return fmt.Errorf("gateway stop failed: %s", cleanupFailureText(result.CleanupFailures))
 }
 
+type statusCommand func(context.Context) (gateway.StatusResult, error)
+
 func Status(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -140,6 +129,14 @@ func statusWithCommand(ctx context.Context, stdout io.Writer, command statusComm
 	return nil
 }
 
+type installCACommand func(context.Context) (gateway.InstallResult, error)
+
+func Install(stdout, _ io.Writer) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return InstallCA(ctx, stdout)
+}
+
 func InstallCA(ctx context.Context, stdout io.Writer) error {
 	return installCAWithCommand(ctx, stdout, gateway.InstallCA)
 }
@@ -159,6 +156,14 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 		return fmt.Errorf("Installed User CA replacement blocked while trusted gateway runtime is active")
 	}
 	return nil
+}
+
+type uninstallCACommand func(context.Context) (gateway.UninstallResult, error)
+
+func Uninstall(stdout, _ io.Writer) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return UninstallCA(ctx, stdout)
 }
 
 func UninstallCA(ctx context.Context, stdout io.Writer) error {

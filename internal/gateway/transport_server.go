@@ -92,6 +92,14 @@ func (s *routerServer) health(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type startInput struct {
+	Body *StartRequest
+}
+
+type startOutput struct {
+	Body StartResult
+}
+
 func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutput, error) {
 	request := StartRequest{}
 	if input.Body != nil {
@@ -123,6 +131,10 @@ type startHTTPError struct {
 func (e *startHTTPError) Error() string  { return e.Detail }
 func (e *startHTTPError) GetStatus() int { return e.Status }
 
+type stopOutput struct {
+	Body StopResult
+}
+
 func (s *routerServer) stop(ctx context.Context, _ *struct{}) (*stopOutput, error) {
 	result, err := s.handler.Stop(ctx)
 	if err != nil {
@@ -138,6 +150,10 @@ func (s *routerServer) stop(ctx context.Context, _ *struct{}) (*stopOutput, erro
 	return &stopOutput{Body: result}, nil
 }
 
+type statusOutput struct {
+	Body StatusResult
+}
+
 func (s *routerServer) status(ctx context.Context, _ *struct{}) (*statusOutput, error) {
 	result, err := s.handler.Status(ctx, false)
 	if err != nil {
@@ -146,12 +162,20 @@ func (s *routerServer) status(ctx context.Context, _ *struct{}) (*statusOutput, 
 	return &statusOutput{Body: result}, nil
 }
 
+type installOutput struct {
+	Body InstallResult
+}
+
 func (s *routerServer) install(ctx context.Context, _ *struct{}) (*installOutput, error) {
 	result, err := s.handler.Install(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &installOutput{Body: result}, nil
+}
+
+type uninstallOutput struct {
+	Body UninstallResult
 }
 
 func (s *routerServer) uninstall(ctx context.Context, _ *struct{}) (*uninstallOutput, error) {
@@ -182,28 +206,4 @@ func gatewayRouterConfig() huma.Config {
 		},
 	}
 	return config
-}
-
-type startInput struct {
-	Body *StartRequest
-}
-
-type startOutput struct {
-	Body StartResult
-}
-
-type stopOutput struct {
-	Body StopResult
-}
-
-type statusOutput struct {
-	Body StatusResult
-}
-
-type installOutput struct {
-	Body InstallResult
-}
-
-type uninstallOutput struct {
-	Body UninstallResult
 }

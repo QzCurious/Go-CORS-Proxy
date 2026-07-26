@@ -15,13 +15,6 @@ type DomainListEntry struct {
 	valid bool
 }
 
-type domainListEntry struct {
-	scheme   string
-	hostname string
-	port     string
-	wildcard bool
-}
-
 func (e DomainListEntry) Scheme() string {
 	return e.semanticValue().scheme
 }
@@ -43,6 +36,13 @@ func (e DomainListEntry) semanticValue() domainListEntry {
 		panic("invalid zero-value Domain List Entry")
 	}
 	return e.value
+}
+
+type domainListEntry struct {
+	scheme   string
+	hostname string
+	port     string
+	wildcard bool
 }
 
 type domainListLineError struct {

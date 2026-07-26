@@ -81,6 +81,10 @@ func New(opts Options) (*Core, error) {
 	return &Core{proxy: proxy}, nil
 }
 
+func (c *Core) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	c.proxy.ServeHTTP(w, req)
+}
+
 func configureProxyLogging(proxy *goproxy.ProxyHttpServer) {
 	if proxyDebugEnabled() {
 		proxy.Verbose = true
@@ -97,10 +101,6 @@ func proxyDebugEnabled() bool {
 	default:
 		return false
 	}
-}
-
-func (c *Core) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	c.proxy.ServeHTTP(w, req)
 }
 
 func defaultTransport() *http.Transport {

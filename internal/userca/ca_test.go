@@ -13,12 +13,6 @@ import (
 	"time"
 )
 
-type fakeTrustStore struct {
-	records []TrustedCertificate
-	trusted int
-	removed int
-}
-
 type crashingTrustStore struct {
 	marker string
 }
@@ -125,6 +119,13 @@ func (f *blockingTrustStore) Trust(ctx context.Context, certPEM []byte) error {
 	return err
 }
 
+func (f *blockingTrustStore) Remove(context.Context, []string) error {
+	f.mu.Lock()
+	f.records = nil
+	f.mu.Unlock()
+	return nil
+}
+
 func TestCancelledEnsurePreservesCAWhenTrustInstallationCompleted(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ca")
 	store := &blockingTrustStore{
@@ -224,13 +225,6 @@ func TestFailedEnsureRemovesPartialTrustAndMaterial(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("partial local material remained: %v", err)
 	}
-}
-
-func (f *blockingTrustStore) Remove(context.Context, []string) error {
-	f.mu.Lock()
-	f.records = nil
-	f.mu.Unlock()
-	return nil
 }
 
 func TestEnsureContextSerializesCAMutationAndWaitsCancellably(t *testing.T) {
@@ -336,6 +330,12 @@ func TestCancelledUninstallFinishesRemovingCAState(t *testing.T) {
 	if report.Health != HealthMissing {
 		t.Fatalf("health after cancelled uninstall = %s", report.Health)
 	}
+}
+
+type fakeTrustStore struct {
+	records []TrustedCertificate
+	trusted int
+	removed int
 }
 
 func (f *fakeTrustStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {

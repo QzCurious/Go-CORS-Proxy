@@ -72,6 +72,29 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 	}
 }
 
+func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
+	settings := &lifecycleTestSystemSettings{
+		states: []managedpac.ServiceSnapshot{{
+			ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1/seamless-cors.pac", Enabled: true,
+		}},
+		clearErr: errors.New("cleanup denied"),
+	}
+	lifecycle, err := newLifecycle(settings, emptyTestTrustStore{}, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != StartResultCleanupFailed {
+		t.Fatalf("start kind = %s, want %s", result.Kind, StartResultCleanupFailed)
+	}
+	if len(result.CleanupFailures) != 1 || result.CleanupFailures[0].Subject != CleanupSubjectManagedPAC {
+		t.Fatalf("cleanup failures = %#v", result.CleanupFailures)
+	}
+}
+
 type lifecycleTestSystemSettings struct {
 	states   []managedpac.ServiceSnapshot
 	applied  int
@@ -114,26 +137,3 @@ func (emptyTestTrustStore) TrustedCertificates(context.Context) ([]userca.Truste
 }
 func (emptyTestTrustStore) Trust(context.Context, []byte) error    { return nil }
 func (emptyTestTrustStore) Remove(context.Context, []string) error { return nil }
-
-func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
-	settings := &lifecycleTestSystemSettings{
-		states: []managedpac.ServiceSnapshot{{
-			ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1/seamless-cors.pac", Enabled: true,
-		}},
-		clearErr: errors.New("cleanup denied"),
-	}
-	lifecycle, err := newLifecycle(settings, emptyTestTrustStore{}, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Kind != StartResultCleanupFailed {
-		t.Fatalf("start kind = %s, want %s", result.Kind, StartResultCleanupFailed)
-	}
-	if len(result.CleanupFailures) != 1 || result.CleanupFailures[0].Subject != CleanupSubjectManagedPAC {
-		t.Fatalf("cleanup failures = %#v", result.CleanupFailures)
-	}
-}

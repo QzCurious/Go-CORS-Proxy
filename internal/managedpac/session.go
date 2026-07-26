@@ -34,6 +34,16 @@ type Assessment struct {
 	ReplacementRequired bool
 }
 
+func OwnershipForURL(raw string) Ownership {
+	if raw == "" || raw == "(null)" {
+		return OwnershipEmpty
+	}
+	if IsOwnedURL(raw) {
+		return OwnershipOwned
+	}
+	return OwnershipForeign
+}
+
 func Assess(ctx context.Context, settings SystemSettings) (Assessment, error) {
 	states, err := settings.Snapshot(ctx)
 	if err != nil {
@@ -56,6 +66,22 @@ func Assess(ctx context.Context, settings SystemSettings) (Assessment, error) {
 	}, nil
 }
 
+func serviceAssessments(states []ServiceSnapshot) []ServiceAssessment {
+	out := make([]ServiceAssessment, 0, len(states))
+	for _, state := range states {
+		out = append(out, ServiceAssessment{
+			ServiceName: state.ServiceName,
+			Enabled:     state.Enabled,
+			PACURL:      state.PACURL,
+			Ownership:   OwnershipForURL(state.PACURL),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ServiceName < out[j].ServiceName
+	})
+	return out
+}
+
 type Session struct {
 	mutationMu   sync.Mutex
 	mu           sync.RWMutex
@@ -68,6 +94,20 @@ type Session struct {
 
 type StartResult struct {
 	InstalledServices []string
+}
+
+type RefreshError struct {
+	FromURL string
+	ToURL   string
+	Err     error
+}
+
+func (e RefreshError) Error() string {
+	return fmt.Sprintf("managed PAC refresh failed from %q to %q: %v", e.FromURL, e.ToURL, e.Err)
+}
+
+func (e RefreshError) Unwrap() error {
+	return e.Err
 }
 
 func Start(ctx context.Context, settings SystemSettings, services []string, pacURL string) (*Session, StartResult, error) {
@@ -167,24 +207,6 @@ func (s *Session) RequireLease(ctx context.Context) error {
 	return nil
 }
 
-func selectedOwnedDrift(states []ServiceSnapshot, currentURL string, services []string) ([]string, error) {
-	selected := stringSet(services)
-	var reattach []string
-	for _, state := range states {
-		if _, ok := selected[state.ServiceName]; !ok {
-			continue
-		}
-		if state.Enabled && state.PACURL == currentURL {
-			continue
-		}
-		if OwnershipForURL(state.PACURL) != OwnershipOwned {
-			return nil, ErrManagedPACLeaseLost
-		}
-		reattach = append(reattach, state.ServiceName)
-	}
-	return sortedStrings(reattach), nil
-}
-
 func (s *Session) Close() {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
@@ -217,44 +239,22 @@ func (s *Session) Services() []string {
 	return append([]string(nil), s.services...)
 }
 
-type RefreshError struct {
-	FromURL string
-	ToURL   string
-	Err     error
-}
-
-func (e RefreshError) Error() string {
-	return fmt.Sprintf("managed PAC refresh failed from %q to %q: %v", e.FromURL, e.ToURL, e.Err)
-}
-
-func (e RefreshError) Unwrap() error {
-	return e.Err
-}
-
-func serviceAssessments(states []ServiceSnapshot) []ServiceAssessment {
-	out := make([]ServiceAssessment, 0, len(states))
+func selectedOwnedDrift(states []ServiceSnapshot, currentURL string, services []string) ([]string, error) {
+	selected := stringSet(services)
+	var reattach []string
 	for _, state := range states {
-		out = append(out, ServiceAssessment{
-			ServiceName: state.ServiceName,
-			Enabled:     state.Enabled,
-			PACURL:      state.PACURL,
-			Ownership:   OwnershipForURL(state.PACURL),
-		})
+		if _, ok := selected[state.ServiceName]; !ok {
+			continue
+		}
+		if state.Enabled && state.PACURL == currentURL {
+			continue
+		}
+		if OwnershipForURL(state.PACURL) != OwnershipOwned {
+			return nil, ErrManagedPACLeaseLost
+		}
+		reattach = append(reattach, state.ServiceName)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].ServiceName < out[j].ServiceName
-	})
-	return out
-}
-
-func OwnershipForURL(raw string) Ownership {
-	if raw == "" || raw == "(null)" {
-		return OwnershipEmpty
-	}
-	if IsOwnedURL(raw) {
-		return OwnershipOwned
-	}
-	return OwnershipForeign
+	return sortedStrings(reattach), nil
 }
 
 func stringSet(values []string) map[string]struct{} {

@@ -91,6 +91,16 @@ func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) erro
 	}
 }
 
+func (o *owner) Shutdown(ctx context.Context) error {
+	_, _ = o.lifecycle.Stop(ctx)
+	return o.closeOwnerOnly(ctx)
+}
+
+func (o *owner) closeOwnerOnly(ctx context.Context) error {
+	_ = o.coord.RemoveOwned(o.cache)
+	return o.router.Close(ctx)
+}
+
 type ownerEventKind int
 
 const (
@@ -164,16 +174,6 @@ func cancelAndWait(cancel context.CancelFunc, activationDone <-chan error) {
 	if activationDone != nil {
 		<-activationDone
 	}
-}
-
-func (o *owner) Shutdown(ctx context.Context) error {
-	_, _ = o.lifecycle.Stop(ctx)
-	return o.closeOwnerOnly(ctx)
-}
-
-func (o *owner) closeOwnerOnly(ctx context.Context) error {
-	_ = o.coord.RemoveOwned(o.cache)
-	return o.router.Close(ctx)
 }
 
 func watchLease(ctx context.Context, coord *coordinator, cache stateCache) <-chan struct{} {
