@@ -10,7 +10,7 @@ import (
 	"seamless-cors/internal/liveconfig"
 )
 
-func TestDeriveRouteBucketsUsesNormalizedDomainListEntries(t *testing.T) {
+func TestDeriveRoutesUsesNormalizedDomainListEntries(t *testing.T) {
 	entries := mustParseEntries(t,
 		"api.example.test",
 		"*.qa.example.test",
@@ -18,52 +18,36 @@ func TestDeriveRouteBucketsUsesNormalizedDomainListEntries(t *testing.T) {
 		"http://[::1]:3000",
 	)
 
-	got := deriveRouteBuckets(entries, true)
-	want := routeBuckets{
-		exactHosts: []hostRoute{{
-			Host:       "api.example.test",
-			AllowHTTP:  true,
-			AllowHTTPS: true,
-		}},
-		wildcardParents: []hostRoute{{
-			Host:       "qa.example.test",
-			AllowHTTP:  true,
-			AllowHTTPS: true,
-		}},
-		origins: []originRoute{
-			{Scheme: "https", Host: "localhost", Port: "9443"},
-			{Scheme: "http", Host: "::1", Port: "3000"},
-		},
+	got := deriveRoutes(entries, true)
+	want := []route{
+		{Scheme: "http", Host: "api.example.test", Match: "exact"},
+		{Scheme: "https", Host: "api.example.test", Match: "exact"},
+		{Scheme: "http", Host: "qa.example.test", Match: "single"},
+		{Scheme: "https", Host: "qa.example.test", Match: "single"},
+		{Scheme: "https", Host: "localhost", Port: "9443", Match: "exact"},
+		{Scheme: "http", Host: "::1", Port: "3000", Match: "exact"},
 	}
 
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("route buckets = %#v, want %#v", got, want)
+		t.Fatalf("routes = %#v, want %#v", got, want)
 	}
 }
 
-func TestDeriveRouteBucketsExcludesUntrustedHTTPS(t *testing.T) {
+func TestDeriveRoutesExcludesUntrustedHTTPS(t *testing.T) {
 	entries := mustParseEntries(t,
 		"api.example.test",
 		"https://secure.example.test",
 		"http://plain.example.test",
 	)
 
-	got := deriveRouteBuckets(entries, false)
-	want := routeBuckets{
-		exactHosts: []hostRoute{{
-			Host:      "api.example.test",
-			AllowHTTP: true,
-		}},
-		wildcardParents: []hostRoute{},
-		origins: []originRoute{{
-			Scheme: "http",
-			Host:   "plain.example.test",
-			Port:   "80",
-		}},
+	got := deriveRoutes(entries, false)
+	want := []route{
+		{Scheme: "http", Host: "api.example.test", Match: "exact"},
+		{Scheme: "http", Host: "plain.example.test", Port: "80", Match: "exact"},
 	}
 
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("route buckets = %#v, want %#v", got, want)
+		t.Fatalf("routes = %#v, want %#v", got, want)
 	}
 }
 

@@ -521,16 +521,20 @@ A live configuration behavior where a missing, unreadable, or structurally undec
 _Avoid_: stale valid routing, unreadable-as-empty, silent source failure
 
 **Domain List Entry**:
-A plain constructible routing value containing normalized meaning rather than original source text; it may identify a full origin or use hostname shorthand, with a leading `*.` in the normalized hostname carrying all wildcard meaning. Live Configuration produces validated Domain List Entries from active Domain List lines, while internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
+A plain constructible routing value containing a normalized HTTP(S) scheme constraint, hostname, explicit port constraint, and Host Match rather than original source text. Live Configuration produces validated Domain List Entries from active Domain List lines, while internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
 _Avoid_: source-text-bearing entry, rule, matcher expression
+
+**Host Match**:
+The explicit Domain List Entry meaning that selects an exact hostname, exactly one leading subdomain label, or one-or-more leading subdomain labels without encoding that meaning in the normalized hostname.
+_Avoid_: wildcard-bearing hostname, consumer-parsed wildcard
 
 **Domain List Routing Policy**:
 A runtime interpretation owned by the PAC Routing module that decides whether normalized Domain List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the Live Configuration Snapshot rather than the snapshot itself.
 _Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Domain List validation
 
 **Hostname Shorthand**:
-A Domain List Entry that names a host without scheme so it matches that host across schemes and ports.
-_Avoid_: default-port-only shorthand, scheme-specific shorthand
+A Domain List Entry source form that names a host without a scheme, optionally constraining its port, so it can select both HTTP and HTTPS origins.
+_Avoid_: default-port-only shorthand, scheme-specific shorthand, IPv6 prohibition
 
 **Line-Level Domain Validation**:
 A Domain List behavior where each line is validated independently so valid Domain List Entries are applied while invalid lines are ignored and reported precisely as Domain List Warnings.
@@ -541,20 +545,24 @@ A Domain List behavior where equivalent normalized Domain List Entries are treat
 _Avoid_: duplicate active routes, line-count domains, generated duplicate PAC rules
 
 **Exact Domain Match**:
-A Domain List matching rule where hostname shorthand matches only the named host unless the entry uses an explicit wildcard.
+A Host Match that selects only the named hostname.
 _Avoid_: implicit subdomain match, broad domain match
 
 **Single-Label Wildcard**:
-A Domain List matching rule where `*.example.com` matches exactly one subdomain label and does not match the parent domain or deeper subdomains.
-_Avoid_: recursive wildcard, parent-domain wildcard
+A Host Match written as `*.example.com` that selects exactly one leading subdomain label and does not select the parent domain or deeper subdomains.
+_Avoid_: recursive wildcard, parent-domain wildcard, wildcard-bearing hostname
+
+**Recursive Wildcard**:
+A Host Match written as `**.example.com` that selects one or more leading subdomain labels at any depth without selecting the parent domain.
+_Avoid_: zero-label wildcard, parent-domain wildcard, wildcard-bearing hostname
 
 **Local Target**:
 A localhost, loopback, private IP, or plain HTTP upstream entry that may be included in the Domain List for DEV/QA work.
 _Avoid_: public-domain-only target, DNS-only target
 
-**IPv6 Full Origin**:
-A Domain List Entry for an IPv6 target that must include scheme and bracketed IPv6 host syntax.
-_Avoid_: IPv6 hostname shorthand
+**Bracketed IPv6 Selector**:
+A Domain List Entry source form for an IPv6 target that uses bracketed host syntax with an optional HTTP(S) scheme and port.
+_Avoid_: unbracketed IPv6 selector, IPv6 Full Origin
 
 **Reflective DEV/QA Policy**:
 The default cross-origin behavior for traffic that reaches the Proxy Listener, where the gateway reflects the browser request's origin and requested CORS capabilities so credentialed development and testing flows are browser-valid.
@@ -820,7 +828,7 @@ QA engineer: "Yes, Commented Default Config keeps the generated file short but u
 
 Developer: "Can I write just `api.dev.example.com`?"
 
-QA engineer: "Yes, that Domain List Entry uses hostname shorthand; use a full origin only when scheme or port matters."
+QA engineer: "Yes, that Domain List Entry uses Hostname Shorthand; add an HTTP(S) scheme or port only when it should constrain matching."
 
 Developer: "Can I annotate domains in the Domain List?"
 
@@ -828,7 +836,7 @@ QA engineer: "Yes, Domain List Comment supports full-line and inline comments."
 
 Developer: "Does hostname shorthand include custom ports?"
 
-QA engineer: "Yes, Hostname Shorthand matches the named host across schemes and ports."
+QA engineer: "Yes, Hostname Shorthand may include a port that selects that port across HTTP and HTTPS."
 
 Developer: "What if one Domain List line is wrong?"
 
@@ -844,7 +852,7 @@ QA engineer: "No, Exact Domain Match requires an explicit wildcard when subdomai
 
 Developer: "Does `*.example.com` match `deep.api.example.com`?"
 
-QA engineer: "No, Single-Label Wildcard matches only one subdomain label."
+QA engineer: "No, Single-Label Wildcard matches only one subdomain label; use Recursive Wildcard when deeper subdomains should also match."
 
 Developer: "Can I include my local API or a LAN staging service?"
 
@@ -852,7 +860,7 @@ QA engineer: "Yes, Local Targets are allowed."
 
 Developer: "Can I write IPv6 shorthand in the Domain List?"
 
-QA engineer: "No, IPv6 Full Origin keeps IPv6 entries unambiguous."
+QA engineer: "Yes, Bracketed IPv6 Selector accepts scheme-less forms such as `[::1]:3000`."
 
 Developer: "Can credentialed browser requests work without configuring allowed origins?"
 

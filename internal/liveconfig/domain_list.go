@@ -1,13 +1,21 @@
 package liveconfig
 
-// DomainListEntry is normalized routing data. When Scheme is empty, Hostname is
-// hostname shorthand (including any leading "*.") and Port is empty. Otherwise
-// Scheme is "http" or "https", Hostname contains no brackets or wildcard, and
-// Port contains the explicit or normalized default port.
+type HostMatch uint8
+
+const (
+	HostExact HostMatch = iota
+	HostSingleLevel
+	HostRecursive
+)
+
+// DomainListEntry is normalized routing data. Empty Scheme leaves the scheme
+// unconstrained. Empty Port selects any port without a scheme and the default
+// port with one. Hostname never includes wildcard syntax.
 type DomainListEntry struct {
-	Scheme   string
-	Hostname string
-	Port     string
+	Scheme    string
+	Hostname  string
+	Port      string
+	HostMatch HostMatch
 }
 
 func sameDomainListEntries(left, right []DomainListEntry) bool {

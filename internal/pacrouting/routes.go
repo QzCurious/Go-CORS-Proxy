@@ -2,7 +2,6 @@ package pacrouting
 
 import (
 	"net/http"
-	"strings"
 	"sync/atomic"
 
 	"seamless-cors/internal/liveconfig"
@@ -36,53 +35,56 @@ func (h *DynamicHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(h.body.Load().(string)))
 }
 
-type routeBuckets struct {
-	exactHosts      []hostRoute
-	wildcardParents []hostRoute
-	origins         []originRoute
-}
-
-type hostRoute struct {
-	Host       string `json:"host"`
-	AllowHTTP  bool   `json:"http"`
-	AllowHTTPS bool   `json:"https"`
-}
-
-type originRoute struct {
+type route struct {
 	Scheme string `json:"scheme"`
 	Host   string `json:"host"`
 	Port   string `json:"port"`
+	Match  string `json:"match"`
 }
 
-func deriveRouteBuckets(entries []liveconfig.DomainListEntry, caTrusted bool) routeBuckets {
-	buckets := routeBuckets{
-		exactHosts:      []hostRoute{},
-		wildcardParents: []hostRoute{},
-		origins:         []originRoute{},
-	}
+func deriveRoutes(entries []liveconfig.DomainListEntry, caTrusted bool) []route {
+	routes := []route{}
 	for _, entry := range entries {
-		if entry.Scheme != "" {
-			if entry.Scheme == "https" && !caTrusted {
-				continue
+		if entry.Scheme == "" {
+			routes = append(routes, routeFromEntry(entry, "http"))
+			if caTrusted {
+				routes = append(routes, routeFromEntry(entry, "https"))
 			}
-			buckets.origins = append(buckets.origins, originRoute{
-				Scheme: entry.Scheme,
-				Host:   entry.Hostname,
-				Port:   entry.Port,
-			})
 			continue
 		}
-		route := hostRoute{
-			Host:       entry.Hostname,
-			AllowHTTP:  true,
-			AllowHTTPS: caTrusted,
-		}
-		if strings.HasPrefix(entry.Hostname, "*.") {
-			route.Host = strings.TrimPrefix(entry.Hostname, "*.")
-			buckets.wildcardParents = append(buckets.wildcardParents, route)
+		if entry.Scheme == "https" && !caTrusted {
 			continue
 		}
-		buckets.exactHosts = append(buckets.exactHosts, route)
+		routes = append(routes, routeFromEntry(entry, entry.Scheme))
 	}
-	return buckets
+	return routes
+}
+
+func routeFromEntry(entry liveconfig.DomainListEntry, scheme string) route {
+	port := entry.Port
+	if entry.Scheme != "" && port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return route{
+		Scheme: scheme,
+		Host:   entry.Hostname,
+		Port:   port,
+		Match:  routeMatch(entry.HostMatch),
+	}
+}
+
+func routeMatch(match liveconfig.HostMatch) string {
+	switch match {
+	case liveconfig.HostSingleLevel:
+		return "single"
+	case liveconfig.HostRecursive:
+		return "recursive"
+	default:
+		return "exact"
+	}
 }

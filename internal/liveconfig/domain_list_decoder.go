@@ -2,7 +2,6 @@ package liveconfig
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"strings"
 	"unicode/utf8"
@@ -61,65 +60,64 @@ func decodeDomainListText(contents string) domainListDecodeResult {
 
 func decodeDomainListEntry(text string) (DomainListEntry, error) {
 	text = strings.TrimSpace(text)
-	if strings.Contains(text, "://") {
-		return decodeDomainListOrigin(text)
+	if !strings.Contains(text, "://") && !strings.HasPrefix(text, "//") {
+		text = "//" + text
 	}
-	return decodeDomainListHostname(text)
-}
 
-func decodeDomainListOrigin(text string) (DomainListEntry, error) {
 	u, err := url.Parse(text)
 	if err != nil {
 		return DomainListEntry{}, err
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return DomainListEntry{}, fmt.Errorf("origin scheme must be http or https")
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "" && scheme != "http" && scheme != "https" {
+		return DomainListEntry{}, fmt.Errorf("scheme must be http, https, or omitted")
 	}
-	if u.User != nil {
-		return DomainListEntry{}, fmt.Errorf("origin must not include user information")
+	if strings.Count(u.Host, ":") > 1 && !strings.HasPrefix(u.Host, "[") {
+		return DomainListEntry{}, fmt.Errorf("IPv6 hostname must use brackets")
 	}
-	if u.Hostname() == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return DomainListEntry{}, fmt.Errorf("entry must be an origin without path, query, or fragment")
+	if u.Hostname() == "" {
+		return DomainListEntry{}, fmt.Errorf("hostname is required")
 	}
-	hostname := strings.ToLower(u.Hostname())
-	if strings.Contains(hostname, "*") {
-		return DomainListEntry{}, fmt.Errorf("wildcards require hostname shorthand")
+	if u.Path != "" && u.Path != "/" {
+		return DomainListEntry{}, fmt.Errorf("path must be empty or /")
 	}
-	port := u.Port()
-	if port == "" {
-		port = defaultDomainListPort(u.Scheme)
+	if u.RawQuery != "" {
+		return DomainListEntry{}, fmt.Errorf("query must be empty")
+	}
+	if u.Fragment != "" {
+		return DomainListEntry{}, fmt.Errorf("fragment must be empty")
+	}
+
+	hostname := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if hostname == "" {
+		return DomainListEntry{}, fmt.Errorf("hostname is required")
+	}
+	hostMatch, hostname, err := decodeHostMatch(hostname)
+	if err != nil {
+		return DomainListEntry{}, err
 	}
 	return DomainListEntry{
-		Scheme:   u.Scheme,
-		Hostname: hostname,
-		Port:     port,
+		Scheme:    scheme,
+		Hostname:  hostname,
+		Port:      u.Port(),
+		HostMatch: hostMatch,
 	}, nil
 }
 
-func decodeDomainListHostname(text string) (DomainListEntry, error) {
-	if strings.Contains(text, "/") || strings.Contains(text, ":") {
-		return DomainListEntry{}, fmt.Errorf("host shorthand must not include scheme, port, path, or IPv6")
+func decodeHostMatch(hostname string) (HostMatch, string, error) {
+	match := HostExact
+	switch {
+	case strings.HasPrefix(hostname, "**."):
+		match = HostRecursive
+		hostname = strings.TrimPrefix(hostname, "**.")
+	case strings.HasPrefix(hostname, "*."):
+		match = HostSingleLevel
+		hostname = strings.TrimPrefix(hostname, "*.")
 	}
-	hostname := strings.TrimSuffix(strings.ToLower(text), ".")
-	if hostname == "" {
-		return DomainListEntry{}, fmt.Errorf("host is required")
+	if hostname == "" || strings.Contains(hostname, "*") {
+		return 0, "", fmt.Errorf("wildcard must be * or ** followed by a hostname")
 	}
-	if strings.Contains(hostname, "#") || strings.ContainsAny(hostname, " \t") {
-		return DomainListEntry{}, fmt.Errorf("host contains invalid characters")
-	}
-	wildcard := strings.HasPrefix(hostname, "*.")
-	if strings.Contains(strings.TrimPrefix(hostname, "*."), "*") {
-		return DomainListEntry{}, fmt.Errorf("wildcard must be a single leading label")
-	}
-	if wildcard && strings.Count(hostname, ".") < 2 {
-		return DomainListEntry{}, fmt.Errorf("wildcard must include a concrete parent domain")
-	}
-	if !wildcard && net.ParseIP(hostname) != nil && strings.Contains(hostname, ":") {
-		return DomainListEntry{}, fmt.Errorf("IPv6 entries require full origin syntax")
-	}
-	return DomainListEntry{
-		Hostname: hostname,
-	}, nil
+	return match, hostname, nil
 }
 
 func stripDomainListComment(line string) string {
@@ -134,15 +132,4 @@ func stripDomainListComment(line string) string {
 		}
 	}
 	return strings.TrimSpace(line)
-}
-
-func defaultDomainListPort(scheme string) string {
-	switch scheme {
-	case "http":
-		return "80"
-	case "https":
-		return "443"
-	default:
-		return ""
-	}
 }

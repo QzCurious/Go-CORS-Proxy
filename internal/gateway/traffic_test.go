@@ -48,7 +48,7 @@ func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {
 		t.Fatalf("path-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
 	}
 
-	writeTrafficTestFile(t, secondDomainPath, "API.EXAMPLE.TEST\nhttps://*.bad.example.test\n")
+	writeTrafficTestFile(t, secondDomainPath, "API.EXAMPLE.TEST\nhttps://bad.example.test/path\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
 		return len(state.DomainListWarnings) == 1
 	})

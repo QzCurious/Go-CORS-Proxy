@@ -21,18 +21,14 @@ var pacTemplateSource string
 var pacTemplate = template.Must(template.New("proxy.pac.tmpl").Parse(pacTemplateSource))
 
 func Generate(opts Options) string {
-	buckets := deriveRouteBuckets(opts.DomainListEntries, opts.CATrusted)
+	routes := deriveRoutes(opts.DomainListEntries, opts.CATrusted)
 	type pacTemplateData struct {
-		Proxy           string
-		ExactHosts      string
-		WildcardParents string
-		Origins         string
+		Proxy  string
+		Routes string
 	}
 	data := pacTemplateData{
-		Proxy:           pacJSONLiteral("PROXY " + opts.ProxyListen),
-		ExactHosts:      pacJSONLiteral(buckets.exactHosts),
-		WildcardParents: pacJSONLiteral(buckets.wildcardParents),
-		Origins:         pacJSONLiteral(buckets.origins),
+		Proxy:  pacJSONLiteral("PROXY " + opts.ProxyListen),
+		Routes: pacJSONLiteral(routes),
 	}
 	var body strings.Builder
 	if err := pacTemplate.Execute(&body, data); err != nil {
@@ -42,7 +38,7 @@ func Generate(opts Options) string {
 }
 
 type pacLiteral interface {
-	string | []hostRoute | []originRoute
+	string | []route
 }
 
 func pacJSONLiteral[T pacLiteral](value T) string {

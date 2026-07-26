@@ -18,7 +18,8 @@ http://[::1]:3000
 	entries := decoded.entries
 	if len(entries) != 4 ||
 		entries[0].Hostname != "api.example.test" ||
-		entries[1].Hostname != "*.qa.example.test" ||
+		entries[1].Hostname != "qa.example.test" ||
+		entries[1].HostMatch != HostSingleLevel ||
 		entries[2].Hostname != "example.test" ||
 		entries[2].Port != "443" ||
 		entries[3].Hostname != "::1" ||
@@ -34,14 +35,14 @@ func TestDomainListDecoderRejectsNonUTF8(t *testing.T) {
 	}
 }
 
-func TestDomainListDecoderRejectsOriginUserInformation(t *testing.T) {
+func TestDomainListDecoderDiscardsUserInformation(t *testing.T) {
 	decoded, err := decodeDomainList([]byte("https://user@example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.entries) != 0 ||
-		len(decoded.warnings) != 1 ||
-		!strings.Contains(decoded.warnings[0].Diagnostic, "must not include user information") {
+	if len(decoded.entries) != 1 ||
+		decoded.entries[0].Hostname != "example.test" ||
+		len(decoded.warnings) != 0 {
 		t.Fatalf("decode result = %#v", decoded)
 	}
 }
@@ -49,7 +50,7 @@ func TestDomainListDecoderRejectsOriginUserInformation(t *testing.T) {
 func TestDomainListDecoderCollectsEveryInvalidLine(t *testing.T) {
 	decoded, err := decodeDomainList([]byte(`
 valid.example.test
-https://*.bad.example.test
+https://bad.example.test/path
 api#bad.example.test
 `))
 	if err != nil {

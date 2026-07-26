@@ -176,7 +176,7 @@ func TestWatchAppliesDomainWarningsAndRecovers(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeFile(t, domainPath, "https://*.invalid.example.test\n")
+	writeFile(t, domainPath, "https://invalid.example.test/path\n")
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
@@ -214,7 +214,7 @@ func TestWatchPublishesDomainWarningsDespiteConfigNoise(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := watchSource(ctx, source)
-	writeFile(t, domainPath, "https://*.invalid.example.test\n")
+	writeFile(t, domainPath, "https://invalid.example.test/path\n")
 	writeFile(t, configPath, "# noise\ndomain-list: "+domainPath+"\nca-trusted: false\n")
 
 	event := waitForEvent(t, events)
@@ -379,7 +379,7 @@ func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeFile(t, domainPath, "next.example.test\nhttps://*.bad.example.test\n")
+	writeFile(t, domainPath, "next.example.test\nhttps://bad.example.test/path\n")
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)

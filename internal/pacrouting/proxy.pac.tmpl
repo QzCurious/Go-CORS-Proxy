@@ -1,15 +1,13 @@
 var proxy = {{.Proxy}};
-var exactHosts = {{.ExactHosts}};
-var wildcardParents = {{.WildcardParents}};
-var origins = {{.Origins}};
+var routes = {{.Routes}};
 
 function FindProxyForURL(url, host) {
   host = host.toLowerCase();
   var scheme = url.substring(0, url.indexOf(':')).toLowerCase();
   var urlPort = portForURL(url, scheme);
-  if (matchesOrigin(scheme, host, urlPort)) return proxy;
-  if (matchesHostRoute(exactHosts, scheme, host)) return proxy;
-  if (matchesWildcardRoute(wildcardParents, scheme, host)) return proxy;
+  for (var i = 0; i < routes.length; i++) {
+    if (matchesRoute(routes[i], scheme, host, urlPort)) return proxy;
+  }
   return 'DIRECT';
 }
 
@@ -18,31 +16,11 @@ function portForURL(url, scheme) {
   return parsedPort ? parsedPort[1] : (scheme == 'https' ? '443' : '80');
 }
 
-function routeAllows(route, scheme) {
-  return (scheme == 'http' && route.http) || (scheme == 'https' && route.https);
-}
-
-function matchesHostRoute(routes, scheme, host) {
-  for (var i = 0; i < routes.length; i++) {
-    if (host == routes[i].host && routeAllows(routes[i], scheme)) return true;
-  }
-  return false;
-}
-
-function matchesWildcardRoute(routes, scheme, host) {
-  for (var i = 0; i < routes.length; i++) {
-    var suffix = '.' + routes[i].host;
-    if (!routeAllows(routes[i], scheme) || !dnsDomainIs(host, suffix)) continue;
-    var prefix = host.substring(0, host.length - suffix.length);
-    if (prefix != '' && prefix.indexOf('.') == -1) return true;
-  }
-  return false;
-}
-
-function matchesOrigin(scheme, host, port) {
-  for (var i = 0; i < origins.length; i++) {
-    var route = origins[i];
-    if (scheme == route.scheme && host == route.host && port == route.port) return true;
-  }
-  return false;
+function matchesRoute(route, scheme, host, port) {
+  if (scheme != route.scheme || (route.port != '' && port != route.port)) return false;
+  if (route.match == 'exact') return host == route.host;
+  var suffix = '.' + route.host;
+  if (!dnsDomainIs(host, suffix)) return false;
+  var prefix = host.substring(0, host.length - suffix.length);
+  return route.match == 'recursive' || prefix.indexOf('.') == -1;
 }
