@@ -218,22 +218,24 @@ func (r *trafficRuntime) pacURL(version uint64) string {
 }
 
 type runtimeState struct {
-	ProxyListen    string
-	PACListen      string
-	DomainList     string
-	CATrusted      bool
-	DomainCount    int
-	CATrustPending bool
+	ProxyListen        string
+	PACListen          string
+	DomainList         string
+	CATrusted          bool
+	DomainCount        int
+	DomainListWarnings []DomainListWarningDetail
+	CATrustPending     bool
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
 	entries := r.currentSnapshot.DomainListEntries()
 	return runtimeState{
-		ProxyListen:    r.listeners[0].Addr().String(),
-		PACListen:      r.listeners[1].Addr().String(),
-		DomainList:     r.currentSnapshot.DomainListPath(),
-		CATrusted:      r.currentSnapshot.CATrusted(),
-		DomainCount:    len(entries),
-		CATrustPending: r.currentSnapshot.CATrustPending(),
+		ProxyListen:        r.listeners[0].Addr().String(),
+		PACListen:          r.listeners[1].Addr().String(),
+		DomainList:         r.currentSnapshot.DomainListPath(),
+		CATrusted:          r.currentSnapshot.CATrusted(),
+		DomainCount:        len(entries),
+		DomainListWarnings: domainListWarningDetails(r.currentSnapshot.DomainListWarnings()),
+		CATrustPending:     r.currentSnapshot.CATrustPending(),
 	}
 }

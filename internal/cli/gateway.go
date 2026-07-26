@@ -297,6 +297,7 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 					fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Guidance.ManagedPACServices, ", "))
 				}
 			}
+			renderDomainListWarnings(stdout, result.Guidance.DomainListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
@@ -390,6 +391,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		}
 		fmt.Fprintf(stdout, "domain-list: %s\n", result.Runtime.DomainListPath)
 		fmt.Fprintf(stdout, "domains: %d\n", result.Runtime.DomainCount)
+		renderDomainListWarnings(stdout, result.Runtime.DomainListWarnings)
 		if result.Kind == gateway.GatewayStatusRunning {
 			fmt.Fprintln(stdout, "managed-pac: active")
 		} else {
@@ -420,6 +422,18 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 				fmt.Fprintf(stdout, "cleanup-%s: unknown: %s\n", subject.Subject, subject.Diagnostic)
 			}
 		}
+	}
+}
+
+func renderDomainListWarnings(stdout io.Writer, warnings []gateway.DomainListWarningDetail) {
+	for _, warning := range warnings {
+		fmt.Fprintf(
+			stdout,
+			"warning: domain-list line %d: %s: %s\n",
+			warning.Line,
+			warning.Text,
+			warning.Diagnostic,
+		)
 	}
 }
 

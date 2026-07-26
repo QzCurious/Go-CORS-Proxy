@@ -97,11 +97,18 @@ type PACReplacementConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidanceDetail struct {
-	ConfigPath         string   `json:"configPath"`
-	DomainListPath     string   `json:"domainListPath"`
-	ManagedPACActive   bool     `json:"managedPacActive"`
-	ManagedPACServices []string `json:"managedPacServices,omitempty"`
-	CATrusted          bool     `json:"caTrusted"`
+	ConfigPath         string                    `json:"configPath"`
+	DomainListPath     string                    `json:"domainListPath"`
+	ManagedPACActive   bool                      `json:"managedPacActive"`
+	ManagedPACServices []string                  `json:"managedPacServices,omitempty"`
+	CATrusted          bool                      `json:"caTrusted"`
+	DomainListWarnings []DomainListWarningDetail `json:"domainListWarnings,omitempty"`
+}
+
+type DomainListWarningDetail struct {
+	Line       int    `json:"line"`
+	Text       string `json:"text"`
+	Diagnostic string `json:"diagnostic"`
 }
 
 type StopResultKind string
@@ -209,6 +216,7 @@ type RuntimeStatusDetail struct {
 	PACListen          string                       `json:"pacListen"`
 	DomainListPath     string                       `json:"domainListPath"`
 	DomainCount        int                          `json:"domainCount"`
+	DomainListWarnings []DomainListWarningDetail    `json:"domainListWarnings,omitempty"`
 	CATrusted          bool                         `json:"caTrusted"`
 	ManagedPACServices []string                     `json:"managedPacServices,omitempty"`
 	PendingLifecycle   []PendingLifecycleChangeKind `json:"pendingLifecycle,omitempty"`
@@ -440,6 +448,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			PACListen:          state.PACListen,
 			DomainListPath:     state.DomainList,
 			DomainCount:        state.DomainCount,
+			DomainListWarnings: state.DomainListWarnings,
 			CATrusted:          state.CATrusted,
 			ManagedPACServices: managedPACServices(pac),
 			PendingLifecycle:   pendingLifecycleKinds(state.CATrustPending),
@@ -453,6 +462,18 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		result.Kind = GatewayStatusStaleCache
 	}
 	return result, nil
+}
+
+func domainListWarningDetails(warnings []liveconfig.DomainListWarning) []DomainListWarningDetail {
+	details := make([]DomainListWarningDetail, 0, len(warnings))
+	for _, warning := range warnings {
+		details = append(details, DomainListWarningDetail{
+			Line:       warning.Line,
+			Text:       warning.Text,
+			Diagnostic: warning.Diagnostic,
+		})
+	}
+	return details
 }
 
 func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {

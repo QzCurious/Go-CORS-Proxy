@@ -61,24 +61,24 @@ func deriveRouteBuckets(entries []liveconfig.DomainListEntry, caTrusted bool) ro
 		origins:         []originRoute{},
 	}
 	for _, entry := range entries {
-		if entry.Scheme() != "" {
-			if entry.Scheme() == "https" && !caTrusted {
+		if entry.Scheme != "" {
+			if entry.Scheme == "https" && !caTrusted {
 				continue
 			}
 			buckets.origins = append(buckets.origins, originRoute{
-				Scheme: entry.Scheme(),
-				Host:   entry.Hostname(),
-				Port:   entry.Port(),
+				Scheme: entry.Scheme,
+				Host:   entry.Hostname,
+				Port:   entry.Port,
 			})
 			continue
 		}
 		route := hostRoute{
-			Host:       entry.Hostname(),
+			Host:       entry.Hostname,
 			AllowHTTP:  true,
 			AllowHTTPS: caTrusted,
 		}
-		if entry.IsWildcard() {
-			route.Host = strings.TrimPrefix(entry.Hostname(), "*.")
+		if strings.HasPrefix(entry.Hostname, "*.") {
+			route.Host = strings.TrimPrefix(entry.Hostname, "*.")
 			buckets.wildcardParents = append(buckets.wildcardParents, route)
 			continue
 		}

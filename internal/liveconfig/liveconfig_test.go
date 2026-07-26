@@ -3,7 +3,6 @@ package liveconfig_test
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +47,7 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 		t.Fatalf("domain list path = %q", live.DomainListPath())
 	}
 	entries := live.DomainListEntries()
-	if len(entries) != 1 || entries[0].Hostname() != "second.example.test" {
+	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
 	if live.DomainListEntriesRevision() != 2 {
@@ -119,7 +118,7 @@ func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
 		t.Fatal(event.Err)
 	}
 	entries := event.Snapshot.DomainListEntries()
-	if len(entries) != 1 || entries[0].Hostname() != "changed.example.test" {
+	if len(entries) != 1 || entries[0].Hostname != "changed.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
 	if event.Snapshot.DomainListEntriesRevision() != 2 {
@@ -162,7 +161,7 @@ func TestWatchDoesNotAdvanceDomainListEntriesRevisionForPathOnlyChange(t *testin
 	}
 }
 
-func TestWatchConfirmsInvalidContentBeforeFailing(t *testing.T) {
+func TestWatchAppliesDomainWarningsAndRecovers(t *testing.T) {
 	home := t.TempDir()
 	domainPath := filepath.Join(home, "domains.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -178,20 +177,30 @@ func TestWatchConfirmsInvalidContentBeforeFailing(t *testing.T) {
 	events := watchSource(ctx, source)
 
 	writeFile(t, domainPath, "https://*.invalid.example.test\n")
-	time.Sleep(300 * time.Millisecond)
-	writeFile(t, domainPath, "recovered.example.test\n")
-
 	event := waitForEvent(t, events)
 	if event.Err != nil {
-		t.Fatalf("transient invalid edit became fatal: %v", event.Err)
+		t.Fatal(event.Err)
+	}
+	if len(event.Snapshot.DomainListEntries()) != 0 ||
+		len(event.Snapshot.DomainListWarnings()) != 1 {
+		t.Fatalf("invalid edit snapshot = %#v", event.Snapshot)
+	}
+
+	writeFile(t, domainPath, "recovered.example.test\n")
+	event = waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
 	}
 	entries := event.Snapshot.DomainListEntries()
-	if len(entries) != 1 || entries[0].Hostname() != "recovered.example.test" {
+	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
 		t.Fatalf("entries = %#v", entries)
+	}
+	if warnings := event.Snapshot.DomainListWarnings(); len(warnings) != 0 {
+		t.Fatalf("warnings after recovery = %#v", warnings)
 	}
 }
 
-func TestWatchConfirmsInvalidSourcesIndependently(t *testing.T) {
+func TestWatchPublishesDomainWarningsDespiteConfigNoise(t *testing.T) {
 	home := t.TempDir()
 	domainPath := filepath.Join(home, "domains.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -206,22 +215,14 @@ func TestWatchConfirmsInvalidSourcesIndependently(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 	writeFile(t, domainPath, "https://*.invalid.example.test\n")
+	writeFile(t, configPath, "# noise\ndomain-list: "+domainPath+"\nca-trusted: false\n")
 
-	ticker := time.NewTicker(150 * time.Millisecond)
-	defer ticker.Stop()
-	deadline := time.After(1800 * time.Millisecond)
-	for edit := 0; ; edit++ {
-		select {
-		case event := <-events:
-			if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Domain List Error") {
-				t.Fatalf("event error = %v", event.Err)
-			}
-			return
-		case <-ticker.C:
-			writeFile(t, configPath, fmt.Sprintf("# edit %d\ndomain-list: %s\nca-trusted: false\n", edit, domainPath))
-		case <-deadline:
-			t.Fatal("Config File noise postponed invalid Domain List confirmation")
-		}
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	if warnings := event.Snapshot.DomainListWarnings(); len(warnings) != 1 {
+		t.Fatalf("warnings = %#v", warnings)
 	}
 }
 
@@ -255,7 +256,7 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 		t.Fatal(event.Err)
 	}
 	entries := event.Snapshot.DomainListEntries()
-	if len(entries) != 1 || entries[0].Hostname() != "replacement.example.test" {
+	if len(entries) != 1 || entries[0].Hostname != "replacement.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
 }
@@ -285,7 +286,7 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 		t.Fatal(first.Err)
 	}
 	firstEntries := first.Snapshot.DomainListEntries()
-	if len(firstEntries) != 1 || firstEntries[0].Hostname() != "first.example.test" {
+	if len(firstEntries) != 1 || firstEntries[0].Hostname != "first.example.test" {
 		t.Fatalf("first entries = %#v", firstEntries)
 	}
 
@@ -294,7 +295,7 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 		t.Fatal(event.Err)
 	}
 	entries := event.Snapshot.DomainListEntries()
-	if len(entries) != 1 || entries[0].Hostname() != "latest.example.test" {
+	if len(entries) != 1 || entries[0].Hostname != "latest.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
 	if event.Snapshot.DomainListEntriesRevision() != 3 {
@@ -363,7 +364,7 @@ func TestReloadFailsAfterWatchStarts(t *testing.T) {
 	}
 }
 
-func TestWatchEmitsErrorWithoutReplacingCachedConfig(t *testing.T) {
+func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 	home := t.TempDir()
 	domainPath := filepath.Join(home, "domains.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -378,16 +379,18 @@ func TestWatchEmitsErrorWithoutReplacingCachedConfig(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeFile(t, domainPath, "https://*.bad.example.test\n")
-	assertNoEvent(t, events, 500*time.Millisecond)
+	writeFile(t, domainPath, "next.example.test\nhttps://*.bad.example.test\n")
 	event := waitForEvent(t, events)
-	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Domain List Error") {
-		t.Fatalf("event error = %v", event.Err)
+	if event.Err != nil {
+		t.Fatal(event.Err)
 	}
 	cached := source.Current()
 	entries := cached.DomainListEntries()
-	if len(entries) != 1 || entries[0].Hostname() != "first.example.test" {
+	if len(entries) != 1 || entries[0].Hostname != "next.example.test" {
 		t.Fatalf("cached entries = %#v", entries)
+	}
+	if warnings := cached.DomainListWarnings(); len(warnings) != 1 {
+		t.Fatalf("cached warnings = %#v", warnings)
 	}
 }
 
@@ -606,7 +609,7 @@ func waitForCachedDomain(t *testing.T, source *liveconfig.Source, host string) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		entries := source.Current().DomainListEntries()
-		if len(entries) == 1 && entries[0].Hostname() == host {
+		if len(entries) == 1 && entries[0].Hostname == host {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

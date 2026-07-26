@@ -21,6 +21,7 @@ type Snapshot struct {
 	configPath                string
 	domainListPath            string
 	domainListEntries         []DomainListEntry
+	domainListWarnings        []DomainListWarning
 	domainListEntriesRevision uint64
 	caTrustPending            bool
 }
@@ -31,6 +32,10 @@ func (s Snapshot) CATrusted() bool {
 
 func (s Snapshot) DomainListEntries() []DomainListEntry {
 	return append([]DomainListEntry(nil), s.domainListEntries...)
+}
+
+func (s Snapshot) DomainListWarnings() []DomainListWarning {
+	return append([]DomainListWarning(nil), s.domainListWarnings...)
 }
 
 func (s Snapshot) DomainListEntriesRevision() uint64 {
@@ -79,11 +84,11 @@ func Open(configPath string) (*Source, error) {
 	if err := bootstrapDomainList(loaded.DomainPath); err != nil {
 		return nil, err
 	}
-	entries, domainData, err := loadDomainList(loaded.DomainPath)
+	decoded, domainData, err := loadDomainList(loaded.DomainPath)
 	if err != nil {
 		return nil, err
 	}
-	snapshot := snapshotFromLoadResult(loaded, entries, 1, false, loaded.Config.CATrusted)
+	snapshot := snapshotFromLoadResult(loaded, decoded, 1, false, loaded.Config.CATrusted)
 	source := newSource(loaded.Config, snapshot, loaded.ConfigData, domainData)
 	return source, nil
 }
@@ -93,11 +98,11 @@ func LoadExisting(configPath string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	entries, _, err := loadDomainList(loaded.DomainPath)
+	decoded, _, err := loadDomainList(loaded.DomainPath)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return snapshotFromLoadResult(loaded, entries, 1, false, loaded.Config.CATrusted), nil
+	return snapshotFromLoadResult(loaded, decoded, 1, false, loaded.Config.CATrusted), nil
 }
 
 func newSource(desired fileConfig, snapshot Snapshot, configData, domainData []byte) *Source {
@@ -126,15 +131,15 @@ func (s *Source) Reload() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	entries, domainData, err := loadDomainList(loaded.DomainPath)
+	decoded, domainData, err := loadDomainList(loaded.DomainPath)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	revision := s.current.domainListEntriesRevision
-	if !sameDomainListEntries(s.current.domainListEntries, entries) {
+	if !sameDomainListEntries(s.current.domainListEntries, decoded.entries) {
 		revision++
 	}
-	snapshot := snapshotFromLoadResult(loaded, entries, revision, false, loaded.Config.CATrusted)
+	snapshot := snapshotFromLoadResult(loaded, decoded, revision, false, loaded.Config.CATrusted)
 	s.current = snapshot
 	s.desiredConfig = loaded.Config
 	s.baselineCATrusted = loaded.Config.CATrusted
@@ -166,18 +171,20 @@ func sameSemanticSnapshot(left, right Snapshot) bool {
 		left.configPath != right.configPath ||
 		left.domainListPath != right.domainListPath ||
 		left.caTrustPending != right.caTrustPending ||
+		!sameDomainListWarnings(left.domainListWarnings, right.domainListWarnings) ||
 		!sameDomainListEntries(left.domainListEntries, right.domainListEntries) {
 		return false
 	}
 	return true
 }
 
-func snapshotFromLoadResult(loaded loadResult, entries []DomainListEntry, domainListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
+func snapshotFromLoadResult(loaded loadResult, decoded domainListDecodeResult, domainListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
 	return Snapshot{
 		caTrusted:                 activeCATrusted,
 		configPath:                loaded.ConfigPath,
 		domainListPath:            loaded.DomainPath,
-		domainListEntries:         append([]DomainListEntry(nil), entries...),
+		domainListEntries:         append([]DomainListEntry(nil), decoded.entries...),
+		domainListWarnings:        append([]DomainListWarning(nil), decoded.warnings...),
 		domainListEntriesRevision: domainListEntriesRevision,
 		caTrustPending:            caTrustPending,
 	}
@@ -292,16 +299,16 @@ func expandPath(path string) (string, error) {
 	return absolutePath(os.ExpandEnv(path))
 }
 
-func loadDomainList(path string) ([]DomainListEntry, []byte, error) {
+func loadDomainList(path string) (domainListDecodeResult, []byte, error) {
 	data, err := readRegularFile(path)
 	if err != nil {
-		return nil, nil, err
+		return domainListDecodeResult{}, nil, err
 	}
-	entries, err := parseDomainList(data)
+	decoded, err := decodeDomainList(data)
 	if err != nil {
-		return nil, nil, err
+		return domainListDecodeResult{}, nil, err
 	}
-	return entries, data, nil
+	return decoded, data, nil
 }
 
 func absolutePath(path string) (string, error) {

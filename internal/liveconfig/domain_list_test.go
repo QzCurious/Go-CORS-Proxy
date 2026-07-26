@@ -20,37 +20,47 @@ https://localhost:9443
 	if len(entries) != 3 {
 		t.Fatalf("entries = %d", len(entries))
 	}
-	if entries[0].Hostname() != "api.example.test" || entries[0].Scheme() != "" || entries[0].Port() != "" {
+	if entries[0].Hostname != "api.example.test" || entries[0].Scheme != "" || entries[0].Port != "" {
 		t.Fatalf("hostname shorthand entry = %v", entries[0])
 	}
-	if !entries[1].IsWildcard() || entries[1].Hostname() != "*.qa.example.test" {
+	if entries[1].Hostname != "*.qa.example.test" {
 		t.Fatalf("wildcard entry = %v", entries[1])
 	}
-	if entries[2].Scheme() != "https" || entries[2].Hostname() != "localhost" || entries[2].Port() != "9443" {
+	if entries[2].Scheme != "https" || entries[2].Hostname != "localhost" || entries[2].Port != "9443" {
 		t.Fatalf("full origin entry = %v", entries[2])
 	}
 }
 
 func TestLoadRequiresFullOriginForIPv6DomainListEntry(t *testing.T) {
-	_, err := tryLoadDomainList(t, "::1\n")
-	if err == nil {
-		t.Fatal("expected IPv6 shorthand to fail")
+	invalid := loadDomainList(t, "::1\n")
+	if len(invalid.DomainListEntries()) != 0 ||
+		len(invalid.DomainListWarnings()) != 1 ||
+		!strings.Contains(invalid.DomainListWarnings()[0].Diagnostic, "IPv6") {
+		t.Fatalf("invalid IPv6 shorthand snapshot = %#v", invalid)
 	}
 
 	snapshot := loadDomainList(t, "http://[::1]:3000\n")
 	entries := snapshot.DomainListEntries()
 	if len(entries) != 1 ||
-		entries[0].Scheme() != "http" ||
-		entries[0].Hostname() != "::1" ||
-		entries[0].Port() != "3000" {
+		entries[0].Scheme != "http" ||
+		entries[0].Hostname != "::1" ||
+		entries[0].Port != "3000" {
 		t.Fatalf("full IPv6 origin entries = %v", entries)
 	}
 }
 
-func TestLoadReportsInvalidInlineDomainListComment(t *testing.T) {
-	_, err := tryLoadDomainList(t, "api#bad.example.test\napi.example.test # staging\n")
-	if err == nil || !strings.Contains(err.Error(), "line 1: api#bad.example.test") {
-		t.Fatalf("load error = %v", err)
+func TestLoadWarnsAboutInvalidLineAndUsesValidEntries(t *testing.T) {
+	snapshot := loadDomainList(t, "api#bad.example.test\napi.example.test # staging\n")
+	entries := snapshot.DomainListEntries()
+	warnings := snapshot.DomainListWarnings()
+	if len(entries) != 1 || entries[0].Hostname != "api.example.test" {
+		t.Fatalf("entries = %#v", entries)
+	}
+	if len(warnings) != 1 ||
+		warnings[0].Line != 1 ||
+		warnings[0].Text != "api#bad.example.test" ||
+		!strings.Contains(warnings[0].Diagnostic, "invalid characters") {
+		t.Fatalf("warnings = %#v", warnings)
 	}
 }
 

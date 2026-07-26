@@ -48,6 +48,14 @@ func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {
 		t.Fatalf("path-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
 	}
 
+	writeTrafficTestFile(t, secondDomainPath, "API.EXAMPLE.TEST\nhttps://*.bad.example.test\n")
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
+		return len(state.DomainListWarnings) == 1
+	})
+	if runtime.PACURL() != initialPACURL {
+		t.Fatalf("warning-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
+	}
+
 	writeTrafficTestFile(t, secondDomainPath, "changed.example.test\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
 		return state.DomainCount == 1 && runtime.PACURL() != initialPACURL

@@ -193,8 +193,8 @@ A lifecycle default where generated configuration starts with `ca-trusted: false
 _Avoid_: default HTTPS interception, silent trust installation, config-only trust
 
 **Live Configuration**:
-A gateway module and code boundary that exclusively owns observing, reading, validating, and interpreting user-editable configuration sources, including Domain List syntax, and exposes only validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and Domain List without requiring the user to manually restart or reload the browser or gateway.
-_Avoid_: external Domain List parser, consumer-created Domain List Entry, external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
+A gateway module and code boundary that exclusively owns observing, reading, validating, and interpreting user-editable configuration sources, including Domain List syntax, and exposes validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and the valid entries from the newest readable Domain List without requiring the user to manually restart or reload the browser or gateway.
+_Avoid_: external Domain List parser, external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
 
 **Live Configuration Snapshot**:
 The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, whether Trusted HTTPS Interception intent is pending until the next runtime, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
@@ -509,32 +509,32 @@ A full-line or inline note in the Domain List that is ignored during matching.
 _Avoid_: comment-as-entry
 
 **Empty Domain List**:
-A valid Domain List state with no active entries, including a file that contains only comments or blank lines; the gateway keeps managed PAC Routing installed and matches no upstreams until valid Domain List Entries are added.
+A valid Domain List state with no active entries, including a file that contains only comments, blank lines, or invalid lines carrying Domain List Warnings; the gateway keeps managed PAC Routing installed and matches no upstreams until valid Domain List Entries are added.
 _Avoid_: startup failure for no active entries, proxy-all fallback
 
-**Invalid Domain Startup**:
-A startup validation behavior where a Domain List with invalid lines fails before the gateway starts, even when it has no valid entries.
-_Avoid_: silent invalid entry, invalid-as-empty, partial startup warning
+**Domain List Warning**:
+A persistent line-level diagnostic for an invalid Domain List line that is ignored while other valid Domain List Entries remain active. Warning appearance, change, and clearing publish a new Live Configuration Snapshot for successful startup and runtime status rather than asynchronous notification; they do not advance Domain List Entries Revision unless the valid entry set also changes.
+_Avoid_: silent invalid entry, fatal line error, transient log warning, asynchronous warning event, routing revision warning
 
 **Fatal Domain List Error**:
-A live configuration behavior where an invalid, missing, or unreadable Domain List edit reports the validation problem, performs Gateway Footprint Cleanup, and stops the gateway.
-_Avoid_: stale valid routing, partial valid routing, silent invalid entry
+A live configuration behavior where a missing, unreadable, or structurally undecodable Domain List reports the source problem, performs Gateway Footprint Cleanup, and stops the gateway. Individual invalid lines are Domain List Warnings rather than fatal errors.
+_Avoid_: stale valid routing, unreadable-as-empty, silent source failure
 
 **Domain List Entry**:
-A validated semantic value produced only by Live Configuration from a single active Domain List line; it contains normalized routing meaning rather than the original source text and may identify a full origin or use hostname shorthand. Consumers can inspect it but cannot create or alter one independently.
-_Avoid_: source-text-bearing entry, public field bag, consumer-created entry, unvalidated entry, rule, matcher expression
+A plain constructible routing value containing normalized meaning rather than original source text; it may identify a full origin or use hostname shorthand, with a leading `*.` in the normalized hostname carrying all wildcard meaning. Live Configuration produces validated Domain List Entries from active Domain List lines, while internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
+_Avoid_: source-text-bearing entry, rule, matcher expression
 
 **Domain List Routing Policy**:
-A runtime interpretation owned by the PAC Routing module that decides whether normalized Domain List Entries send a browser request to the Proxy Listener. PAC Routing receives only validated routing inputs selected from the Live Configuration Snapshot, not the snapshot itself.
-_Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers
+A runtime interpretation owned by the PAC Routing module that decides whether normalized Domain List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the Live Configuration Snapshot rather than the snapshot itself.
+_Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Domain List validation
 
 **Hostname Shorthand**:
 A Domain List Entry that names a host without scheme so it matches that host across schemes and ports.
 _Avoid_: default-port-only shorthand, scheme-specific shorthand
 
 **Line-Level Domain Validation**:
-A Domain List behavior where each line is validated independently so invalid entries can be reported precisely; any invalid line makes the Domain List invalid for startup and live updates.
-_Avoid_: silent invalid entry, partial valid routing, invalid-as-empty
+A Domain List behavior where each line is validated independently so valid Domain List Entries are applied while invalid lines are ignored and reported precisely as Domain List Warnings.
+_Avoid_: silent invalid entry, whole-list rejection, invalid line as active entry
 
 **Domain List Deduplication**:
 A Domain List behavior where equivalent normalized Domain List Entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates.
@@ -832,11 +832,11 @@ QA engineer: "Yes, Hostname Shorthand matches the named host across schemes and 
 
 Developer: "What if one Domain List line is wrong?"
 
-QA engineer: "Line-Level Domain Validation reports the invalid line, and Invalid Domain Startup or a live validation stop prevents partial routing from a mixed-validity Domain List."
+QA engineer: "Line-Level Domain Validation ignores that line, reports a Domain List Warning, and continues routing with the valid Domain List Entries."
 
 Developer: "What if I save an invalid Domain List while the gateway is running?"
 
-QA engineer: "Fatal Domain List Error reports the line-level validation problem, performs Gateway Footprint Cleanup, and stops the gateway."
+QA engineer: "Invalid lines produce Domain List Warnings while valid entries are applied; Fatal Domain List Error is reserved for a missing, unreadable, or structurally undecodable source."
 
 Developer: "Does `api.dev.example.com` include its subdomains?"
 

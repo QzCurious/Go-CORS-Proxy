@@ -67,15 +67,6 @@ func TestDeriveRouteBucketsExcludesUntrustedHTTPS(t *testing.T) {
 	}
 }
 
-func TestDeriveRouteBucketsRejectsZeroValueDomainListEntry(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("zero-value Domain List Entry did not fail fast")
-		}
-	}()
-	deriveRouteBuckets([]liveconfig.DomainListEntry{{}}, true)
-}
-
 func mustParseEntries(t *testing.T, texts ...string) []liveconfig.DomainListEntry {
 	t.Helper()
 	home := t.TempDir()

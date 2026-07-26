@@ -286,16 +286,19 @@ func (w *watcherState) reconcile() (watchEvent, bool, error) {
 		}
 		return watchEvent{}, false, nil
 	}
-	entries := current.DomainListEntries()
+	decoded := domainListDecodeResult{
+		entries:  current.DomainListEntries(),
+		warnings: current.DomainListWarnings(),
+	}
 	if domainChanged {
-		entries, err = parseDomainList(domainData)
+		decoded, err = decodeDomainList(domainData)
 		if err != nil {
 			return watchEvent{}, false, invalidDomainError(loaded.DomainPath, err)
 		}
 	}
 	next := snapshotFromLoadResult(
 		loaded,
-		entries,
+		decoded,
 		current.DomainListEntriesRevision(),
 		loaded.Config.CATrusted != w.source.baselineCATrusted,
 		w.source.baselineCATrusted,

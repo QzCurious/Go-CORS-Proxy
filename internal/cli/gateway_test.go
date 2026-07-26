@@ -56,6 +56,11 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 			Guidance: &gateway.StartGuidanceDetail{
 				ManagedPACActive:   true,
 				ManagedPACServices: []string{"Wi-Fi"},
+				DomainListWarnings: []gateway.DomainListWarningDetail{{
+					Line:       2,
+					Text:       "https://*.bad.example.test",
+					Diagnostic: "wildcards require hostname shorthand",
+				}},
 			},
 		}
 		hooks.Started(result)
@@ -64,7 +69,12 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"seamless-cors running", "managed-pac: active", "managed-pac-services: Wi-Fi"} {
+	for _, want := range []string{
+		"seamless-cors running",
+		"managed-pac: active",
+		"managed-pac-services: Wi-Fi",
+		"warning: domain-list line 2: https://*.bad.example.test: wildcards require hostname shorthand",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
 		}
@@ -163,6 +173,23 @@ func TestStatusCommandRendersStaleCacheGuidance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "stale Gateway State Cache detected") {
+		t.Fatalf("status output = %q", out.String())
+	}
+}
+
+func TestStatusRendersCurrentDomainListWarnings(t *testing.T) {
+	var out bytes.Buffer
+	renderStatus(&out, gateway.StatusResult{
+		Kind: gateway.GatewayStatusRunning,
+		Runtime: &gateway.RuntimeStatusDetail{
+			DomainListWarnings: []gateway.DomainListWarningDetail{{
+				Line:       4,
+				Text:       "bad/origin",
+				Diagnostic: "host shorthand must not include scheme, port, path, or IPv6",
+			}},
+		},
+	})
+	if !strings.Contains(out.String(), "warning: domain-list line 4: bad/origin: host shorthand") {
 		t.Fatalf("status output = %q", out.String())
 	}
 }
