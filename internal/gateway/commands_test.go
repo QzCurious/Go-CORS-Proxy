@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"seamless-cors/internal/managedpac"
@@ -61,5 +62,29 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	}
 	if coord.Exists() {
 		t.Fatal("stale Gateway State Cache was not removed after PAC cleanup failure")
+	}
+}
+
+func TestStopWithoutPublishedOwnerRejectsOwnershipLeaseContention(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	coord := newCoordinator(filepath.Join(home, ".seamless-cors", "runtime"))
+	lease, acquired, err := coord.AcquireOwnershipLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !acquired {
+		t.Fatal("test did not acquire ownership lease")
+	}
+	defer lease.Release()
+	settings := &lifecycleTestSystemSettings{}
+
+	_, err = stop(context.Background(), settings)
+
+	if err == nil || !strings.Contains(err.Error(), "retry after it finishes") {
+		t.Fatalf("stop error = %v, want retryable ownership contention", err)
+	}
+	if settings.cleared != 0 {
+		t.Fatalf("managed PAC cleanup calls = %d, want 0", settings.cleared)
 	}
 }

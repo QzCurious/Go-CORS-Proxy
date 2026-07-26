@@ -38,8 +38,8 @@ func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer, command startCommand) error {
 	stdout = writerOrDiscard(stdout)
 	hooks := gateway.StartHooks{
-		ConfirmPACReplacement: func(detail gateway.PACReplacementConsentDetail) (bool, error) {
-			return confirmPACReplacementConsent(stdin, stdout, &detail)
+		ConfirmPACReplacement: func(ctx context.Context, detail gateway.PACReplacementConsentDetail) (bool, error) {
+			return confirmPACReplacementConsent(ctx, stdin, stdout, &detail)
 		},
 		Started: func(result gateway.StartResult) {
 			renderStartResult(stdout, result)
@@ -192,7 +192,7 @@ func (r pacReplacementConsentRequest) needed() bool {
 	return r.ManagedPAC
 }
 
-func promptForPACReplacementConsentRequest(stdin io.Reader, stdout io.Writer, req pacReplacementConsentRequest) error {
+func promptForPACReplacementConsentRequest(ctx context.Context, stdin io.Reader, stdout io.Writer, req pacReplacementConsentRequest) error {
 	if !req.needed() {
 		return nil
 	}
@@ -200,7 +200,7 @@ func promptForPACReplacementConsentRequest(stdin io.Reader, stdout io.Writer, re
 		CurrentPACState: pacStatesForPrompt(req.CurrentPACState),
 		CleanupMode:     gateway.CleanupModeNoPACRestoration,
 	}
-	ok, err := confirmPACReplacementConsent(stdin, stdout, detail)
+	ok, err := confirmPACReplacementConsent(ctx, stdin, stdout, detail)
 	if err != nil {
 		return err
 	}
@@ -210,7 +210,7 @@ func promptForPACReplacementConsentRequest(stdin io.Reader, stdout io.Writer, re
 	return nil
 }
 
-func confirmPACReplacementConsent(stdin io.Reader, stdout io.Writer, detail *gateway.PACReplacementConsentDetail) (bool, error) {
+func confirmPACReplacementConsent(ctx context.Context, stdin io.Reader, stdout io.Writer, detail *gateway.PACReplacementConsentDetail) (bool, error) {
 	if detail == nil {
 		return true, nil
 	}
@@ -232,7 +232,7 @@ func confirmPACReplacementConsent(stdin io.Reader, stdout io.Writer, detail *gat
 	}
 	fmt.Fprintln(stdout)
 	fmt.Fprint(stdout, "Proceed? [y/N] ")
-	ok, err := readYes(stdin)
+	ok, err := readYes(ctx, stdin)
 	if err != nil {
 		return false, err
 	}
@@ -244,11 +244,32 @@ func confirmPACReplacementConsent(stdin io.Reader, stdout io.Writer, detail *gat
 	return true, nil
 }
 
-func readYes(stdin io.Reader) (bool, error) {
+func readYes(ctx context.Context, stdin io.Reader) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if stdin == nil {
 		return true, nil
 	}
-	answer, err := bufio.NewReader(stdin).ReadString('\n')
+
+	type readResult struct {
+		answer string
+		err    error
+	}
+	result := make(chan readResult, 1)
+	go func() {
+		answer, err := bufio.NewReader(stdin).ReadString('\n')
+		result <- readResult{answer: answer, err: err}
+	}()
+
+	var answer string
+	var err error
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case read := <-result:
+		answer, err = read.answer, read.err
+	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err
 	}
@@ -380,6 +401,10 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 	case gateway.GatewayStatusRouterOnly:
 		fmt.Fprintln(stdout, "seamless-cors status: owner running")
 		fmt.Fprintln(stdout, "gateway-runtime: inactive")
+	case gateway.GatewayStatusEnding:
+		fmt.Fprintln(stdout, "seamless-cors status: owner ending")
+		fmt.Fprintln(stdout, "gateway-runtime: inactive")
+		fmt.Fprintln(stdout, "retry-stop: run `seamless-cors stop` to finish gateway cleanup")
 	default:
 		fmt.Fprintln(stdout, "seamless-cors status: not running")
 	}

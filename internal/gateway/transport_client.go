@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"seamless-cors/internal/managedpac"
 	"strings"
-	"time"
 )
 
 const tokenHeader = "X-Seamless-CORS-Token"
@@ -57,7 +56,7 @@ func discover() (target, error) {
 func newClient(cache stateCache) *client {
 	return &client{
 		cache:      cache,
-		httpClient: &http.Client{Timeout: 500 * time.Millisecond},
+		httpClient: &http.Client{},
 	}
 }
 

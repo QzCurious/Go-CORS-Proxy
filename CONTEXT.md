@@ -29,7 +29,7 @@ A typed client-facing layer used by CLI and future user interfaces to discover a
 _Avoid_: command service, lifecycle client, generic JSON caller, managed gateway
 
 **Gateway Owner**:
-The foreground process-lifetime module that owns Gateway Router publication, Gateway State Cache lease identity, router-only serving, direct-start owner startup, and, when active, Gateway Runtime and Gateway Footprint Cleanup responsibility.
+The foreground process-lifetime module that holds the Gateway Ownership Lease, publishes Gateway Router discovery state, provides router-only serving and direct-start owner startup, and, when active, owns Gateway Runtime and Gateway Footprint Cleanup responsibility.
 _Avoid_: daemon supervisor, client command, detached runtime owner, terminal command renderer
 
 **Gateway Runtime**:
@@ -103,6 +103,10 @@ _Avoid_: failure-blocked cleanup, leaving owned runtime state behind, router-onl
 **Owner Stop**:
 A stop behavior where `stop` and `/stop` tear down the Gateway Owner itself, including a router-only owner, and close Gateway Runtime before Gateway Footprint Cleanup so no new gateway traffic is accepted after runtime close completes.
 _Avoid_: runtime-only stop, router-only survival, stop-as-status, start-survives-stop, accepted-before-cleanup, cleanup-before-runtime-close
+
+**Owner Ending**:
+A Gateway Owner lifecycle state that begins when Owner Stop takes precedence and lasts until stop succeeds or the process exits. A Retryable Stop Failure leaves the owner ending and teardown-only: stop retries and status remain available, while a Start Sequence is rejected as `stop-cancelled`.
+_Avoid_: owner stopping, shutdown window, late start admission, start-after-stop
 
 **Retryable Stop Failure**:
 A failed stop behavior where the Gateway Owner remains alive after ordinary Blocking Cleanup Subject failure so the user can retry `stop` through the same command channel, even if Gateway Runtime has already been partially or fully closed.
@@ -261,11 +265,11 @@ The default seamless-cors location at `.seamless-cors` under the user's home dir
 _Avoid_: platform-native app config directory
 
 **Runtime State Directory**:
-The durable location under the Home Config Directory for the Gateway State Cache.
+The durable location under the Home Config Directory for Gateway Coordination state, including the Gateway Ownership Lease file and Gateway State Cache.
 _Avoid_: temp runtime state, volatile cleanup files, miscellaneous runtime file storage
 
 **Gateway Coordination**:
-A lifecycle behavior that owns Gateway State Cache operations, Gateway State Verification, Gateway State Lease mechanics, and Single User Instance decisions while allowing lifecycle cleanup paths to remove cache state through Gateway Footprint Cleanup.
+A lifecycle behavior that owns the Gateway Ownership Lease, Gateway State Cache operations, Gateway State Verification, and Single User Instance decisions while allowing lifecycle cleanup paths to remove cache state through Gateway Footprint Cleanup.
 _Avoid_: Runtime Coordination, cleanup module, process supervisor, daemon manager, file-exists-is-running
 
 **Installed CA Storage**:
@@ -276,9 +280,9 @@ _Avoid_: runtime CA storage, temp CA files, stop-owned CA files
 A durable gateway coordination cache that lets client commands discover and verify the Gateway Owner by its HTTP Router listener and token identity.
 _Avoid_: Runtime State File, control state, pid-only lock file, configured control address, in-memory instance registry, source of truth
 
-**Gateway State Lease**:
-An ownership rule where a discoverable Gateway Owner continuously exits and runs Gateway Footprint Cleanup if the Gateway State Cache disappears or no longer carries that owner's HTTP Router listener and token identity.
-_Avoid_: advisory state file, best-effort owner hint, stale owner survival
+**Gateway Ownership Lease**:
+A process-lifetime, operating-system-backed exclusive lease that is the authoritative Single User Instance ownership signal. A contender must acquire it before verification, cleanup, or publication and fails immediately when another process holds it; the Gateway State Cache remains discovery data rather than ownership authority.
+_Avoid_: Gateway State Lease, cache ownership watcher, verify-then-claim, advisory lock, waiting owner queue
 
 **Gateway State Verification**:
 A read-only Gateway Coordination behavior where an existing Gateway State Cache is checked through the HTTP Router before the gateway treats another Gateway Owner as active.
@@ -473,7 +477,7 @@ A CA Lifecycle Command behavior where `install` and `uninstall` are sent to an e
 _Avoid_: bypassing owner command authority, router-only local mutation, runtime CA rotation, active-trusted-runtime CA mutation, blanket active-runtime rejection
 
 **Gateway Footprint Cleanup**:
-An idempotent, ownership-aware lifecycle behavior that removes only stale or intentionally released seamless-cors-owned managed PAC and Gateway State Cache subjects while leaving Installed User CA state untouched. Direct start removes stale cache and owned PAC, router-hosted start removes owned PAC while preserving its live owner cache, and stop removes both when ending ownership.
+An idempotent, ownership-aware lifecycle behavior that removes only stale or intentionally released seamless-cors-owned managed PAC and Gateway State Cache subjects while leaving Installed User CA state untouched. Direct start holds the Gateway Ownership Lease while removing stale cache and owned PAC, router-hosted start removes owned PAC while preserving its live owner cache, and stop removes both when ending ownership.
 _Avoid_: unconditional cache removal, live-owner eviction, runtime cleanup, status cleanup, serve-start cleanup, broad cleanup, CA removal, restore-based cleanup
 
 **No PAC Restoration**:

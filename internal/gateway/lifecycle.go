@@ -195,6 +195,7 @@ const (
 	GatewayStatusNotRunning GatewayStatusKind = "not-running"
 	GatewayStatusStaleCache GatewayStatusKind = "stale-cache"
 	GatewayStatusRouterOnly GatewayStatusKind = "router-only"
+	GatewayStatusEnding     GatewayStatusKind = "ending"
 	GatewayStatusStarting   GatewayStatusKind = "starting"
 	GatewayStatusRunning    GatewayStatusKind = "running"
 )
@@ -276,6 +277,7 @@ type lifecycle struct {
 	startCleanupComplete bool
 	startCancel          context.CancelFunc
 	startDone            chan struct{}
+	ownerEnding          bool
 	runtime              *activeRuntime
 	fatal                chan error
 }
@@ -348,6 +350,10 @@ func (f *lifecycle) takeStartCleanupComplete() bool {
 
 func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (StartResult, error) {
 	f.mu.Lock()
+	if f.ownerEnding {
+		f.mu.Unlock()
+		return StartResult{Kind: StartResultStopCancelled}, nil
+	}
 	if f.runtime != nil {
 		f.mu.Unlock()
 		return StartResult{Kind: StartResultAlreadyRunning}, nil
@@ -377,6 +383,7 @@ func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (Sta
 func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	var warnings []CommandWarning
 	f.mu.Lock()
+	f.ownerEnding = true
 	startCancel := f.startCancel
 	startDone := f.startDone
 	active := f.runtime
@@ -417,6 +424,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	f.mu.Lock()
 	active := f.runtime
 	ownerCache := f.ownerCache
+	ownerEnding := f.ownerEnding
 	var phase runtimePhase
 	var pac *managedpac.Session
 	if active != nil {
@@ -428,6 +436,13 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		Kind:        GatewayStatusNotRunning,
 		Cleanup:     f.cleanupStatus(ctx, stale, active != nil, ownerCache),
 		InstalledCA: f.installedCAStatus(ctx),
+	}
+	if ownerEnding {
+		result.Kind = GatewayStatusEnding
+		if f.routerListen != "" {
+			result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
+		}
+		return result, nil
 	}
 	if active != nil {
 		if phase == runtimePhaseRunning {

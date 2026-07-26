@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"time"
 
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/userca"
@@ -19,14 +18,7 @@ type owner struct {
 	listener  net.Listener
 	lifecycle *lifecycle
 	router    *routerServer
-}
-
-func newOwner(settings managedpac.SystemSettings, trustStore userca.TrustStore) (*owner, error) {
-	coord, err := defaultCoordinator()
-	if err != nil {
-		return nil, err
-	}
-	return newOwnerWithCoordinator(settings, trustStore, coord)
+	lease     *ownershipLease
 }
 
 func newOwnerWithCoordinator(settings managedpac.SystemSettings, trustStore userca.TrustStore, coord *coordinator) (*owner, error) {
@@ -57,6 +49,13 @@ func newOwnerWithCoordinator(settings managedpac.SystemSettings, trustStore user
 }
 
 func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) error) error {
+	if o.lease == nil {
+		return fmt.Errorf("gateway owner requires ownership lease")
+	}
+	defer func() {
+		_ = o.lease.Release()
+		o.lease = nil
+	}()
 	errs := make(chan error, 1)
 	go func() { errs <- o.router.Serve(o.listener) }()
 	if err := o.coord.Claim(o.cache); err != nil {
@@ -64,10 +63,9 @@ func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) erro
 		return err
 	}
 	defer o.coord.RemoveOwned(o.cache)
-	leaseLost := watchLease(ctx, o.coord, o.cache)
-	event := superviseOwner(ctx, afterPublish, leaseLost, o.router.ShutdownRequested(), o.lifecycle.FatalRuntimeErrors(), errs)
+	event := superviseOwner(ctx, afterPublish, o.router.ShutdownRequested(), o.lifecycle.FatalRuntimeErrors(), errs)
 	switch event.kind {
-	case ownerEventContextDone, ownerEventLeaseLost:
+	case ownerEventContextDone:
 		_, _ = o.lifecycle.Stop(context.Background())
 		_ = o.router.Close(context.Background())
 		return nil
@@ -105,7 +103,6 @@ type ownerEventKind int
 
 const (
 	ownerEventContextDone ownerEventKind = iota
-	ownerEventLeaseLost
 	ownerEventShutdownRequested
 	ownerEventFatalRuntime
 	ownerEventRouterStopped
@@ -123,7 +120,6 @@ type ownerEvent struct {
 func superviseOwner(
 	ctx context.Context,
 	afterPublish func(context.Context) error,
-	leaseLost <-chan struct{},
 	shutdownRequested <-chan struct{},
 	fatalRuntimeErrors <-chan error,
 	routerErrors <-chan error,
@@ -153,9 +149,6 @@ func superviseOwner(
 		case <-ctx.Done():
 			cancelAndWait(cancelActivation, activationDone)
 			return ownerEvent{kind: ownerEventContextDone}
-		case <-leaseLost:
-			cancelAndWait(cancelActivation, activationDone)
-			return ownerEvent{kind: ownerEventLeaseLost}
 		case <-shutdownRequested:
 			cancelAndWait(cancelActivation, activationDone)
 			return ownerEvent{kind: ownerEventShutdownRequested}
@@ -174,26 +167,6 @@ func cancelAndWait(cancel context.CancelFunc, activationDone <-chan error) {
 	if activationDone != nil {
 		<-activationDone
 	}
-}
-
-func watchLease(ctx context.Context, coord *coordinator, cache stateCache) <-chan struct{} {
-	lost := make(chan struct{})
-	go func() {
-		defer close(lost)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if !coord.Owns(cache) {
-					return
-				}
-			}
-		}
-	}()
-	return lost
 }
 
 func randomToken() (string, error) {

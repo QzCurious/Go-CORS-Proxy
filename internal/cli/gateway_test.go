@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 
 func TestPACReplacementConsentPromptReportsManagedPACOnly(t *testing.T) {
 	var out bytes.Buffer
-	err := promptForPACReplacementConsentRequest(bytes.NewBufferString("yes"), &out, pacReplacementConsentRequest{
+	err := promptForPACReplacementConsentRequest(context.Background(), bytes.NewBufferString("yes"), &out, pacReplacementConsentRequest{
 		ManagedPAC: true,
 		CurrentPACState: []managedpac.ServiceSnapshot{{
 			ServiceName: "Wi-Fi",
@@ -35,12 +36,33 @@ func TestPACReplacementConsentPromptReportsManagedPACOnly(t *testing.T) {
 
 func TestPACReplacementConsentPromptDeclineCancels(t *testing.T) {
 	var out bytes.Buffer
-	err := promptForPACReplacementConsentRequest(bytes.NewBufferString("no"), &out, pacReplacementConsentRequest{ManagedPAC: true})
+	err := promptForPACReplacementConsentRequest(context.Background(), bytes.NewBufferString("no"), &out, pacReplacementConsentRequest{ManagedPAC: true})
 	if !errors.Is(err, ErrPACReplacementConsentDeclined) {
 		t.Fatalf("prompt error = %v", err)
 	}
 	if !strings.Contains(out.String(), "Gateway Activation canceled") {
 		t.Fatalf("prompt output = %q", out.String())
+	}
+}
+
+func TestPACReplacementConsentPromptReturnsWhenContextIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	input, output := io.Pipe()
+	defer input.Close()
+	defer output.Close()
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := confirmPACReplacementConsent(ctx, input, &out, &gateway.PACReplacementConsentDetail{})
+		done <- err
+	}()
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("prompt error = %v, want context canceled", err)
+	}
+	if strings.Contains(out.String(), "Gateway Activation canceled") {
+		t.Fatalf("cancelled prompt rendered explicit-decline message: %q", out.String())
 	}
 }
 
@@ -191,6 +213,23 @@ func TestStatusRendersCurrentDomainListWarnings(t *testing.T) {
 	})
 	if !strings.Contains(out.String(), "warning: domain-list line 4: bad/origin: host shorthand") {
 		t.Fatalf("status output = %q", out.String())
+	}
+}
+
+func TestStatusRendersOwnerEndingGuidance(t *testing.T) {
+	var out bytes.Buffer
+	renderStatus(&out, gateway.StatusResult{
+		Kind:  gateway.GatewayStatusEnding,
+		Owner: &gateway.OwnerStatusDetail{RouterListen: "127.0.0.1:1234"},
+	})
+	if !strings.Contains(out.String(), "seamless-cors status: owner ending") {
+		t.Fatalf("status output = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "retry-stop: run `seamless-cors stop`") {
+		t.Fatalf("status output = %q", out.String())
+	}
+	if strings.Contains(out.String(), "runtime-proxy-endpoint:") {
+		t.Fatalf("status output includes runtime detail = %q", out.String())
 	}
 }
 

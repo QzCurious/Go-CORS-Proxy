@@ -10,6 +10,7 @@ import (
 )
 
 const stateFileName = "gateway-state-cache.json"
+const ownershipLeaseFileName = "gateway-owner.lock"
 
 type stateStatus string
 
@@ -50,6 +51,7 @@ func defaultRuntimeDir() (string, error) {
 type coordinator struct {
 	runtimeDir    string
 	statePath     string
+	leasePath     string
 	ownerVerifier ownerVerifier
 }
 
@@ -64,6 +66,7 @@ func newCoordinatorWithVerifier(runtimeDir string, ownerVerifier ownerVerifier) 
 	return &coordinator{
 		runtimeDir:    runtimeDir,
 		statePath:     filepath.Join(runtimeDir, stateFileName),
+		leasePath:     filepath.Join(runtimeDir, ownershipLeaseFileName),
 		ownerVerifier: ownerVerifier,
 	}
 }
@@ -95,31 +98,9 @@ func (c *coordinator) Verify() verification {
 	return verification{Status: stateStale, Cache: cache}
 }
 
-func (c *coordinator) EnsureStartAllowed() (bool, error) {
-	if err := os.MkdirAll(c.runtimeDir, 0o700); err != nil {
-		return false, err
-	}
-	switch c.Verify().Status {
-	case stateActive:
-		return false, fmt.Errorf("gateway owner already running")
-	case stateStale:
-		return true, nil
-	default:
-		return false, nil
-	}
-}
-
 func (c *coordinator) Claim(cache stateCache) error {
 	if cache.HTTPRouterListen == "" || cache.Token == "" {
 		return fmt.Errorf("gateway state cache requires router listen and token")
-	}
-	if err := writeExclusive(c.statePath, cache); err == nil {
-		return nil
-	} else if !os.IsExist(err) {
-		return err
-	}
-	if c.Verify().Status == stateActive {
-		return fmt.Errorf("gateway owner already running")
 	}
 	return writeAtomicReplace(c.statePath, cache)
 }

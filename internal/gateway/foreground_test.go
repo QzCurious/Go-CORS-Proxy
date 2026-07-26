@@ -7,37 +7,6 @@ import (
 	"time"
 )
 
-func TestSuperviseOwnerCancelsPendingActivationOnLeaseLoss(t *testing.T) {
-	leaseLost := make(chan struct{})
-	activationReturned := make(chan struct{})
-	done := make(chan ownerEvent, 1)
-	go func() {
-		done <- superviseOwner(
-			context.Background(),
-			func(ctx context.Context) error {
-				<-ctx.Done()
-				close(activationReturned)
-				return ctx.Err()
-			},
-			leaseLost,
-			make(chan struct{}),
-			make(chan error),
-			make(chan error),
-		)
-	}()
-
-	close(leaseLost)
-	event := receiveOwnerEvent(t, done)
-	if event.kind != ownerEventLeaseLost {
-		t.Fatalf("event kind = %d, want lease lost", event.kind)
-	}
-	select {
-	case <-activationReturned:
-	default:
-		t.Fatal("supervisor returned before canceled activation exited")
-	}
-}
-
 func TestSuperviseOwnerCancelsPendingActivationOnCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	activationReturned := make(chan struct{})
@@ -50,7 +19,6 @@ func TestSuperviseOwnerCancelsPendingActivationOnCallerCancellation(t *testing.T
 				close(activationReturned)
 				return ctx.Err()
 			},
-			make(chan struct{}),
 			make(chan struct{}),
 			make(chan error),
 			make(chan error),
@@ -81,7 +49,6 @@ func TestSuperviseOwnerCancelsPendingActivationAndPropagatesFatalError(t *testin
 				return ctx.Err()
 			},
 			make(chan struct{}),
-			make(chan struct{}),
 			fatal,
 			make(chan error),
 		)
@@ -108,7 +75,6 @@ func TestSuperviseOwnerContinuesAfterActivationCompletes(t *testing.T) {
 				close(activated)
 				return nil
 			},
-			make(chan struct{}),
 			make(chan struct{}),
 			make(chan error),
 			make(chan error),

@@ -12,7 +12,7 @@ import (
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
 
 type StartHooks struct {
-	ConfirmPACReplacement func(PACReplacementConsentDetail) (bool, error)
+	ConfirmPACReplacement func(context.Context, PACReplacementConsentDetail) (bool, error)
 	Started               func(StartResult)
 }
 
@@ -25,13 +25,23 @@ func start(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 	if err != nil {
 		return StartResult{}, err
 	}
-	if coord.Verify().Status == stateActive {
-		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
-	}
-	failures, err := cleanRuntime(ctx, settings)
+	lease, acquired, err := coord.AcquireOwnershipLease()
 	if err != nil {
 		return StartResult{}, err
 	}
+	if !acquired {
+		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
+	}
+	releaseLease := true
+	defer func() {
+		if releaseLease {
+			_ = lease.Release()
+		}
+	}()
+	if coord.Verify().Status == stateActive {
+		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
+	}
+	failures := cleanGatewayFootprint(ctx, settings, coord, nil)
 	if len(failures) > 0 {
 		return StartResult{Kind: StartResultCleanupFailed, CleanupFailures: failures}, nil
 	}
@@ -39,6 +49,8 @@ func start(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 	if err != nil {
 		return StartResult{}, err
 	}
+	owner.lease = lease
+	releaseLease = false
 	owner.lifecycle.MarkStartCleanupComplete()
 	var result StartResult
 	err = owner.Run(ctx, func(activationCtx context.Context) error {
@@ -67,6 +79,19 @@ func serve(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 	if err != nil {
 		return err
 	}
+	lease, acquired, err := coord.AcquireOwnershipLease()
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return fmt.Errorf("gateway owner already running")
+	}
+	releaseLease := true
+	defer func() {
+		if releaseLease {
+			_ = lease.Release()
+		}
+	}()
 	if coord.Verify().Status == stateActive {
 		return fmt.Errorf("gateway owner already running")
 	}
@@ -74,6 +99,8 @@ func serve(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 	if err != nil {
 		return err
 	}
+	owner.lease = lease
+	releaseLease = false
 	return owner.Run(ctx, func(context.Context) error {
 		if ready != nil {
 			ready()
@@ -106,7 +133,7 @@ func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks
 			}
 			accepted := false
 			if hooks.ConfirmPACReplacement != nil {
-				accepted, err = hooks.ConfirmPACReplacement(*result.PACReplacementConsent)
+				accepted, err = hooks.ConfirmPACReplacement(ctx, *result.PACReplacementConsent)
 				if err != nil {
 					return result, err
 				}
@@ -130,5 +157,13 @@ func cleanRuntime(ctx context.Context, settings managedpac.SystemSettings) ([]Cl
 	if err != nil {
 		return nil, err
 	}
+	lease, acquired, err := coord.AcquireOwnershipLease()
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		return nil, fmt.Errorf("gateway owner already running; retry after it finishes starting or stopping")
+	}
+	defer lease.Release()
 	return cleanGatewayFootprint(ctx, settings, coord, nil), nil
 }

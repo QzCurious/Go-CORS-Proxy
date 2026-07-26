@@ -164,3 +164,40 @@ func TestClaimReplacesStaleCache(t *testing.T) {
 		t.Fatal("claim did not replace stale cache with current owner")
 	}
 }
+
+func TestGatewayOwnershipLeaseIsExclusiveAndReleased(t *testing.T) {
+	runtimeDir := t.TempDir()
+	first := newCoordinator(runtimeDir)
+	second := newCoordinator(runtimeDir)
+
+	lease, acquired, err := first.AcquireOwnershipLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !acquired {
+		t.Fatal("first coordinator did not acquire ownership lease")
+	}
+
+	contender, acquired, err := second.AcquireOwnershipLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acquired {
+		_ = contender.Release()
+		t.Fatal("second coordinator acquired held ownership lease")
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	contender, acquired, err = second.AcquireOwnershipLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !acquired {
+		t.Fatal("ownership lease remained held after release")
+	}
+	if err := contender.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
