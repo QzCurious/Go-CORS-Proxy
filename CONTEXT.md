@@ -77,7 +77,7 @@ A runtime proxy auto-configuration artifact derived from Live Configuration and 
 _Avoid_: user-authored PAC, manual PAC rules
 
 **PAC Route Set**:
-The Generated PAC data buckets derived inside the PAC Routing module from normalized Domain List Entries and the current Trusted HTTPS Interception state, keeping the PAC JavaScript mostly static.
+The Domain Routes and Origin Routes derived inside the PAC Routing module from normalized Domain List Entries and the current Trusted HTTPS Interception state, keeping the Generated PAC JavaScript mostly static.
 _Avoid_: hand-built JavaScript rules, duplicated Domain List parsing, PAC-owned Domain List syntax
 
 **PAC Endpoint**:
@@ -197,8 +197,8 @@ A lifecycle default where generated configuration starts with `ca-trusted: false
 _Avoid_: default HTTPS interception, silent trust installation, config-only trust
 
 **Live Configuration**:
-A gateway module and code boundary that exclusively owns observing, reading, validating, and interpreting user-editable configuration sources, including Domain List syntax, and exposes validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and the valid entries from the newest readable Domain List without requiring the user to manually restart or reload the browser or gateway.
-_Avoid_: external Domain List parser, external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
+A gateway module and code boundary that exclusively owns observing and reading user-editable configuration sources, interpreting the Config File, passing raw Domain List content to the Domain List module, and exposing validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and the valid entries from the newest readable Domain List without requiring the user to manually restart or reload the browser or gateway.
+_Avoid_: external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
 
 **Live Configuration Snapshot**:
 The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, whether Trusted HTTPS Interception intent is pending until the next runtime, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
@@ -505,7 +505,7 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Domain List**:
-The user-managed newline-delimited set of upstream hostnames or origins used by PAC Routing to decide which browser requests normally reach the Proxy Listener during DEV/QA work; its source is an ordinary file addressed by a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
+The user-managed newline-delimited configuration decoded by the Domain List module into Domain Selectors, Origin Selectors, and Domain List Warnings for PAC Routing; Live Configuration reads and observes its ordinary-file source at a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
 _Avoid_: symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
 **Domain List Comment**:
@@ -525,28 +525,40 @@ A live configuration behavior where a missing, unreadable, or structurally undec
 _Avoid_: stale valid routing, unreadable-as-empty, silent source failure
 
 **Domain List Entry**:
-A plain constructible routing value containing a normalized HTTP(S) scheme constraint, hostname, explicit port constraint, and Host Match rather than original source text. Live Configuration produces validated Domain List Entries from active Domain List lines, while internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
+A normalized routing value decoded by the Domain List module as either a Domain Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
 _Avoid_: source-text-bearing entry, rule, matcher expression
 
-**Host Match**:
-The explicit Domain List Entry meaning that selects an exact hostname, exactly one leading subdomain label, or one-or-more leading subdomain labels without encoding that meaning in the normalized hostname.
+**Domain Selector**:
+A Domain List Entry variant containing a lowercase ASCII hostname and Hostname Match without a scheme or port, selecting matching hosts across HTTP and HTTPS on any port. Domain Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
+_Avoid_: Hostname Shorthand, scheme-less origin, port-qualified domain
+
+**Domain Route**:
+A scheme-qualified hostname match derived from a Domain Selector for the PAC Route Set. A Domain Selector derives an HTTP Domain Route and, when Trusted HTTPS Interception is enabled, an HTTPS Domain Route; each route matches its hostname pattern on any port.
+_Avoid_: Origin Route, port-qualified domain, PAC-owned selector
+
+**Origin Selector**:
+A Domain List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname, and optional normalized explicit port, matched exactly without applying Domain Selector wildcard semantics. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; accepted explicit ports are not range-validated, and IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
+_Avoid_: Full Origin, URL selector, scheme-qualified domain
+
+**Origin Route**:
+An exact origin representation derived from an Origin Selector for the PAC Route Set. PAC Routing owns default-port interpretation: an HTTP selector always derives Origin Routes, while an HTTPS selector derives them only when Trusted HTTPS Interception is enabled; a selector with an omitted or explicit default port derives both implicit-port and explicit-port Origin Routes, while any other port derives one Origin Route. Equivalent derived routes are deduplicated.
+_Avoid_: duplicate Origin Selector, URL rule, inferred PAC port
+
+**Hostname Match**:
+The explicit Domain Selector meaning that selects an exact hostname, exactly one leading subdomain label, or one-or-more leading subdomain labels without encoding that meaning in the normalized hostname.
 _Avoid_: wildcard-bearing hostname, consumer-parsed wildcard
 
 **Domain List Routing Policy**:
 A runtime interpretation owned by the PAC Routing module that decides whether normalized Domain List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the Live Configuration Snapshot rather than the snapshot itself.
 _Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Domain List validation
 
-**Hostname Shorthand**:
-A Domain List Entry source form that names a host without a scheme, optionally constraining its port, so it can select both HTTP and HTTPS origins.
-_Avoid_: default-port-only shorthand, scheme-specific shorthand, IPv6 prohibition
-
 **Line-Level Domain Validation**:
 A Domain List behavior where each line is validated independently so valid Domain List Entries are applied while invalid lines are ignored and reported precisely as Domain List Warnings.
 _Avoid_: silent invalid entry, whole-list rejection, invalid line as active entry
 
 **Domain List Deduplication**:
-A Domain List behavior where equivalent normalized Domain List Entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates.
-_Avoid_: duplicate active routes, line-count domains, generated duplicate PAC rules
+A Domain List module behavior where equivalent normalized source-level entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived Origin Routes.
+_Avoid_: duplicate source selectors, line-count domains, PAC-owned source deduplication
 
 **Exact Domain Match**:
 A Host Match that selects only the named hostname.

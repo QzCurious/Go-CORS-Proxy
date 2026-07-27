@@ -3,51 +3,55 @@ package pacrouting
 import (
 	"strings"
 	"testing"
+
+	"seamless-cors/internal/domainlist"
 )
 
-func TestGenerateCarriesHostMatchAndOptionalConstraintsIntoPACRoutes(t *testing.T) {
+func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {
 	js := Generate(Options{
 		ProxyListen: "127.0.0.1:8080",
 		CATrusted:   true,
-		DomainListEntries: mustParseEntries(t,
-			"*.qa.example.test",
-			"https://**.dev.example.test:8443",
-		),
+		DomainList: domainlist.DomainList{
+			DomainSelectors: []domainlist.DomainSelector{
+				{Hostname: "qa.example.test", HostnameMatch: domainlist.HostnameSingleLevel},
+			},
+			OriginSelectors: []domainlist.OriginSelector{
+				{Scheme: "https", Hostname: "api.example.test"},
+			},
+		},
 	})
 
-	want := `var routes = [` +
-		`{"scheme":"http","host":"qa.example.test","port":"","match":"single"},` +
-		`{"scheme":"https","host":"qa.example.test","port":"","match":"single"},` +
-		`{"scheme":"https","host":"dev.example.test","port":"8443","match":"recursive"}];`
+	want := `var VIEW_BAG = {` +
+		`"Proxy":"127.0.0.1:8080",` +
+		`"DomainRoutes":[` +
+		`{"Scheme":"http","Hostname":"qa.example.test","HostnameMatch":"SingleLevel"},` +
+		`{"Scheme":"https","Hostname":"qa.example.test","HostnameMatch":"SingleLevel"}],` +
+		`"OriginRoutes":["https://api.example.test","https://api.example.test:443"]};`
 	if !strings.Contains(js, want) {
-		t.Fatalf("PAC routes missing host match semantics, got:\n%s", js)
+		t.Fatalf("Generated PAC missing flat view bag, got:\n%s", js)
+	}
+	if !strings.Contains(js, `'PROXY ' + VIEW_BAG.Proxy`) {
+		t.Fatalf("PAC program should construct the proxy directive, got:\n%s", js)
 	}
 }
 
-func TestGenerateUsesTrustAwareHTTPSRouting(t *testing.T) {
-	js := Generate(Options{
-		ProxyListen:       "127.0.0.1:8080",
-		CATrusted:         false,
-		DomainListEntries: mustParseEntries(t, "https://api.example.test", "http://api.example.test"),
-	})
-	if strings.Contains(js, "scheme == 'https' && host == 'api.example.test'") {
-		t.Fatal("HTTPS route should be omitted when CA is not trusted")
+func TestGeneratePACDoesNotParseOrInferPorts(t *testing.T) {
+	js := Generate(Options{})
+	for _, unwanted := range []string{"explicitPortForURL", "defaultPortForScheme", "parsedPort"} {
+		if strings.Contains(js, unwanted) {
+			t.Fatalf("Generated PAC contains obsolete port logic %q", unwanted)
+		}
 	}
-	if !strings.Contains(js, `var routes = [{"scheme":"http","host":"api.example.test","port":"80","match":"exact"}]`) {
-		t.Fatalf("HTTP origin route should be present, got:\n%s", js)
-	}
-	if !strings.Contains(js, "DIRECT") {
-		t.Fatal("PAC should return DIRECT for unmatched traffic")
+	if !strings.Contains(js, `url == originRoute || url.indexOf(originRoute + '/') == 0`) {
+		t.Fatalf("Generated PAC missing boundary-safe Origin Route match:\n%s", js)
 	}
 }
 
-func TestGenerateUsesExactPortsForFullOrigins(t *testing.T) {
-	js := Generate(Options{
-		ProxyListen:       "127.0.0.1:8080",
-		CATrusted:         false,
-		DomainListEntries: mustParseEntries(t, "http://api.example.test:8081"),
-	})
-	if !strings.Contains(js, `"port":"8081"`) {
-		t.Fatalf("PAC should preserve full-origin port, got:\n%s", js)
+func TestGenerateUsesOriginRoutesBeforeDomainRoutes(t *testing.T) {
+	js := Generate(Options{})
+	originIndex := strings.Index(js, "for (var i = 0; i < originRoutes.length; i++)")
+	domainIndex := strings.Index(js, "for (var j = 0; j < domainRoutes.length; j++)")
+	if originIndex == -1 || domainIndex == -1 || originIndex > domainIndex {
+		t.Fatalf("Generated PAC should check Origin Routes first:\n%s", js)
 	}
 }

@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+
+	"seamless-cors/internal/domainlist"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,8 +23,7 @@ type Snapshot struct {
 	caTrusted                 bool
 	configPath                string
 	domainListPath            string
-	domainListEntries         []DomainListEntry
-	domainListWarnings        []DomainListWarning
+	domainList                domainlist.DomainList
 	domainListEntriesRevision uint64
 	caTrustPending            bool
 }
@@ -30,12 +32,8 @@ func (s Snapshot) CATrusted() bool {
 	return s.caTrusted
 }
 
-func (s Snapshot) DomainListEntries() []DomainListEntry {
-	return append([]DomainListEntry(nil), s.domainListEntries...)
-}
-
-func (s Snapshot) DomainListWarnings() []DomainListWarning {
-	return append([]DomainListWarning(nil), s.domainListWarnings...)
+func (s Snapshot) DomainList() domainlist.DomainList {
+	return cloneDomainList(s.domainList)
 }
 
 func (s Snapshot) DomainListEntriesRevision() uint64 {
@@ -136,7 +134,7 @@ func (s *Source) Reload() (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	revision := s.current.domainListEntriesRevision
-	if !sameDomainListEntries(s.current.domainListEntries, decoded.entries) {
+	if !domainlist.SameEntries(s.current.domainList, decoded) {
 		revision++
 	}
 	snapshot := snapshotFromLoadResult(loaded, decoded, revision, false, loaded.Config.CATrusted)
@@ -171,23 +169,31 @@ func sameSemanticSnapshot(left, right Snapshot) bool {
 		left.configPath != right.configPath ||
 		left.domainListPath != right.domainListPath ||
 		left.caTrustPending != right.caTrustPending ||
-		!sameDomainListWarnings(left.domainListWarnings, right.domainListWarnings) ||
-		!sameDomainListEntries(left.domainListEntries, right.domainListEntries) {
+		!slices.Equal(left.domainList.Warnings, right.domainList.Warnings) ||
+		!domainlist.SameEntries(left.domainList, right.domainList) {
 		return false
 	}
 	return true
 }
 
-func snapshotFromLoadResult(loaded loadResult, decoded domainListDecodeResult, domainListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
+func snapshotFromLoadResult(loaded loadResult, decoded domainlist.DomainList, domainListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
 	return Snapshot{
 		caTrusted:                 activeCATrusted,
 		configPath:                loaded.ConfigPath,
 		domainListPath:            loaded.DomainPath,
-		domainListEntries:         append([]DomainListEntry(nil), decoded.entries...),
-		domainListWarnings:        append([]DomainListWarning(nil), decoded.warnings...),
+		domainList:                cloneDomainList(decoded),
 		domainListEntriesRevision: domainListEntriesRevision,
 		caTrustPending:            caTrustPending,
 	}
+}
+
+func cloneDomainList(source domainlist.DomainList) domainlist.DomainList {
+	cloned := domainlist.DomainList{
+		DomainSelectors: append([]domainlist.DomainSelector(nil), source.DomainSelectors...),
+		OriginSelectors: append([]domainlist.OriginSelector(nil), source.OriginSelectors...),
+		Warnings:        append([]domainlist.Warning(nil), source.Warnings...),
+	}
+	return cloned
 }
 
 func homeConfigDir() (string, error) {
@@ -299,14 +305,14 @@ func expandPath(path string) (string, error) {
 	return absolutePath(os.ExpandEnv(path))
 }
 
-func loadDomainList(path string) (domainListDecodeResult, []byte, error) {
+func loadDomainList(path string) (domainlist.DomainList, []byte, error) {
 	data, err := readRegularFile(path)
 	if err != nil {
-		return domainListDecodeResult{}, nil, err
+		return domainlist.DomainList{}, nil, err
 	}
-	decoded, err := decodeDomainList(data)
+	decoded, err := domainlist.Decode(data)
 	if err != nil {
-		return domainListDecodeResult{}, nil, err
+		return domainlist.DomainList{}, nil, err
 	}
 	return decoded, data, nil
 }

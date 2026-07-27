@@ -35,7 +35,6 @@ type serverError struct {
 }
 
 func newRuntime(source *liveconfig.Source, snapshot liveconfig.Snapshot) (*trafficRuntime, error) {
-	entries := snapshot.DomainListEntries()
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -48,7 +47,11 @@ func newRuntime(source *liveconfig.Source, snapshot liveconfig.Snapshot) (*traff
 
 	proxyListen := proxyListener.Addr().String()
 
-	pacBody := pacrouting.Generate(pacrouting.Options{ProxyListen: proxyListen, CATrusted: snapshot.CATrusted(), DomainListEntries: entries})
+	pacBody := pacrouting.Generate(pacrouting.Options{
+		ProxyListen: proxyListen,
+		CATrusted:   snapshot.CATrusted(),
+		DomainList:  snapshot.DomainList(),
+	})
 	pacHandler := pacrouting.NewDynamicHandler(pacBody)
 	return &trafficRuntime{
 		currentSnapshot:           snapshot,
@@ -192,9 +195,9 @@ func (r *trafficRuntime) applyLiveConfig(snapshot liveconfig.Snapshot) {
 	nextURL := r.pacURL(r.pacVersion)
 	r.mu.Unlock()
 	r.pacHandler.Set(pacrouting.Generate(pacrouting.Options{
-		ProxyListen:       r.listeners[0].Addr().String(),
-		CATrusted:         snapshot.CATrusted(),
-		DomainListEntries: snapshot.DomainListEntries(),
+		ProxyListen: r.listeners[0].Addr().String(),
+		CATrusted:   snapshot.CATrusted(),
+		DomainList:  snapshot.DomainList(),
 	}))
 	select {
 	case r.pacUpdates <- nextURL:
@@ -228,14 +231,14 @@ type runtimeState struct {
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
-	entries := r.currentSnapshot.DomainListEntries()
+	domainList := r.currentSnapshot.DomainList()
 	return runtimeState{
 		ProxyListen:        r.listeners[0].Addr().String(),
 		PACListen:          r.listeners[1].Addr().String(),
 		DomainList:         r.currentSnapshot.DomainListPath(),
 		CATrusted:          r.currentSnapshot.CATrusted(),
-		DomainCount:        len(entries),
-		DomainListWarnings: domainListWarningDetails(r.currentSnapshot.DomainListWarnings()),
+		DomainCount:        len(domainList.DomainSelectors) + len(domainList.OriginSelectors),
+		DomainListWarnings: domainListWarningDetails(domainList.Warnings),
 		CATrustPending:     r.currentSnapshot.CATrustPending(),
 	}
 }

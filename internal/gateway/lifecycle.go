@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"seamless-cors/internal/domainlist"
 	"seamless-cors/internal/liveconfig"
 	"seamless-cors/internal/managedpac"
 	"seamless-cors/internal/userca"
@@ -479,7 +480,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	return result, nil
 }
 
-func domainListWarningDetails(warnings []liveconfig.DomainListWarning) []DomainListWarningDetail {
+func domainListWarningDetails(warnings []domainlist.Warning) []DomainListWarningDetail {
 	details := make([]DomainListWarningDetail, 0, len(warnings))
 	for _, warning := range warnings {
 		details = append(details, DomainListWarningDetail{

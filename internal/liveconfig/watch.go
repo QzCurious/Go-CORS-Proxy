@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"seamless-cors/internal/domainlist"
 )
 
 const changeDebounce = 100 * time.Millisecond
@@ -286,12 +287,9 @@ func (w *watcherState) reconcile() (watchEvent, bool, error) {
 		}
 		return watchEvent{}, false, nil
 	}
-	decoded := domainListDecodeResult{
-		entries:  current.DomainListEntries(),
-		warnings: current.DomainListWarnings(),
-	}
+	decoded := current.DomainList()
 	if domainChanged {
-		decoded, err = decodeDomainList(domainData)
+		decoded, err = domainlist.Decode(domainData)
 		if err != nil {
 			return watchEvent{}, false, invalidDomainError(loaded.DomainPath, err)
 		}
@@ -322,7 +320,7 @@ func (s *Source) snapshot() (Snapshot, fileConfig, [sha256.Size]byte, [sha256.Si
 func (s *Source) commit(next Snapshot, desired fileConfig, configFingerprint, domainFingerprint [sha256.Size]byte) (Snapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !sameDomainListEntries(s.current.domainListEntries, next.domainListEntries) {
+	if !domainlist.SameEntries(s.current.domainList, next.domainList) {
 		next.domainListEntriesRevision = s.current.domainListEntriesRevision + 1
 	}
 	semanticChanged := !sameSemanticSnapshot(s.current, next)

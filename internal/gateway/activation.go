@@ -235,7 +235,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 			ManagedPACActive:   true,
 			ManagedPACServices: pacStart.InstalledServices,
 			CATrusted:          snapshot.CATrusted(),
-			DomainListWarnings: domainListWarningDetails(snapshot.DomainListWarnings()),
+			DomainListWarnings: domainListWarningDetails(snapshot.DomainList().Warnings),
 		},
 	}, nil
 }
