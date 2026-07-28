@@ -32,7 +32,9 @@ request.
 
 ![Preflighted request demo](demo/cors-preflighted-requests/cors-preflighted-requests.gif)
 
-## Quick Start
+## Installation
+
+### Go install
 
 With Go 1.23.1 or later installed, build and install the latest release:
 
@@ -42,11 +44,13 @@ go install github.com/QzCurious/seamless-cors/cmd/seamless-cors@latest
 
 Ensure the Go binary directory (`$(go env GOPATH)/bin`) is on your `PATH`.
 
-Alternatively, download the archive for your platform and processor from the
+### Prebuilt release
+
+Download the archive for your platform and processor from the
 [latest GitHub release](https://github.com/QzCurious/seamless-cors/releases/latest),
 then extract it.
 
-### macOS
+#### macOS
 
 After extracting the archive in `~/Downloads`, install the binary:
 
@@ -59,7 +63,7 @@ xattr -d com.apple.quarantine ~/.local/bin/seamless-cors
 
 Ensure `~/.local/bin` is on the `PATH` for the shell you use.
 
-### Windows
+#### Windows
 
 Move `seamless-cors.exe` from the extracted archive to a directory you own,
 such as `%USERPROFILE%\.local\bin`. Add that directory to your user `Path` in
@@ -69,7 +73,7 @@ Windows may show a SmartScreen warning for an unsigned release. If you trust
 the download came from this project's GitHub Release, select **More info** and
 then **Run anyway**. A managed work device may not permit this exception.
 
-### Start the gateway
+## Quick Start
 
 ```sh
 seamless-cors start
