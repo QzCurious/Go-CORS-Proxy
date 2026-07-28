@@ -45,6 +45,12 @@ npm install --global seamless-cors
 npm installs only the Gateway Distribution matching the current operating
 system and processor.
 
+Verify the installation:
+
+```sh
+seamless-cors version
+```
+
 With [Nub](https://nubjs.com/) installed, the equivalent command is:
 
 ```sh

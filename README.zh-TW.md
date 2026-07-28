@@ -38,6 +38,12 @@ npm install --global seamless-cors
 
 npm 只會安裝符合目前作業系統與處理器架構的 Gateway Distribution。
 
+確認安裝成功：
+
+```sh
+seamless-cors version
+```
+
 若已安裝 [Nub](https://nubjs.com/)，可使用：
 
 ```sh
