@@ -51,12 +51,6 @@ Verify the installation:
 seamless-cors version
 ```
 
-With [Nub](https://nubjs.com/) installed, the equivalent command is:
-
-```sh
-nub add --global seamless-cors
-```
-
 ### Go install
 
 With Go 1.23.1 or later installed, build and install the latest release:
