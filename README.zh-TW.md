@@ -32,13 +32,27 @@
 
 若已安裝 Node.js 18 或更新版本：
 
+不必全域安裝，即可直接透過 `npx` 執行：
+
+```sh
+npx seamless-cors start
+```
+
+或將指令全域安裝：
+
 ```sh
 npm install --global seamless-cors
 ```
 
 npm 只會安裝符合目前作業系統與處理器架構的 Gateway Distribution。
 
-確認安裝成功：
+透過 `npx` 確認已發布的套件：
+
+```sh
+npx seamless-cors version
+```
+
+全域安裝後可直接執行指令：
 
 ```sh
 seamless-cors version
