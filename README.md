@@ -38,6 +38,14 @@ request.
 
 With Node.js 18 or later installed:
 
+Run directly with `npx` without installing the command globally:
+
+```sh
+npx seamless-cors start
+```
+
+Or install the command globally:
+
 ```sh
 npm install --global seamless-cors
 ```
@@ -45,7 +53,13 @@ npm install --global seamless-cors
 npm installs only the Gateway Distribution matching the current operating
 system and processor.
 
-Verify the installation:
+Verify the published package with `npx`:
+
+```sh
+npx seamless-cors version
+```
+
+After a global installation, invoke the command directly:
 
 ```sh
 seamless-cors version
