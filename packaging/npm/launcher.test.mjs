@@ -3,15 +3,22 @@ import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packagingRoot = path.dirname(fileURLToPath(import.meta.url));
 const launcherSource = path.join(packagingRoot, "launcher");
+const temporaryRoots = new Set();
 
-async function installedLauncher(t, withDistribution = true) {
+after(async () => {
+  await Promise.all(
+    [...temporaryRoots].map((root) => rm(root, { force: true, recursive: true })),
+  );
+});
+
+async function installedLauncher(withDistribution = true) {
   const root = await mkdtemp(path.join(tmpdir(), "seamless-cors-launcher-"));
-  t.after(() => rm(root, { force: true, recursive: true }));
+  temporaryRoots.add(root);
 
   const launcherRoot = path.join(root, "node_modules", "seamless-cors");
   await cp(launcherSource, launcherRoot, { recursive: true });
@@ -63,8 +70,8 @@ await import(${JSON.stringify(pathToFileURL(launcher).href)});
   return file;
 }
 
-test("runs the installed native distribution with inherited stdio", async (t) => {
-  const context = await installedLauncher(t);
+test("runs the installed native distribution with inherited stdio", async () => {
+  const context = await installedLauncher();
   const entry = await bootstrap(
     context.root,
     context.launcher,
@@ -85,8 +92,8 @@ test("runs the installed native distribution with inherited stdio", async (t) =>
   assert.equal(result.stderr, "gateway stderr\n");
 });
 
-test("explains unsupported platforms", async (t) => {
-  const context = await installedLauncher(t, false);
+test("explains unsupported platforms", async () => {
+  const context = await installedLauncher(false);
   const entry = await bootstrap(context.root, context.launcher, "linux", "x64");
   const result = spawnSync(process.execPath, [entry], { encoding: "utf8" });
 
@@ -94,8 +101,8 @@ test("explains unsupported platforms", async (t) => {
   assert.match(result.stderr, /does not support linux-x64/);
 });
 
-test("explains a missing optional dependency", async (t) => {
-  const context = await installedLauncher(t, false);
+test("explains a missing optional dependency", async () => {
+  const context = await installedLauncher(false);
   const entry = await bootstrap(context.root, context.launcher, "darwin", "arm64");
   const result = spawnSync(process.execPath, [entry], { encoding: "utf8" });
 

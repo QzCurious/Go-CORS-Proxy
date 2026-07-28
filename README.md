@@ -36,8 +36,6 @@ request.
 
 ### npm
 
-With Node.js 18 or later installed:
-
 Run directly with `npx` without installing the command globally:
 
 ```sh
