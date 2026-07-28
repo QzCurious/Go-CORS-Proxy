@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/domainlist"
 	"github.com/fsnotify/fsnotify"
-	"seamless-cors/internal/domainlist"
 )
 
 const changeDebounce = 100 * time.Millisecond

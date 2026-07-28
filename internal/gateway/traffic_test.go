@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"seamless-cors/internal/liveconfig"
+	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 )
 
 func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {

@@ -8,11 +8,11 @@ import (
 	"net/url"
 	"sync"
 
-	"seamless-cors/internal/corsproxy"
-	"seamless-cors/internal/liveconfig"
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/pacrouting"
-	"seamless-cors/internal/userca"
+	"github.com/QzCurious/seamless-cors/internal/corsproxy"
+	"github.com/QzCurious/seamless-cors/internal/liveconfig"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/pacrouting"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type trafficRuntime struct {

@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"io"
 	"net/http"
-	"seamless-cors/internal/managedpac"
 	"strings"
 )
 

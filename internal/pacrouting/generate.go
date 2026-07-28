@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/domainlist"
 )
 
 type Options struct {

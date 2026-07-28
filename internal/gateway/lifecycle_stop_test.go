@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {

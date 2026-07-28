@@ -34,7 +34,15 @@ request.
 
 ## Quick Start
 
-Download the archive for your platform and processor from the
+With Go 1.23.1 or later installed, build and install the latest release:
+
+```sh
+go install github.com/QzCurious/seamless-cors/cmd/seamless-cors@latest
+```
+
+Ensure the Go binary directory (`$(go env GOPATH)/bin`) is on your `PATH`.
+
+Alternatively, download the archive for your platform and processor from the
 [latest GitHub release](https://github.com/QzCurious/seamless-cors/releases/latest),
 then extract it.
 

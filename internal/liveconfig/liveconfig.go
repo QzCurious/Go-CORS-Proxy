@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/domainlist"
 
 	"gopkg.in/yaml.v3"
 )

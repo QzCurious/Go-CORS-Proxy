@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/userca"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {

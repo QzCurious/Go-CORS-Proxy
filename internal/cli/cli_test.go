@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/version"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/version"
 )
 
 func TestRunPrintsVersion(t *testing.T) {
@@ -19,7 +19,7 @@ func TestRunPrintsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), version.Version+"\n"; got != want {
+	if got, want := stdout.String(), version.Current()+"\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }

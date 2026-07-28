@@ -5,11 +5,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"seamless-cors/internal/userca"
 	"sync/atomic"
 	"testing"
 )

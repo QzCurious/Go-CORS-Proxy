@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"seamless-cors/internal/liveconfig"
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/userca"
+	"github.com/QzCurious/seamless-cors/internal/liveconfig"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type startSequence struct {

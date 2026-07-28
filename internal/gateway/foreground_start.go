@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/userca"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 var errStartNotActivated = errors.New("gateway start did not activate runtime")

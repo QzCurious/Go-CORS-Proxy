@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 func cleanManagedPAC(ctx context.Context, settings managedpac.SystemSettings) *CleanupFailureDetail {

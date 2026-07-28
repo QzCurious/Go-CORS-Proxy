@@ -12,7 +12,7 @@ builds:
       - -trimpath
     ldflags:
       - >-
-        -s -w -X seamless-cors/internal/version.Version={{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
+        -s -w -X github.com/QzCurious/seamless-cors/internal/version.Version={{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
     goos:
       - darwin
       - windows

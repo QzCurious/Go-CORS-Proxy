@@ -12,9 +12,9 @@ import (
 	"strings"
 	"syscall"
 
-	"seamless-cors/internal/gateway"
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/userca"
+	"github.com/QzCurious/seamless-cors/internal/gateway"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 var ErrPACReplacementConsentDeclined = errors.New("PAC replacement consent declined")

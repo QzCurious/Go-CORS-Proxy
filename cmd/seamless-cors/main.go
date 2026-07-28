@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"seamless-cors/internal/cli"
+	"github.com/QzCurious/seamless-cors/internal/cli"
 )
 
 func main() {

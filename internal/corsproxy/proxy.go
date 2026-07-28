@@ -20,7 +20,7 @@ import (
 
 	"github.com/elazarl/goproxy"
 
-	"seamless-cors/internal/userca"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type Options struct {

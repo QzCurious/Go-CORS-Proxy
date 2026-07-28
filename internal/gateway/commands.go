@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/userca"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 // StartRouterHosted runs the Start Sequence through an existing router-only owner.

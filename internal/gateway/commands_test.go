@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"seamless-cors/internal/managedpac"
-	"seamless-cors/internal/version"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/version"
 )
 
 const usage = `Usage:
@@ -78,7 +78,7 @@ func run(args []string, stdout, stderr io.Writer, commands commandHandlers) erro
 		if err := rejectUnexpectedArgs(stderr, "version", args[1:]); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, version.Version)
+		fmt.Fprintln(stdout, version.Current())
 		return nil
 	default:
 		err := fmt.Errorf("unknown command: %s", args[0])

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/domainlist"
 )
 
 func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {

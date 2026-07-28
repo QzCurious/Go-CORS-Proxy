@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/domainlist"
 )
 
 func TestDeriveDomainRoutesExpandsSchemesWithoutPorts(t *testing.T) {

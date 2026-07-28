@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"seamless-cors/internal/liveconfig"
+	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 )
 
 func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) {
