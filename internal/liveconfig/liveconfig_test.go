@@ -247,6 +247,40 @@ func TestWatchPublishesDomainWarningsDespiteConfigNoise(t *testing.T) {
 	}
 }
 
+func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	domainPath := filepath.Join(home, "domains.txt")
+	configPath := filepath.Join(home, "config.yaml")
+	writeFile(t, domainPath, "initial.example.test\n")
+	writeConfig(t, configPath, domainPath, false)
+
+	source, err := liveconfig.Open(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := watchSource(ctx, source)
+
+	writeFile(t, configPath, "")
+	// Keep the invalid state longer than the watcher debounce but shorter than
+	// its invalid-source confirmation window.
+	time.Sleep(500 * time.Millisecond)
+	writeConfig(t, configPath, domainPath, false)
+	time.Sleep(200 * time.Millisecond)
+	writeFile(t, domainPath, "recovered.example.test\n")
+
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	entries := event.Snapshot.DomainList().DomainSelectors
+	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	home := t.TempDir()
 	domainPath := filepath.Join(home, "domains.txt")

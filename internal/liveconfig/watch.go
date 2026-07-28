@@ -273,7 +273,7 @@ func (w *watcherState) reconcile() (watchEvent, bool, error) {
 		}
 	}
 	if err := w.setCandidateTarget(loaded.DomainPath); err != nil {
-		return watchEvent{}, false, err
+		return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
 	}
 	domainData, err := readRegularFile(loaded.DomainPath)
 	if err != nil {
