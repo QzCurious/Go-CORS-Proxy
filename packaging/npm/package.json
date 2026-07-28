@@ -1,0 +1,13 @@
+{
+  "name": "seamless-cors-packaging",
+  "private": true,
+  "type": "module",
+  "packageManager": "nub@0.6.0",
+  "scripts": {
+    "test": "nub --test",
+    "publish:release": "nub publish.ts"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}

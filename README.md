@@ -34,6 +34,23 @@ request.
 
 ## Installation
 
+### npm
+
+With Node.js 18 or later installed:
+
+```sh
+npm install --global seamless-cors
+```
+
+npm installs only the Gateway Distribution matching the current operating
+system and processor.
+
+With [Nub](https://nubjs.com/) installed, the equivalent command is:
+
+```sh
+nub add --global seamless-cors
+```
+
 ### Go install
 
 With Go 1.23.1 or later installed, build and install the latest release:

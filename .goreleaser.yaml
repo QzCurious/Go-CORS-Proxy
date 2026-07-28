@@ -40,6 +40,9 @@ checksum:
   name_template: >-
     {{ .ProjectName }}-{{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}-checksums.txt
 
+release:
+  prerelease: auto
+
 snapshot:
   version_template: dev-{{ .ShortCommit }}
 

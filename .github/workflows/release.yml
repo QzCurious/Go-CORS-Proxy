@@ -6,69 +6,121 @@ on:
       - "v*"
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and release
+  build-and-release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    name: Build and publish GitHub Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Publish tagged release
-        if: github.ref_type == 'tag'
-        uses: goreleaser/goreleaser-action@v7
+      - name: Validate release tag
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH[-prerelease]." >&2
+            exit 1
+          fi
+
+      - name: Verify Go implementation
+        run: |
+          make test
+          go vet ./...
+
+      - name: Build and publish GitHub Release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.17.1
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Preserve npm publishing inputs
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: npm-native-binaries
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  publish-npm:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    name: Publish npm packages
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: nubjs/setup-nub@47e5e7393d50f4e9544ddaf756aa277972afba2d # v0.4.0
+        with:
+          nub-version: "0.6.0"
+          node-version: "24"
+          working-directory: packaging/npm
+          package-manager-cache: false
+
+      - name: Restore native binaries
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: npm-native-binaries
+          path: dist
+
+      - name: Verify npm packaging
+        run: nub --test
+        working-directory: packaging/npm
+
+      - name: Publish npm packages
+        run: >-
+          nub packaging/npm/publish.ts
+          "$GITHUB_REF_NAME"
+          dist/artifacts.json
+
+  snapshot:
+    if: github.event_name == 'workflow_dispatch'
+    name: Build snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
       - name: Build snapshot
-        if: github.event_name == 'workflow_dispatch'
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.17.1
           args: release --snapshot --clean
 
-      - name: Upload macOS Intel snapshot
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v6
+      - name: Upload snapshot
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: seamless-cors-snapshot-${{ github.run_number }}-macos-intel
-          path: dist/*-macos-intel.tar.gz
-          if-no-files-found: error
-
-      - name: Upload macOS Apple Silicon snapshot
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v6
-        with:
-          name: seamless-cors-snapshot-${{ github.run_number }}-macos-apple-silicon
-          path: dist/*-macos-apple-silicon.tar.gz
-          if-no-files-found: error
-
-      - name: Upload Windows x64 snapshot
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v6
-        with:
-          name: seamless-cors-snapshot-${{ github.run_number }}-windows-x64
-          path: dist/*-windows-x64.zip
-          if-no-files-found: error
-
-      - name: Upload Windows ARM64 snapshot
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v6
-        with:
-          name: seamless-cors-snapshot-${{ github.run_number }}-windows-arm64
-          path: dist/*-windows-arm64.zip
+          name: seamless-cors-snapshot-${{ github.run_number }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*checksums.txt
           if-no-files-found: error

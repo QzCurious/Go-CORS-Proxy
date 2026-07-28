@@ -28,6 +28,22 @@
 
 ## 安裝
 
+### 使用 npm 安裝
+
+若已安裝 Node.js 18 或更新版本：
+
+```sh
+npm install --global seamless-cors
+```
+
+npm 只會安裝符合目前作業系統與處理器架構的 Gateway Distribution。
+
+若已安裝 [Nub](https://nubjs.com/)，可使用：
+
+```sh
+nub add --global seamless-cors
+```
+
 ### 使用 Go 安裝
 
 若已安裝 Go 1.23.1 或更新版本，可建置並安裝最新發行版：
