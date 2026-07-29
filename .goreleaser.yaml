@@ -42,6 +42,34 @@ checksum:
 
 release:
   prerelease: auto
+  footer: |
+    ## Install a prebuilt binary
+
+    Download and extract the archive for your platform and processor.
+
+    ### macOS
+
+    Move the binary to a directory on your `PATH`. For example, after extracting
+    the archive in `~/Downloads`:
+
+    ```sh
+    mkdir -p ~/.local/bin
+    mv ~/Downloads/seamless-cors ~/.local/bin/seamless-cors
+    xattr -d com.apple.quarantine ~/.local/bin/seamless-cors
+    ```
+
+    Ensure `~/.local/bin` is on your `PATH`. The `xattr` command allows this
+    trusted, unsigned release binary to run on macOS.
+
+    ### Windows
+
+    Move `seamless-cors.exe` to a directory you own, such as
+    `%USERPROFILE%\.local\bin`. Add that directory to your user `Path` in Windows
+    Environment Variables, then open a new terminal.
+
+    Windows may show a SmartScreen warning because the release is unsigned. If
+    you trust that the archive came from this GitHub Release, select **More info**
+    and then **Run anyway**. A managed work device may not permit this exception.
 
 snapshot:
   version_template: dev-{{ .ShortCommit }}

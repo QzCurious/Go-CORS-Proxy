@@ -36,31 +36,10 @@ request.
 
 ### npm
 
-Run directly with `npx` without installing the command globally:
-
-```sh
-npx seamless-cors start
-```
-
-Or install the command globally:
+Install the command globally:
 
 ```sh
 npm install --global seamless-cors
-```
-
-npm installs only the Gateway Distribution matching the current operating
-system and processor.
-
-Verify the published package with `npx`:
-
-```sh
-npx seamless-cors version
-```
-
-After a global installation, invoke the command directly:
-
-```sh
-seamless-cors version
 ```
 
 ### Go install
@@ -73,36 +52,15 @@ go install github.com/QzCurious/seamless-cors/cmd/seamless-cors@latest
 
 Ensure the Go binary directory (`$(go env GOPATH)/bin`) is on your `PATH`.
 
-### Prebuilt release
+## Quick Start
 
-Download the archive for your platform and processor from the
-[latest GitHub release](https://github.com/QzCurious/seamless-cors/releases/latest),
-then extract it.
-
-#### macOS
-
-After extracting the archive in `~/Downloads`, install the binary:
+Run directly with `npx` without installing the command globally:
 
 ```sh
-mkdir -p ~/.local/bin
-mv ~/Downloads/seamless-cors ~/.local/bin/seamless-cors
-# Allow this trusted Release binary to run on macOS
-xattr -d com.apple.quarantine ~/.local/bin/seamless-cors
+npx seamless-cors start
 ```
 
-Ensure `~/.local/bin` is on the `PATH` for the shell you use.
-
-#### Windows
-
-Move `seamless-cors.exe` from the extracted archive to a directory you own,
-such as `%USERPROFILE%\.local\bin`. Add that directory to your user `Path` in
-Windows Environment Variables, then open a new terminal.
-
-Windows may show a SmartScreen warning for an unsigned release. If you trust
-the download came from this project's GitHub Release, select **More info** and
-then **Run anyway**. A managed work device may not permit this exception.
-
-## Quick Start
+Or, if installed, invoke the command directly:
 
 ```sh
 seamless-cors start

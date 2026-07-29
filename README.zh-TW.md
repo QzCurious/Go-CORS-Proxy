@@ -30,30 +30,10 @@
 
 ### 使用 npm 安裝
 
-不必全域安裝，即可直接透過 `npx` 執行：
-
-```sh
-npx seamless-cors start
-```
-
-或將指令全域安裝：
+將指令全域安裝：
 
 ```sh
 npm install --global seamless-cors
-```
-
-npm 只會安裝符合目前作業系統與處理器架構的 Gateway Distribution。
-
-透過 `npx` 確認已發布的套件：
-
-```sh
-npx seamless-cors version
-```
-
-全域安裝後可直接執行指令：
-
-```sh
-seamless-cors version
 ```
 
 ### 使用 Go 安裝
@@ -66,34 +46,15 @@ go install github.com/QzCurious/seamless-cors/cmd/seamless-cors@latest
 
 請確認 Go 的執行檔目錄（`$(go env GOPATH)/bin`）已加入 `PATH`。
 
-### 使用預先建置的發行版
+## 快速開始
 
-前往 [最新的 GitHub Release](https://github.com/QzCurious/seamless-cors/releases/latest)，下載符合你的作業系統與 CPU 架構的壓縮檔並解壓縮。
-
-#### macOS
-
-將壓縮檔在 `~/Downloads` 解壓縮後，執行以下指令安裝：
+不必全域安裝，即可直接透過 `npx` 執行：
 
 ```sh
-mkdir -p ~/.local/bin
-mv ~/Downloads/seamless-cors ~/.local/bin/seamless-cors
-# 允許從可信任 GitHub Release 下載的版本在 macOS 上執行
-xattr -d com.apple.quarantine ~/.local/bin/seamless-cors
+npx seamless-cors start
 ```
 
-請確認你使用的 shell 已將 `~/.local/bin` 加入 `PATH`。
-
-#### Windows
-
-將解壓縮後的 `seamless-cors.exe` 移到你擁有的目錄，例如
-`%USERPROFILE%\.local\bin`。在 Windows 的環境變數中，將該目錄加入使用者的
-`Path`，然後開啟新的終端機。
-
-未簽章的 Release 可能會出現 Windows SmartScreen 警告。若你確認下載來源是本
-專案的 GitHub Release，請選擇 **更多資訊**，再選擇 **仍要執行**；受管理的工作
-裝置可能不允許這個例外。
-
-## 快速開始
+若已安裝，也可直接執行指令：
 
 ```sh
 seamless-cors start
