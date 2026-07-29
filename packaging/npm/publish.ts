@@ -181,6 +181,7 @@ async function main(): Promise<void> {
     const launcherManifest = JSON.parse(
       await readFile(launcherManifestPath, "utf8"),
     ) as Record<string, unknown>;
+    delete launcherManifest.private;
     launcherManifest.version = version;
     launcherManifest.optionalDependencies = Object.fromEntries(
       targets.map(({ packageName }) => [packageName, version]),
@@ -244,6 +245,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error.message);
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });

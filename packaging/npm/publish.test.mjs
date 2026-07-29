@@ -138,6 +138,7 @@ test("generates and publishes native packages before the launcher", async (t) =>
     "@seamless-cors/win32-arm64": "0.4.0-beta.1",
     "@seamless-cors/win32-x64": "0.4.0-beta.1",
   });
+  assert.equal(Object.hasOwn(publishes.at(-1).manifest, "private"), false);
 });
 
 test("a failed release can skip versions already published", async (t) => {

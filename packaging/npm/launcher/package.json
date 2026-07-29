@@ -1,6 +1,7 @@
 {
   "name": "seamless-cors",
-  "version": "0.0.0-dev",
+  "version": "0.0.0-PLACEHOLDER",
+  "private": true,
   "description": "Install the seamless-cors local DEV/QA gateway",
   "type": "module",
   "license": "MIT",
@@ -23,9 +24,9 @@
     "registry": "https://registry.npmjs.org"
   },
   "optionalDependencies": {
-    "@seamless-cors/darwin-arm64": "0.0.0-dev",
-    "@seamless-cors/darwin-x64": "0.0.0-dev",
-    "@seamless-cors/win32-arm64": "0.0.0-dev",
-    "@seamless-cors/win32-x64": "0.0.0-dev"
+    "@seamless-cors/darwin-arm64": "0.0.0-PLACEHOLDER",
+    "@seamless-cors/darwin-x64": "0.0.0-PLACEHOLDER",
+    "@seamless-cors/win32-arm64": "0.0.0-PLACEHOLDER",
+    "@seamless-cors/win32-x64": "0.0.0-PLACEHOLDER"
   }
 }

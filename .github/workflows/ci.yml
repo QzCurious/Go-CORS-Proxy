@@ -40,5 +40,7 @@ jobs:
       - run: make test
       - run: go vet ./...
       - run: make cross-build
+      - run: nub run typecheck
+        working-directory: packaging/npm
       - run: nub --test
         working-directory: packaging/npm
