@@ -104,10 +104,6 @@ function packageExists(packageName: string, version: string, cwd: string): boole
   );
 }
 
-async function writeJSON(file: string, value: unknown): Promise<void> {
-  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
-}
-
 async function main(): Promise<void> {
   const [tag, artifactsArgument] = process.argv.slice(2);
   if (tag === undefined || artifactsArgument === undefined || process.argv.length !== 4) {
@@ -153,17 +149,24 @@ async function main(): Promise<void> {
       await mkdir(binRoot, { recursive: true });
       await copyFile(binaries.get(`${target.goos}/${target.goarch}`)!, binary);
       await chmod(binary, 0o755);
-      await writeJSON(path.join(packageRoot, "package.json"), {
-        name: target.packageName,
-        version,
-        description: `seamless-cors Gateway Distribution for ${target.npmOS}-${target.npmCPU}`,
-        license: "MIT",
-        repository,
-        os: [target.npmOS],
-        cpu: [target.npmCPU],
-        files: ["bin/"],
-        publishConfig: { access: "public", registry },
-      });
+      await writeFile(
+        path.join(packageRoot, "package.json"),
+        `${JSON.stringify(
+          {
+            name: target.packageName,
+            version,
+            description: `seamless-cors Gateway Distribution for ${target.npmOS}-${target.npmCPU}`,
+            license: "MIT",
+            repository,
+            os: [target.npmOS],
+            cpu: [target.npmCPU],
+            files: ["bin/"],
+            publishConfig: { access: "public", registry },
+          },
+          null,
+          2,
+        )}\n`,
+      );
       await copyFile(
         path.join(repositoryRoot, "LICENSE"),
         path.join(packageRoot, "LICENSE"),
@@ -186,7 +189,10 @@ async function main(): Promise<void> {
     launcherManifest.optionalDependencies = Object.fromEntries(
       targets.map(({ packageName }) => [packageName, version]),
     );
-    await writeJSON(launcherManifestPath, launcherManifest);
+    await writeFile(
+      launcherManifestPath,
+      `${JSON.stringify(launcherManifest, null, 2)}\n`,
+    );
     await copyFile(
       path.join(repositoryRoot, "LICENSE"),
       path.join(launcherRoot, "LICENSE"),
