@@ -1,8 +1,8 @@
-# Domain List format
+# Upstream List format
 
-The Domain List is a UTF-8, line-oriented text format owned by the Domain List
+The Upstream List is a UTF-8, line-oriented text format owned by the Upstream List
 module. Each active line decodes as a Host Selector, an Origin Selector, or a
-Domain List Warning.
+Upstream List Warning.
 
 ```text
 # Host Selectors: HTTP and HTTPS, any port
@@ -32,7 +32,7 @@ http://[::1]:3000
 
 An active line containing `://` is decoded as an Origin Selector. Every other
 active line is decoded as a Host Selector. A line that does not satisfy its
-selected form becomes a Domain List Warning; it is not retried as the other
+selected form becomes an Upstream List Warning; it is not retried as the other
 form.
 
 Consequently:
@@ -90,7 +90,7 @@ a literal hostname character rather than becoming a wildcard match.
 
 An omitted port remains absent. An explicit port is stored as a normalized
 decimal string with leading zeroes removed. A port delimiter without a port
-produces a Domain List Warning. Thus `https://example.test:443` and
+produces an Upstream List Warning. Thus `https://example.test:443` and
 `https://example.test:0443` identify the same Origin Selector, while
 `https://example.test` remains a distinct selector with no explicit port.
 
@@ -114,7 +114,7 @@ produces one Origin Route. Equivalent derived Origin Routes are deduplicated.
 
 ## Warnings and deduplication
 
-Every invalid active line produces a Domain List Warning in source order. Each
+Every invalid active line produces an Upstream List Warning in source order. Each
 warning contains the source line number, the active text after whitespace and
 comment removal, and a diagnostic. Invalid UTF-8 makes the entire source
 unusable instead of producing a line warning.

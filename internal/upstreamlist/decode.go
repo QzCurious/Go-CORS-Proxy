@@ -1,4 +1,4 @@
-package domainlist
+package upstreamlist
 
 import (
 	"fmt"
@@ -7,14 +7,14 @@ import (
 	"unicode/utf8"
 )
 
-// Decode interprets raw Domain List text. Invalid lines become warnings;
+// Decode interprets raw Upstream List text. Invalid lines become warnings;
 // source-level decoding failures remain errors.
-func Decode(data []byte) (DomainList, error) {
+func Decode(data []byte) (UpstreamList, error) {
 	if !utf8.Valid(data) {
-		return DomainList{}, fmt.Errorf("invalid Domain List: content must be UTF-8")
+		return UpstreamList{}, fmt.Errorf("invalid Upstream List: content must be UTF-8")
 	}
 
-	var decoded DomainList
+	var decoded UpstreamList
 
 	// Decode raw entries.
 	for idx, line := range strings.Split(string(data), "\n") {
@@ -53,7 +53,7 @@ func Decode(data []byte) (DomainList, error) {
 	}
 
 	// Deduplicate normalized entries.
-	deduplicated := DomainList{Warnings: decoded.Warnings}
+	deduplicated := UpstreamList{Warnings: decoded.Warnings}
 
 	seenHosts := make(map[HostSelector]struct{}, len(decoded.HostSelectors))
 	for _, selector := range decoded.HostSelectors {

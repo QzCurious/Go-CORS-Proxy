@@ -16,17 +16,17 @@ import (
 )
 
 type trafficRuntime struct {
-	mu                        sync.RWMutex
-	currentSnapshot           liveconfig.Snapshot
-	authority                 *userca.Authority
-	proxy                     *http.Server
-	pacHandler                *pacrouting.DynamicHandler
-	pac                       *http.Server
-	listeners                 []net.Listener
-	liveConfig                *liveconfig.Source
-	pacVersion                uint64
-	pacUpdates                chan string
-	domainListEntriesRevision uint64
+	mu                          sync.RWMutex
+	currentSnapshot             liveconfig.Snapshot
+	authority                   *userca.Authority
+	proxy                       *http.Server
+	pacHandler                  *pacrouting.DynamicHandler
+	pac                         *http.Server
+	listeners                   []net.Listener
+	liveConfig                  *liveconfig.Source
+	pacVersion                  uint64
+	pacUpdates                  chan string
+	upstreamListEntriesRevision uint64
 }
 
 type serverError struct {
@@ -48,21 +48,21 @@ func newRuntime(source *liveconfig.Source, snapshot liveconfig.Snapshot) (*traff
 	proxyListen := proxyListener.Addr().String()
 
 	pacBody := pacrouting.Generate(pacrouting.Options{
-		ProxyListen: proxyListen,
-		CATrusted:   snapshot.CATrusted(),
-		DomainList:  snapshot.DomainList(),
+		ProxyListen:  proxyListen,
+		CATrusted:    snapshot.CATrusted(),
+		UpstreamList: snapshot.UpstreamList(),
 	})
 	pacHandler := pacrouting.NewDynamicHandler(pacBody)
 	return &trafficRuntime{
-		currentSnapshot:           snapshot,
-		liveConfig:                source,
-		pacHandler:                pacHandler,
-		proxy:                     &http.Server{},
-		pac:                       &http.Server{Handler: pacHandler},
-		listeners:                 []net.Listener{proxyListener, pacListener},
-		pacVersion:                1,
-		pacUpdates:                make(chan string, 1),
-		domainListEntriesRevision: snapshot.DomainListEntriesRevision(),
+		currentSnapshot:             snapshot,
+		liveConfig:                  source,
+		pacHandler:                  pacHandler,
+		proxy:                       &http.Server{},
+		pac:                         &http.Server{Handler: pacHandler},
+		listeners:                   []net.Listener{proxyListener, pacListener},
+		pacVersion:                  1,
+		pacUpdates:                  make(chan string, 1),
+		upstreamListEntriesRevision: snapshot.UpstreamListEntriesRevision(),
 	}, nil
 }
 
@@ -183,21 +183,21 @@ func (r *trafficRuntime) watchLiveConfig(ctx context.Context, errs chan<- server
 
 func (r *trafficRuntime) applyLiveConfig(snapshot liveconfig.Snapshot) {
 	r.mu.Lock()
-	routingInputsChanged := snapshot.DomainListEntriesRevision() != r.domainListEntriesRevision ||
+	routingInputsChanged := snapshot.UpstreamListEntriesRevision() != r.upstreamListEntriesRevision ||
 		snapshot.CATrusted() != r.currentSnapshot.CATrusted()
 	r.currentSnapshot = snapshot
 	if !routingInputsChanged {
 		r.mu.Unlock()
 		return
 	}
-	r.domainListEntriesRevision = snapshot.DomainListEntriesRevision()
+	r.upstreamListEntriesRevision = snapshot.UpstreamListEntriesRevision()
 	r.pacVersion++
 	nextURL := r.pacURL(r.pacVersion)
 	r.mu.Unlock()
 	r.pacHandler.Set(pacrouting.Generate(pacrouting.Options{
-		ProxyListen: r.listeners[0].Addr().String(),
-		CATrusted:   snapshot.CATrusted(),
-		DomainList:  snapshot.DomainList(),
+		ProxyListen:  r.listeners[0].Addr().String(),
+		CATrusted:    snapshot.CATrusted(),
+		UpstreamList: snapshot.UpstreamList(),
 	}))
 	select {
 	case r.pacUpdates <- nextURL:
@@ -221,24 +221,24 @@ func (r *trafficRuntime) pacURL(version uint64) string {
 }
 
 type runtimeState struct {
-	ProxyListen        string
-	PACListen          string
-	DomainList         string
-	CATrusted          bool
-	DomainCount        int
-	DomainListWarnings []DomainListWarningDetail
-	CATrustPending     bool
+	ProxyListen          string
+	PACListen            string
+	UpstreamList         string
+	CATrusted            bool
+	UpstreamCount        int
+	UpstreamListWarnings []UpstreamListWarningDetail
+	CATrustPending       bool
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
-	domainList := r.currentSnapshot.DomainList()
+	upstreamList := r.currentSnapshot.UpstreamList()
 	return runtimeState{
-		ProxyListen:        r.listeners[0].Addr().String(),
-		PACListen:          r.listeners[1].Addr().String(),
-		DomainList:         r.currentSnapshot.DomainListPath(),
-		CATrusted:          r.currentSnapshot.CATrusted(),
-		DomainCount:        len(domainList.HostSelectors) + len(domainList.OriginSelectors),
-		DomainListWarnings: domainListWarningDetails(domainList.Warnings),
-		CATrustPending:     r.currentSnapshot.CATrustPending(),
+		ProxyListen:          r.listeners[0].Addr().String(),
+		PACListen:            r.listeners[1].Addr().String(),
+		UpstreamList:         r.currentSnapshot.UpstreamListPath(),
+		CATrusted:            r.currentSnapshot.CATrusted(),
+		UpstreamCount:        len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
+		UpstreamListWarnings: upstreamListWarningDetails(upstreamList.Warnings),
+		CATrustPending:       r.currentSnapshot.CATrustPending(),
 	}
 }

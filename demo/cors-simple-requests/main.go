@@ -47,7 +47,7 @@ func main() {
 	fmt.Println("CORS simple request demonstration")
 	fmt.Println("Web app:           http://127.0.0.1:4000")
 	fmt.Println("API request:       " + apiOrigin + "/api/message")
-	fmt.Println("Domain List entry: " + apiOrigin)
+	fmt.Println("Upstream List entry: " + apiOrigin)
 	fmt.Println()
 	fmt.Println("The API intentionally sends no Access-Control-Allow-* headers.")
 	fmt.Println("Press Ctrl+C to stop both demo servers.")

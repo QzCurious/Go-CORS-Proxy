@@ -61,11 +61,11 @@ A traffic capture approach where the gateway configures the operating system or 
 _Avoid_: VPN, manual proxy, browser-only workaround
 
 **Selective Managed Proxy**:
-A Managed System Proxy behavior where only Domain List matches are routed through the gateway and all other traffic bypasses it.
+A Managed System Proxy behavior where only Upstream List matches are routed through the gateway and all other traffic bypasses it.
 _Avoid_: whole-system proxy, blanket proxying
 
 **PAC Routing**:
-A Selective Managed Proxy approach that uses a proxy auto-configuration file to route Domain List matches through the gateway while returning `DIRECT` for other traffic.
+A Selective Managed Proxy approach that uses a proxy auto-configuration file to route Upstream List matches through the gateway while returning `DIRECT` for other traffic.
 _Avoid_: global proxy, pass-through proxying
 
 **Trust-Aware PAC Routing**:
@@ -73,12 +73,12 @@ A PAC Routing behavior where matched HTTPS traffic is routed through the gateway
 _Avoid_: routing unrepaired HTTPS, unnecessary HTTPS proxying
 
 **Generated PAC**:
-A runtime proxy auto-configuration artifact derived from Live Configuration and the Domain List, not edited directly by the user.
+A runtime proxy auto-configuration artifact derived from Live Configuration and the Upstream List, not edited directly by the user.
 _Avoid_: user-authored PAC, manual PAC rules
 
 **PAC Route Set**:
-The Domain Routes and Origin Routes derived inside the PAC Routing module from normalized Domain List Entries and the current Trusted HTTPS Interception state, keeping the Generated PAC JavaScript mostly static.
-_Avoid_: hand-built JavaScript rules, duplicated Domain List parsing, PAC-owned Domain List syntax
+The Host Routes and Origin Routes derived inside the PAC Routing module from normalized Upstream List Entries and the current Trusted HTTPS Interception state, keeping the Generated PAC JavaScript mostly static.
+_Avoid_: hand-built JavaScript rules, duplicated Upstream List parsing, PAC-owned Upstream List syntax
 
 **PAC Endpoint**:
 A local HTTP endpoint served by the gateway that returns the current Generated PAC.
@@ -186,30 +186,30 @@ _Avoid_: persistent leaf certificate inventory, per-request certificate churn, e
 
 **Per-Host Leaf Certificate**:
 A generated HTTPS server certificate for the specific upstream hostname being intercepted, signed by the Installed User CA on demand.
-_Avoid_: Domain List-wide leaf certificate, wildcard-first certificate strategy, persisted leaf identity
+_Avoid_: Upstream List-wide leaf certificate, wildcard-first certificate strategy, persisted leaf identity
 
 **Trusted HTTPS Interception**:
 A lifecycle behavior where HTTPS traffic that reaches the Proxy Listener is intercepted only when `ca-trusted` is enabled and the Installed User CA is trusted for the current user.
-_Avoid_: untrusted HTTPS interception, broken MITM, Domain List gated interception
+_Avoid_: untrusted HTTPS interception, broken MITM, Upstream List gated interception
 
 **Explicit Trusted HTTPS**:
 A lifecycle default where generated configuration starts with `ca-trusted: false` and an omitted setting also resolves to false. HTTPS interception is enabled only by an explicit `ca-trusted: true`. Installed User CA trust is still added or replaced only through CA Ensure and required platform approval.
 _Avoid_: default HTTPS interception, silent trust installation, config-only trust
 
 **Live Configuration**:
-A gateway module and code boundary that exclusively owns observing and reading user-editable configuration sources, interpreting the Config File, passing raw Domain List content to the Domain List module, and exposing validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and the valid entries from the newest readable Domain List without requiring the user to manually restart or reload the browser or gateway.
+A gateway module and code boundary that exclusively owns observing and reading user-editable configuration sources, interpreting the Config File, passing raw Upstream List content to the Upstream List module, and exposing validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and the valid entries from the newest readable Upstream List without requiring the user to manually restart or reload the browser or gateway.
 _Avoid_: external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
 
 **Live Configuration Snapshot**:
 The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, whether Trusted HTTPS Interception intent is pending until the next runtime, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
 _Avoid_: configuration event history, raw YAML config, file-change event, content fingerprint, watcher notification
 
-**Domain List Entries Revision**:
-A run-local, non-persistent monotonic identity exposed with Live Configuration, beginning with the initial validated Domain List Entries and advancing only when the normalized, deduplicated entry set changes. It allows consumers to apply the newest coalesced routing input without treating Domain List path changes or representation-only edits as routing changes.
-_Avoid_: persisted Domain List revision, Domain List file revision, PAC content comparison, source-content fingerprint, path-change revision
+**Upstream List Entries Revision**:
+A run-local, non-persistent monotonic identity exposed with Live Configuration, beginning with the initial validated Upstream List Entries and advancing only when the normalized, deduplicated entry set changes. It allows consumers to apply the newest coalesced routing input without treating Upstream List path changes or representation-only edits as routing changes.
+_Avoid_: persisted Upstream List revision, Upstream List file revision, PAC content comparison, source-content fingerprint, path-change revision
 
 **Config File**:
-The user-editable YAML source read by Live Configuration for gateway settings such as Domain List location and Trusted HTTPS Interception intent; it is an ordinary file addressed by a cleaned absolute path and is not a separate code boundary from Live Configuration. Live change observation is supported only when the file is hosted on a local filesystem.
+The user-editable YAML source read by Live Configuration for gateway settings such as Upstream List location and Trusted HTTPS Interception intent; it is an ordinary file addressed by a cleaned absolute path and is not a separate code boundary from Live Configuration. Live change observation is supported only when the file is hosted on a local filesystem.
 _Avoid_: symlinked config, network-filesystem observation guarantee, Explicit Configuration package, public raw config model, config subsystem
 
 **All-Or-Nothing Config**:
@@ -245,12 +245,12 @@ A listener behavior where gateway endpoints bind to loopback.
 _Avoid_: LAN-exposed proxy, user-selected bind address
 
 **Proxy Listener**:
-A local proxy endpoint where traffic that reaches it is eligible for CORS repair, normally reached through PAC Routing for Domain List matches.
+A local proxy endpoint where traffic that reaches it is eligible for CORS repair, normally reached through PAC Routing for Upstream List matches.
 _Avoid_: manual proxy endpoint, browser setup address, generic listen, gatewayListen
 
 **CORS Proxy**:
 The gateway module behind the Proxy Listener that owns CORS repair, Local Preflight Answer, Response Repair, and Trusted HTTPS Interception behavior for traffic that reaches it.
-_Avoid_: Domain List admission module, PAC Routing module, generic proxy
+_Avoid_: Upstream List admission module, PAC Routing module, generic proxy
 
 **Explicit Configuration**:
 Deprecated term for Config File. Prefer Config File when referring to the user-editable YAML source and Live Configuration when referring to the resolved runtime-effective configuration.
@@ -341,8 +341,8 @@ A gateway ownership rule where only one Gateway Owner may run for a user at a ti
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
 **Configuration Bootstrap**:
-A start-only behavior where a missing default Config File and any missing configured Domain List are created automatically before validation continues, including required parent directories. The same start command continues with an Empty Domain List, while passive configuration reads remain non-mutating and an existing unsafe, non-file, or unreadable Domain List remains an error.
-_Avoid_: init command, manual file scaffolding, read-time mutation, default-path-only Domain List creation, replacing invalid paths
+A start-only behavior where a missing default Config File and any missing configured Upstream List are created automatically before validation continues, including required parent directories. The same start command continues with an Empty Upstream List, while passive configuration reads remain non-mutating and an existing unsafe, non-file, or unreadable Upstream List remains an error.
+_Avoid_: init command, manual file scaffolding, read-time mutation, default-path-only Upstream List creation, replacing invalid paths
 
 **Commented Default Config**:
 A Configuration Bootstrap behavior where generated configuration includes short comments only for meaningful user-editable settings.
@@ -413,7 +413,7 @@ State-bound, all-or-nothing user confirmation required when gateway start would 
 _Avoid_: per-service selection, partial activation, consent for empty or owned PAC state, generic replacement consent, silent proxy replacement, proxy chaining, broad proxy takeover
 
 **Independent PAC Lifecycle**:
-A lifecycle boundary where PAC Replacement Consent and PAC Routing setup follow gateway start independently of whether the Domain List currently has active entries.
+A lifecycle boundary where PAC Replacement Consent and PAC Routing setup follow gateway start independently of whether the Upstream List currently has active entries.
 _Avoid_: domain-gated PAC setup, delayed proxy ownership, route-count-based lifecycle
 
 **CA Trust Consent**:
@@ -421,7 +421,7 @@ A platform approval moment required before adding or replacing Installed User CA
 _Avoid_: implicit CA trust, repeated consent for unchanged trust, app-only trust prompt, PAC Replacement Consent Detail
 
 **Independent CA Lifecycle**:
-A lifecycle boundary where CA Trust Consent and Installed User CA availability follow `ca-trusted` independently of whether the Domain List currently has active entries.
+A lifecycle boundary where CA Trust Consent and Installed User CA availability follow `ca-trusted` independently of whether the Upstream List currently has active entries.
 _Avoid_: domain-gated CA trust, implicit CA delay, route-dependent trust setup
 
 **Start Sequence Order**:
@@ -504,40 +504,40 @@ _Avoid_: prose-only CA state, status-triggered CA repair
 An automatically selected listener address shown by status for troubleshooting, not for user proxy setup or configuration.
 _Avoid_: setup address, configured listener, manual proxy instruction
 
-**Domain List**:
-The user-managed newline-delimited configuration decoded by the Domain List module into Host Selectors, Origin Selectors, and Domain List Warnings for PAC Routing; Live Configuration reads and observes its ordinary-file source at a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
-_Avoid_: symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
+**Upstream List**:
+The user-managed newline-delimited configuration decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing; Live Configuration reads and observes its ordinary-file source at a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
+_Avoid_: Domain List, Target List, symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
-**Domain List Comment**:
-A full-line or inline note in the Domain List that is ignored during matching.
+**Upstream List Comment**:
+A full-line or inline note in the Upstream List that is ignored during matching.
 _Avoid_: comment-as-entry
 
-**Empty Domain List**:
-A valid Domain List state with no active entries, including a file that contains only comments, blank lines, or invalid lines carrying Domain List Warnings; the gateway keeps managed PAC Routing installed and matches no upstreams until valid Domain List Entries are added.
+**Empty Upstream List**:
+A valid Upstream List state with no active entries, including a file that contains only comments, blank lines, or invalid lines carrying Upstream List Warnings; the gateway keeps managed PAC Routing installed and matches no upstreams until valid Upstream List Entries are added.
 _Avoid_: startup failure for no active entries, proxy-all fallback
 
-**Domain List Warning**:
-A persistent line-level diagnostic for an invalid Domain List line that is ignored while other valid Domain List Entries remain active. Warning appearance, change, and clearing publish a new Live Configuration Snapshot for successful startup and runtime status rather than asynchronous notification; they do not advance Domain List Entries Revision unless the valid entry set also changes.
+**Upstream List Warning**:
+A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing publish a new Live Configuration Snapshot for successful startup and runtime status rather than asynchronous notification; they do not advance Upstream List Entries Revision unless the valid entry set also changes.
 _Avoid_: silent invalid entry, fatal line error, transient log warning, asynchronous warning event, routing revision warning
 
-**Fatal Domain List Error**:
-A live configuration behavior where a missing, unreadable, or structurally undecodable Domain List reports the source problem, performs Gateway Footprint Cleanup, and stops the gateway. Individual invalid lines are Domain List Warnings rather than fatal errors.
+**Fatal Upstream List Error**:
+A live configuration behavior where a missing, unreadable, or structurally undecodable Upstream List reports the source problem, performs Gateway Footprint Cleanup, and stops the gateway. Individual invalid lines are Upstream List Warnings rather than fatal errors.
 _Avoid_: stale valid routing, unreadable-as-empty, silent source failure
 
-**Domain List Entry**:
-A normalized routing value decoded by the Domain List module as either a Host Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
+**Upstream List Entry**:
+A normalized routing value decoded by the Upstream List module as either a Host Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
 _Avoid_: source-text-bearing entry, rule, matcher expression
 
 **Host Selector**:
-A Domain List Entry variant containing a lowercase ASCII hostname and Hostname Match without a scheme or port, selecting matching hosts across HTTP and HTTPS on any port. Host Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
+An Upstream List Entry variant containing a lowercase ASCII hostname and Hostname Match without a scheme or port, selecting matching hosts across HTTP and HTTPS on any port. Host Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
 _Avoid_: Domain Selector, Hostname Selector, Hostname Shorthand, scheme-less origin, port-qualified domain
 
-**Domain Route**:
-A scheme-qualified hostname match derived from a Host Selector for the PAC Route Set. A Host Selector derives an HTTP Domain Route and, when Trusted HTTPS Interception is enabled, an HTTPS Domain Route; each route matches its hostname pattern on any port.
-_Avoid_: Origin Route, port-qualified domain, PAC-owned selector
+**Host Route**:
+A scheme-qualified hostname match derived from a Host Selector for the PAC Route Set. A Host Selector derives an HTTP Host Route and, when Trusted HTTPS Interception is enabled, an HTTPS Host Route; each route matches its hostname pattern on any port.
+_Avoid_: Domain Route, Origin Route, port-qualified domain, PAC-owned selector
 
 **Origin Selector**:
-A Domain List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname, and optional normalized explicit port, matched exactly without applying Host Selector wildcard semantics. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; accepted explicit ports are not range-validated, and IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
+An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname, and optional normalized explicit port, matched exactly without applying Host Selector wildcard semantics. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; accepted explicit ports are not range-validated, and IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
 _Avoid_: Full Origin, URL selector, scheme-qualified domain
 
 **Origin Route**:
@@ -548,21 +548,21 @@ _Avoid_: duplicate Origin Selector, URL rule, inferred PAC port
 The explicit Host Selector meaning that selects an exact hostname, exactly one leading subdomain label, or one-or-more leading subdomain labels without encoding that meaning in the normalized hostname.
 _Avoid_: wildcard-bearing hostname, consumer-parsed wildcard
 
-**Domain List Routing Policy**:
-A runtime interpretation owned by the PAC Routing module that decides whether normalized Domain List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the Live Configuration Snapshot rather than the snapshot itself.
-_Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Domain List validation
+**Upstream List Routing Policy**:
+A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the Live Configuration Snapshot rather than the snapshot itself.
+_Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Upstream List validation
 
-**Line-Level Domain Validation**:
-A Domain List behavior where each line is validated independently so valid Domain List Entries are applied while invalid lines are ignored and reported precisely as Domain List Warnings.
-_Avoid_: silent invalid entry, whole-list rejection, invalid line as active entry
+**Line-Level Upstream Validation**:
+An Upstream List behavior where each line is validated independently so valid Upstream List Entries are applied while invalid lines are ignored and reported precisely as Upstream List Warnings.
+_Avoid_: Line-Level Domain Validation, silent invalid entry, whole-list rejection, invalid line as active entry
 
-**Domain List Deduplication**:
-A Domain List module behavior where equivalent normalized source-level entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived Origin Routes.
+**Upstream List Deduplication**:
+An Upstream List module behavior where equivalent normalized source-level entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived Origin Routes.
 _Avoid_: duplicate source selectors, line-count domains, PAC-owned source deduplication
 
-**Exact Domain Match**:
+**Exact Host Match**:
 A Host Match that selects only the named hostname.
-_Avoid_: implicit subdomain match, broad domain match
+_Avoid_: Exact Domain Match, implicit subdomain match, broad domain match
 
 **Single-Label Wildcard**:
 A Host Match written as `*.example.com` that selects exactly one leading subdomain label and does not select the parent domain or deeper subdomains.
@@ -572,12 +572,12 @@ _Avoid_: recursive wildcard, parent-domain wildcard, wildcard-bearing hostname
 A Host Match written as `**.example.com` that selects one or more leading subdomain labels at any depth without selecting the parent domain.
 _Avoid_: zero-label wildcard, parent-domain wildcard, wildcard-bearing hostname
 
-**Local Target**:
-A localhost, loopback, private IP, or plain HTTP upstream entry that may be included in the Domain List for DEV/QA work.
-_Avoid_: public-domain-only target, DNS-only target
+**Local Upstream**:
+A localhost, loopback, private IP, or plain HTTP upstream entry that may be included in the Upstream List for DEV/QA work.
+_Avoid_: Local Target, public-domain-only upstream, DNS-only upstream
 
 **Bracketed IPv6 Selector**:
-A Domain List Entry source form for an IPv6 target that uses bracketed host syntax with an optional HTTP(S) scheme and port.
+An Upstream List Entry source form for an IPv6 upstream that uses bracketed host syntax with an optional HTTP(S) scheme and port.
 _Avoid_: unbracketed IPv6 selector, IPv6 Full Origin
 
 **Reflective DEV/QA Policy**:
@@ -668,7 +668,7 @@ QA engineer: "No, the Managed System Proxy handles that while the gateway is run
 
 Developer: "Will unrelated browser traffic go through the gateway?"
 
-QA engineer: "No, Selective Managed Proxy uses PAC Routing so only Domain List matches go through the gateway."
+QA engineer: "No, Selective Managed Proxy uses PAC Routing so only Upstream List matches go through the gateway."
 
 Developer: "Will HTTPS domains still route through the gateway when `ca-trusted` is false?"
 
@@ -676,9 +676,9 @@ QA engineer: "No, Trust-Aware PAC Routing sends those HTTPS requests direct beca
 
 Developer: "Do I need to maintain the PAC file?"
 
-QA engineer: "No, Generated PAC is derived from Live Configuration and the Domain List."
+QA engineer: "No, Generated PAC is derived from Live Configuration and the Upstream List."
 
-Developer: "How do Domain List changes reach the operating system proxy?"
+Developer: "How do Upstream List changes reach the operating system proxy?"
 
 QA engineer: "The PAC Endpoint serves the current Generated PAC, and the gateway refreshes the owned PAC URL Version when supported PAC clients need a new URL to observe the update."
 
@@ -718,7 +718,7 @@ Developer: "Will every operating system have the same managed setup in v1?"
 
 QA engineer: "Every supported platform needs a managed PAC adapter; platforms without one are not supported yet."
 
-Developer: "After I update the Domain List, do I need to restart the gateway?"
+Developer: "After I update the Upstream List, do I need to restart the gateway?"
 
 QA engineer: "No, Live Configuration applies the newest values to incoming requests."
 
@@ -800,7 +800,7 @@ QA engineer: "PAC Replacement Consent shows the current managed PAC state and as
 
 Developer: "What do I need to configure before starting?"
 
-QA engineer: "The Config File contains the meaningful user settings, while the Domain List stays as the easy one-domain-per-line file."
+QA engineer: "The Config File contains the meaningful user settings, while the Upstream List stays as the easy one-host-or-origin-per-line file."
 
 Developer: "Where do config files live by default?"
 
@@ -830,13 +830,13 @@ Developer: "Can config paths use `~` or environment variables?"
 
 QA engineer: "Yes, Path Expansion applies to path fields only."
 
-Developer: "Can the gateway start with no domains?"
+Developer: "Can the gateway start with no upstreams?"
 
-QA engineer: "Yes, Empty Domain List is valid, so the gateway runs while PAC Routing matches no upstreams until valid Domain List Entries are added."
+QA engineer: "Yes, Empty Upstream List is valid, so the gateway runs while PAC Routing matches no upstreams until valid Upstream List Entries are added."
 
 Developer: "Do I need to run an init command first?"
 
-QA engineer: "No, Configuration Bootstrap creates a missing default Config File and any missing configured Domain List, and Empty Domain List lets that same start command keep running with no matched upstreams yet."
+QA engineer: "No, Configuration Bootstrap creates a missing default Config File and any missing configured Upstream List, and Empty Upstream List lets that same start command keep running with no matched upstreams yet."
 
 Developer: "Will generated config explain the settings?"
 
@@ -844,27 +844,27 @@ QA engineer: "Yes, Commented Default Config keeps the generated file short but u
 
 Developer: "Can I write just `api.dev.example.com`?"
 
-QA engineer: "Yes, that Domain List Entry uses Hostname Shorthand; add an HTTP(S) scheme or port only when it should constrain matching."
+QA engineer: "Yes, that Upstream List Entry is a Host Selector; use an Origin Selector when a scheme or port should constrain matching."
 
-Developer: "Can I annotate domains in the Domain List?"
+Developer: "Can I annotate upstreams in the Upstream List?"
 
-QA engineer: "Yes, Domain List Comment supports full-line and inline comments."
+QA engineer: "Yes, Upstream List Comment supports full-line and inline comments."
 
-Developer: "Does hostname shorthand include custom ports?"
+Developer: "Does a Host Selector include custom ports?"
 
-QA engineer: "Yes, Hostname Shorthand may include a port that selects that port across HTTP and HTTPS."
+QA engineer: "No, a Host Selector matches any port; use an Origin Selector to constrain the scheme and port."
 
-Developer: "What if one Domain List line is wrong?"
+Developer: "What if one Upstream List line is wrong?"
 
-QA engineer: "Line-Level Domain Validation ignores that line, reports a Domain List Warning, and continues routing with the valid Domain List Entries."
+QA engineer: "Line-Level Upstream Validation ignores that line, reports an Upstream List Warning, and continues routing with the valid Upstream List Entries."
 
-Developer: "What if I save an invalid Domain List while the gateway is running?"
+Developer: "What if I save an invalid Upstream List while the gateway is running?"
 
-QA engineer: "Invalid lines produce Domain List Warnings while valid entries are applied; Fatal Domain List Error is reserved for a missing, unreadable, or structurally undecodable source."
+QA engineer: "Invalid lines produce Upstream List Warnings while valid entries are applied; Fatal Upstream List Error is reserved for a missing, unreadable, or structurally undecodable source."
 
 Developer: "Does `api.dev.example.com` include its subdomains?"
 
-QA engineer: "No, Exact Domain Match requires an explicit wildcard when subdomains should be included."
+QA engineer: "No, Exact Host Match requires an explicit wildcard when subdomains should be included."
 
 Developer: "Does `*.example.com` match `deep.api.example.com`?"
 
@@ -872,11 +872,11 @@ QA engineer: "No, Single-Label Wildcard matches only one subdomain label; use Re
 
 Developer: "Can I include my local API or a LAN staging service?"
 
-QA engineer: "Yes, Local Targets are allowed."
+QA engineer: "Yes, Local Upstreams are allowed."
 
-Developer: "Can I write IPv6 shorthand in the Domain List?"
+Developer: "Can I write IPv6 shorthand in the Upstream List?"
 
-QA engineer: "Yes, Bracketed IPv6 Selector accepts scheme-less forms such as `[::1]:3000`."
+QA engineer: "Yes, use `[::1]` as a Host Selector or an origin such as `http://[::1]:3000`."
 
 Developer: "Can credentialed browser requests work without configuring allowed origins?"
 
@@ -942,7 +942,7 @@ Developer: "Will the gateway fix WebSocket origin behavior?"
 
 QA engineer: "No, HTTP CORS Scope keeps WebSocket protocol behavior out of v1."
 
-Developer: "What if the WebSocket domain is in the Domain List?"
+Developer: "What if the WebSocket upstream is in the Upstream List?"
 
 QA engineer: "WebSocket Skip still forwards it without gateway repair."
 

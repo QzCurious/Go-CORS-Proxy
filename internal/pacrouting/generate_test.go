@@ -4,18 +4,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QzCurious/seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {
 	js := Generate(Options{
 		ProxyListen: "127.0.0.1:8080",
 		CATrusted:   true,
-		DomainList: domainlist.DomainList{
-			HostSelectors: []domainlist.HostSelector{
-				{Hostname: "qa.example.test", HostnameMatch: domainlist.HostnameSingleLevel},
+		UpstreamList: upstreamlist.UpstreamList{
+			HostSelectors: []upstreamlist.HostSelector{
+				{Hostname: "qa.example.test", HostnameMatch: upstreamlist.HostnameSingleLevel},
 			},
-			OriginSelectors: []domainlist.OriginSelector{
+			OriginSelectors: []upstreamlist.OriginSelector{
 				{Scheme: "https", Hostname: "api.example.test"},
 			},
 		},
@@ -23,7 +23,7 @@ func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {
 
 	want := `var VIEW_BAG = {` +
 		`"Proxy":"127.0.0.1:8080",` +
-		`"DomainRoutes":[` +
+		`"HostRoutes":[` +
 		`{"Scheme":"http","Hostname":"qa.example.test","HostnameMatch":"SingleLevel"},` +
 		`{"Scheme":"https","Hostname":"qa.example.test","HostnameMatch":"SingleLevel"}],` +
 		`"OriginRoutes":["https://api.example.test","https://api.example.test:443"]};`
@@ -47,11 +47,11 @@ func TestGeneratePACDoesNotParseOrInferPorts(t *testing.T) {
 	}
 }
 
-func TestGenerateUsesOriginRoutesBeforeDomainRoutes(t *testing.T) {
+func TestGenerateUsesOriginRoutesBeforeHostRoutes(t *testing.T) {
 	js := Generate(Options{})
 	originIndex := strings.Index(js, "for (var i = 0; i < originRoutes.length; i++)")
-	domainIndex := strings.Index(js, "for (var j = 0; j < domainRoutes.length; j++)")
-	if originIndex == -1 || domainIndex == -1 || originIndex > domainIndex {
+	hostIndex := strings.Index(js, "for (var j = 0; j < hostRoutes.length; j++)")
+	if originIndex == -1 || hostIndex == -1 || originIndex > hostIndex {
 		t.Fatalf("Generated PAC should check Origin Routes first:\n%s", js)
 	}
 }

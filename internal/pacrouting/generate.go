@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/QzCurious/seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 type Options struct {
-	ProxyListen string
-	CATrusted   bool
-	DomainList  domainlist.DomainList
+	ProxyListen  string
+	CATrusted    bool
+	UpstreamList upstreamlist.UpstreamList
 }
 
 //go:embed proxy.pac.js
@@ -19,13 +19,13 @@ var pacProgram string
 
 func Generate(opts Options) string {
 	config := struct {
-		Proxy        string        `json:"Proxy"`
-		DomainRoutes []domainRoute `json:"DomainRoutes"`
-		OriginRoutes []string      `json:"OriginRoutes"`
+		Proxy        string      `json:"Proxy"`
+		HostRoutes   []hostRoute `json:"HostRoutes"`
+		OriginRoutes []string    `json:"OriginRoutes"`
 	}{
 		Proxy:        opts.ProxyListen,
-		DomainRoutes: deriveDomainRoutes(opts.DomainList.HostSelectors, opts.CATrusted),
-		OriginRoutes: deriveOriginRoutes(opts.DomainList.OriginSelectors, opts.CATrusted),
+		HostRoutes:   deriveHostRoutes(opts.UpstreamList.HostSelectors, opts.CATrusted),
+		OriginRoutes: deriveOriginRoutes(opts.UpstreamList.OriginSelectors, opts.CATrusted),
 	}
 
 	data, err := json.Marshal(config)
@@ -35,38 +35,38 @@ func Generate(opts Options) string {
 	return "var VIEW_BAG = " + string(data) + ";\n\n" + pacProgram
 }
 
-type domainRoute struct {
+type hostRoute struct {
 	Scheme        string `json:"Scheme"`
 	Hostname      string `json:"Hostname"`
 	HostnameMatch string `json:"HostnameMatch"`
 }
 
-// deriveDomainRoutes expands every Host Selector into its active HTTP(S)
+// deriveHostRoutes expands every Host Selector into its active HTTP(S)
 // routes. HTTP is always active; HTTPS requires trusted interception.
-func deriveDomainRoutes(selectors []domainlist.HostSelector, caTrusted bool) []domainRoute {
-	routes := make([]domainRoute, 0, len(selectors)*2)
+func deriveHostRoutes(selectors []upstreamlist.HostSelector, caTrusted bool) []hostRoute {
+	routes := make([]hostRoute, 0, len(selectors)*2)
 	for _, selector := range selectors {
-		routes = append(routes, domainRouteFromSelector(selector, "http"))
+		routes = append(routes, hostRouteFromSelector(selector, "http"))
 		if caTrusted {
-			routes = append(routes, domainRouteFromSelector(selector, "https"))
+			routes = append(routes, hostRouteFromSelector(selector, "https"))
 		}
 	}
 	return routes
 }
 
-func domainRouteFromSelector(selector domainlist.HostSelector, scheme string) domainRoute {
-	return domainRoute{
+func hostRouteFromSelector(selector upstreamlist.HostSelector, scheme string) hostRoute {
+	return hostRoute{
 		Scheme:        scheme,
 		Hostname:      selector.Hostname,
 		HostnameMatch: serializedHostnameMatch(selector.HostnameMatch),
 	}
 }
 
-func serializedHostnameMatch(match domainlist.HostnameMatch) string {
+func serializedHostnameMatch(match upstreamlist.HostnameMatch) string {
 	switch match {
-	case domainlist.HostnameSingleLevel:
+	case upstreamlist.HostnameSingleLevel:
 		return "SingleLevel"
-	case domainlist.HostnameRecursive:
+	case upstreamlist.HostnameRecursive:
 		return "Recursive"
 	default:
 		return "Exact"
@@ -76,7 +76,7 @@ func serializedHostnameMatch(match domainlist.HostnameMatch) string {
 // deriveOriginRoutes expands each active Origin Selector into exact PAC URL
 // representations. An omitted or default port gets both implicit and explicit
 // forms.
-func deriveOriginRoutes(selectors []domainlist.OriginSelector, caTrusted bool) []string {
+func deriveOriginRoutes(selectors []upstreamlist.OriginSelector, caTrusted bool) []string {
 	routes := make([]string, 0, len(selectors)*2)
 	seen := make(map[string]struct{}, len(selectors)*2)
 	appendRoute := func(route string) {

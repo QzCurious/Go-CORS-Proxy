@@ -1,5 +1,5 @@
 /**
- * @typedef {Object} DomainRoute
+ * @typedef {Object} HostRoute
  * @property {'http' | 'https'} Scheme
  * @property {string} Hostname
  * @property {'Exact' | 'SingleLevel' | 'Recursive'} HostnameMatch
@@ -10,7 +10,7 @@
  *
  * @type {{
  *   Proxy: string,
- *   DomainRoutes: DomainRoute[],
+ *   HostRoutes: HostRoute[],
  *   OriginRoutes: string[],
  * }}
  */
@@ -18,8 +18,8 @@ var VIEW_BAG;
 
 var proxy = 'PROXY ' + VIEW_BAG.Proxy;
 
-/** @type {DomainRoute[]} */
-var domainRoutes = VIEW_BAG.DomainRoutes;
+/** @type {HostRoute[]} */
+var hostRoutes = VIEW_BAG.HostRoutes;
 
 /** @type {string[]} */
 var originRoutes = VIEW_BAG.OriginRoutes;
@@ -41,8 +41,8 @@ function FindProxyForURL(url, host) {
   }
 
   var scheme = url.substring(0, url.indexOf(':'));
-  for (var j = 0; j < domainRoutes.length; j++) {
-    if (matchesDomainRoute(domainRoutes[j], scheme, host)) return proxy;
+  for (var j = 0; j < hostRoutes.length; j++) {
+    if (matchesHostRoute(hostRoutes[j], scheme, host)) return proxy;
   }
   return 'DIRECT';
 }
@@ -57,12 +57,12 @@ function matchesOriginRoute(url, originRoute) {
 }
 
 /**
- * @param {DomainRoute} route
+ * @param {HostRoute} route
  * @param {string} scheme
  * @param {string} host
  * @returns {boolean}
  */
-function matchesDomainRoute(route, scheme, host) {
+function matchesHostRoute(route, scheme, host) {
   if (scheme != route.Scheme) return false;
 
   // Exact matches include only the configured hostname itself.

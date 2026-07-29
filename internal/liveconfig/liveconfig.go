@@ -11,33 +11,33 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/QzCurious/seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 
 	"gopkg.in/yaml.v3"
 )
 
 const defaultConfigFileName = "config.yaml"
-const defaultDomainList = "# One domain or origin per line.\n# api.dev.example.com\n"
+const defaultUpstreamList = "# One upstream host or origin per line.\n# api.dev.example.com\n"
 
 type Snapshot struct {
-	caTrusted                 bool
-	configPath                string
-	domainListPath            string
-	domainList                domainlist.DomainList
-	domainListEntriesRevision uint64
-	caTrustPending            bool
+	caTrusted                   bool
+	configPath                  string
+	upstreamListPath            string
+	upstreamList                upstreamlist.UpstreamList
+	upstreamListEntriesRevision uint64
+	caTrustPending              bool
 }
 
 func (s Snapshot) CATrusted() bool {
 	return s.caTrusted
 }
 
-func (s Snapshot) DomainList() domainlist.DomainList {
-	return cloneDomainList(s.domainList)
+func (s Snapshot) UpstreamList() upstreamlist.UpstreamList {
+	return cloneUpstreamList(s.upstreamList)
 }
 
-func (s Snapshot) DomainListEntriesRevision() uint64 {
-	return s.domainListEntriesRevision
+func (s Snapshot) UpstreamListEntriesRevision() uint64 {
+	return s.upstreamListEntriesRevision
 }
 
 func (s Snapshot) CATrustPending() bool {
@@ -48,30 +48,30 @@ func (s Snapshot) ConfigPath() string {
 	return s.configPath
 }
 
-func (s Snapshot) DomainListPath() string {
-	return s.domainListPath
+func (s Snapshot) UpstreamListPath() string {
+	return s.upstreamListPath
 }
 
 type fileConfig struct {
-	DomainList string `yaml:"domain-list"`
-	CATrusted  bool   `yaml:"ca-trusted"`
+	UpstreamList string `yaml:"upstream-list"`
+	CATrusted    bool   `yaml:"ca-trusted"`
 }
 
 type loadResult struct {
-	Config     fileConfig
-	ConfigData []byte
-	ConfigPath string
-	DomainPath string
+	Config       fileConfig
+	ConfigData   []byte
+	ConfigPath   string
+	UpstreamPath string
 }
 
 type Source struct {
-	mu                sync.RWMutex
-	current           Snapshot
-	desiredConfig     fileConfig
-	baselineCATrusted bool
-	configFingerprint [sha256.Size]byte
-	domainFingerprint [sha256.Size]byte
-	watchStarted      bool
+	mu                  sync.RWMutex
+	current             Snapshot
+	desiredConfig       fileConfig
+	baselineCATrusted   bool
+	configFingerprint   [sha256.Size]byte
+	upstreamFingerprint [sha256.Size]byte
+	watchStarted        bool
 }
 
 func Open(configPath string) (*Source, error) {
@@ -79,15 +79,15 @@ func Open(configPath string) (*Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := bootstrapDomainList(loaded.DomainPath); err != nil {
+	if err := bootstrapUpstreamList(loaded.UpstreamPath); err != nil {
 		return nil, err
 	}
-	decoded, domainData, err := loadDomainList(loaded.DomainPath)
+	decoded, upstreamData, err := loadUpstreamList(loaded.UpstreamPath)
 	if err != nil {
 		return nil, err
 	}
 	snapshot := snapshotFromLoadResult(loaded, decoded, 1, false, loaded.Config.CATrusted)
-	source := newSource(loaded.Config, snapshot, loaded.ConfigData, domainData)
+	source := newSource(loaded.Config, snapshot, loaded.ConfigData, upstreamData)
 	return source, nil
 }
 
@@ -96,20 +96,20 @@ func LoadExisting(configPath string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	decoded, _, err := loadDomainList(loaded.DomainPath)
+	decoded, _, err := loadUpstreamList(loaded.UpstreamPath)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	return snapshotFromLoadResult(loaded, decoded, 1, false, loaded.Config.CATrusted), nil
 }
 
-func newSource(desired fileConfig, snapshot Snapshot, configData, domainData []byte) *Source {
+func newSource(desired fileConfig, snapshot Snapshot, configData, upstreamData []byte) *Source {
 	return &Source{
-		current:           snapshot,
-		desiredConfig:     desired,
-		baselineCATrusted: snapshot.CATrusted(),
-		configFingerprint: sha256.Sum256(configData),
-		domainFingerprint: sha256.Sum256(domainData),
+		current:             snapshot,
+		desiredConfig:       desired,
+		baselineCATrusted:   snapshot.CATrusted(),
+		configFingerprint:   sha256.Sum256(configData),
+		upstreamFingerprint: sha256.Sum256(upstreamData),
 	}
 }
 
@@ -129,12 +129,12 @@ func (s *Source) Reload() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	decoded, domainData, err := loadDomainList(loaded.DomainPath)
+	decoded, upstreamData, err := loadUpstreamList(loaded.UpstreamPath)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	revision := s.current.domainListEntriesRevision
-	if !domainlist.SameEntries(s.current.domainList, decoded) {
+	revision := s.current.upstreamListEntriesRevision
+	if !upstreamlist.SameEntries(s.current.upstreamList, decoded) {
 		revision++
 	}
 	snapshot := snapshotFromLoadResult(loaded, decoded, revision, false, loaded.Config.CATrusted)
@@ -142,7 +142,7 @@ func (s *Source) Reload() (Snapshot, error) {
 	s.desiredConfig = loaded.Config
 	s.baselineCATrusted = loaded.Config.CATrusted
 	s.configFingerprint = sha256.Sum256(loaded.ConfigData)
-	s.domainFingerprint = sha256.Sum256(domainData)
+	s.upstreamFingerprint = sha256.Sum256(upstreamData)
 	return snapshot, nil
 }
 
@@ -167,31 +167,31 @@ func (s *Source) Watch(ctx context.Context, apply func(Snapshot)) error {
 func sameSemanticSnapshot(left, right Snapshot) bool {
 	if left.caTrusted != right.caTrusted ||
 		left.configPath != right.configPath ||
-		left.domainListPath != right.domainListPath ||
+		left.upstreamListPath != right.upstreamListPath ||
 		left.caTrustPending != right.caTrustPending ||
-		!slices.Equal(left.domainList.Warnings, right.domainList.Warnings) ||
-		!domainlist.SameEntries(left.domainList, right.domainList) {
+		!slices.Equal(left.upstreamList.Warnings, right.upstreamList.Warnings) ||
+		!upstreamlist.SameEntries(left.upstreamList, right.upstreamList) {
 		return false
 	}
 	return true
 }
 
-func snapshotFromLoadResult(loaded loadResult, decoded domainlist.DomainList, domainListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
+func snapshotFromLoadResult(loaded loadResult, decoded upstreamlist.UpstreamList, upstreamListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
 	return Snapshot{
-		caTrusted:                 activeCATrusted,
-		configPath:                loaded.ConfigPath,
-		domainListPath:            loaded.DomainPath,
-		domainList:                cloneDomainList(decoded),
-		domainListEntriesRevision: domainListEntriesRevision,
-		caTrustPending:            caTrustPending,
+		caTrusted:                   activeCATrusted,
+		configPath:                  loaded.ConfigPath,
+		upstreamListPath:            loaded.UpstreamPath,
+		upstreamList:                cloneUpstreamList(decoded),
+		upstreamListEntriesRevision: upstreamListEntriesRevision,
+		caTrustPending:              caTrustPending,
 	}
 }
 
-func cloneDomainList(source domainlist.DomainList) domainlist.DomainList {
-	cloned := domainlist.DomainList{
-		HostSelectors:   append([]domainlist.HostSelector(nil), source.HostSelectors...),
-		OriginSelectors: append([]domainlist.OriginSelector(nil), source.OriginSelectors...),
-		Warnings:        append([]domainlist.Warning(nil), source.Warnings...),
+func cloneUpstreamList(source upstreamlist.UpstreamList) upstreamlist.UpstreamList {
+	cloned := upstreamlist.UpstreamList{
+		HostSelectors:   append([]upstreamlist.HostSelector(nil), source.HostSelectors...),
+		OriginSelectors: append([]upstreamlist.OriginSelector(nil), source.OriginSelectors...),
+		Warnings:        append([]upstreamlist.Warning(nil), source.Warnings...),
 	}
 	return cloned
 }
@@ -261,32 +261,32 @@ func parseFileConfig(configPath string, data []byte) (loadResult, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return loadResult{}, fmt.Errorf("invalid config.yaml: %w", err)
 	}
-	domainPath, err := expandPath(cfg.DomainList)
+	upstreamPath, err := expandPath(cfg.UpstreamList)
 	if err != nil {
 		return loadResult{}, err
 	}
-	cfg.DomainList = domainPath
+	cfg.UpstreamList = upstreamPath
 	if err := validateFileConfig(cfg); err != nil {
 		return loadResult{}, err
 	}
 	return loadResult{
-		Config:     cfg,
-		ConfigData: data,
-		ConfigPath: configPath,
-		DomainPath: cfg.DomainList,
+		Config:       cfg,
+		ConfigData:   data,
+		ConfigPath:   configPath,
+		UpstreamPath: cfg.UpstreamList,
 	}, nil
 }
 
 func defaultFileConfig() fileConfig {
 	return fileConfig{
-		DomainList: "~/.seamless-cors/domains.txt",
-		CATrusted:  false,
+		UpstreamList: "~/.seamless-cors/upstreams.txt",
+		CATrusted:    false,
 	}
 }
 
 func validateFileConfig(cfg fileConfig) error {
-	if cfg.DomainList == "" {
-		return fmt.Errorf("domain-list is required")
+	if cfg.UpstreamList == "" {
+		return fmt.Errorf("upstream-list is required")
 	}
 	return nil
 }
@@ -305,14 +305,14 @@ func expandPath(path string) (string, error) {
 	return absolutePath(os.ExpandEnv(path))
 }
 
-func loadDomainList(path string) (domainlist.DomainList, []byte, error) {
+func loadUpstreamList(path string) (upstreamlist.UpstreamList, []byte, error) {
 	data, err := readRegularFile(path)
 	if err != nil {
-		return domainlist.DomainList{}, nil, err
+		return upstreamlist.UpstreamList{}, nil, err
 	}
-	decoded, err := domainlist.Decode(data)
+	decoded, err := upstreamlist.Decode(data)
 	if err != nil {
-		return domainlist.DomainList{}, nil, err
+		return upstreamlist.UpstreamList{}, nil, err
 	}
 	return decoded, data, nil
 }
@@ -344,7 +344,7 @@ func bootstrap(configPath string) error {
 	return os.WriteFile(configPath, []byte(commentedDefaultConfig()), 0o600)
 }
 
-func bootstrapDomainList(path string) error {
+func bootstrapUpstreamList(path string) error {
 	if _, err := os.Lstat(path); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -360,7 +360,7 @@ func bootstrapDomainList(path string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := file.WriteString(defaultDomainList); err != nil {
+	if _, err := file.WriteString(defaultUpstreamList); err != nil {
 		_ = file.Close()
 		return err
 	}
@@ -368,8 +368,8 @@ func bootstrapDomainList(path string) error {
 }
 
 func commentedDefaultConfig() string {
-	return `# One domain or origin per line.
-domain-list: ~/.seamless-cors/domains.txt
+	return `# One upstream host or origin per line.
+upstream-list: ~/.seamless-cors/upstreams.txt
 
 # Enable trusted HTTPS interception through the Installed User CA.
 ca-trusted: false

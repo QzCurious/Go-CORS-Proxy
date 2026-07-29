@@ -63,9 +63,9 @@ seamless-cors start
 第一次啟動時，seamless-cors 會建立以下檔案：
 
 - `~/.seamless-cors/config.yaml`
-- `~/.seamless-cors/domains.txt`
+- `~/.seamless-cors/upstreams.txt`
 
-把需要放行 CORS 的 API hostname 或 origin 逐行加進 `~/.seamless-cors/domains.txt`：
+把需要放行 CORS 的 API hostname 或 origin 逐行加進 `~/.seamless-cors/upstreams.txt`：
 
 ```text
 api.dev.example.com

@@ -14,12 +14,12 @@ import (
 
 func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) {
 	home := t.TempDir()
-	firstDomainPath := filepath.Join(home, "first-domains.txt")
-	secondDomainPath := filepath.Join(home, "second-domains.txt")
+	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
+	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstDomainPath, "first.example.test\n")
-	writeFile(t, secondDomainPath, "second.example.test\n")
-	writeConfig(t, configPath, firstDomainPath, false)
+	writeFile(t, firstUpstreamPath, "first.example.test\n")
+	writeFile(t, secondUpstreamPath, "second.example.test\n")
+	writeConfig(t, configPath, firstUpstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -29,29 +29,29 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if initial.CATrusted() {
 		t.Fatal("initial CA trust = true")
 	}
-	if initial.DomainListEntriesRevision() != 1 {
-		t.Fatalf("initial Domain List Entries Revision = %d", initial.DomainListEntriesRevision())
+	if initial.UpstreamListEntriesRevision() != 1 {
+		t.Fatalf("initial Upstream List Entries Revision = %d", initial.UpstreamListEntriesRevision())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeConfig(t, configPath, secondDomainPath, true)
+	writeConfig(t, configPath, secondUpstreamPath, true)
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
 	live := event.Snapshot
-	if live.DomainListPath() != secondDomainPath {
-		t.Fatalf("domain list path = %q", live.DomainListPath())
+	if live.UpstreamListPath() != secondUpstreamPath {
+		t.Fatalf("upstream list path = %q", live.UpstreamListPath())
 	}
-	entries := live.DomainList().HostSelectors
+	entries := live.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
-	if live.DomainListEntriesRevision() != 2 {
-		t.Fatalf("Domain List Entries Revision after path and entries change = %d", live.DomainListEntriesRevision())
+	if live.UpstreamListEntriesRevision() != 2 {
+		t.Fatalf("Upstream List Entries Revision after path and entries change = %d", live.UpstreamListEntriesRevision())
 	}
 	if live.CATrusted() {
 		t.Fatal("restart-applied CA trust was hot-applied")
@@ -61,27 +61,27 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	}
 
 	cached := source.Current()
-	if cached.DomainListPath() != secondDomainPath {
-		t.Fatalf("cached domain list path = %q", cached.DomainListPath())
+	if cached.UpstreamListPath() != secondUpstreamPath {
+		t.Fatalf("cached upstream list path = %q", cached.UpstreamListPath())
 	}
 
-	writeFile(t, secondDomainPath, "second-updated.example.test\n")
+	writeFile(t, secondUpstreamPath, "second-updated.example.test\n")
 	event = waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
 	live = event.Snapshot
 	if live.CATrusted() {
-		t.Fatal("Domain List reload hot-applied CA trust")
+		t.Fatal("Upstream List reload hot-applied CA trust")
 	}
 	if !live.CATrustPending() {
-		t.Fatal("CA trust change is not pending after Domain List reload")
+		t.Fatal("CA trust change is not pending after Upstream List reload")
 	}
-	if live.DomainListEntriesRevision() != 3 {
-		t.Fatalf("Domain List Entries Revision after entry change = %d", live.DomainListEntriesRevision())
+	if live.UpstreamListEntriesRevision() != 3 {
+		t.Fatalf("Upstream List Entries Revision after entry change = %d", live.UpstreamListEntriesRevision())
 	}
 
-	writeConfig(t, configPath, secondDomainPath, false)
+	writeConfig(t, configPath, secondUpstreamPath, false)
 	event = waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
@@ -89,38 +89,38 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if event.Snapshot.CATrustPending() {
 		t.Fatal("CA trust change remains pending after revert")
 	}
-	if event.Snapshot.DomainListEntriesRevision() != 3 {
-		t.Fatalf("pending lifecycle change advanced Domain List Entries Revision to %d", event.Snapshot.DomainListEntriesRevision())
+	if event.Snapshot.UpstreamListEntriesRevision() != 3 {
+		t.Fatalf("pending lifecycle change advanced Upstream List Entries Revision to %d", event.Snapshot.UpstreamListEntriesRevision())
 	}
 }
 
-func TestSnapshotDomainListIsImmutable(t *testing.T) {
+func TestSnapshotUpstreamListIsImmutable(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "https://example.test:443\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "https://example.test:443\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	snapshot, err := liveconfig.LoadExisting(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exposed := snapshot.DomainList()
+	exposed := snapshot.UpstreamList()
 	exposed.OriginSelectors[0].Hostname = "changed.example.test"
 	exposed.OriginSelectors[0].Port = "8443"
 
-	retained := snapshot.DomainList().OriginSelectors[0]
+	retained := snapshot.UpstreamList().OriginSelectors[0]
 	if retained.Hostname != "example.test" || retained.Port != "443" {
-		t.Fatalf("snapshot Domain List was mutated through exposed fields: %#v", retained)
+		t.Fatalf("snapshot Upstream List was mutated through exposed fields: %#v", retained)
 	}
 }
 
-func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
+func TestWatchPublishesOnlySemanticUpstreamListChanges(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "api.example.test\nhttps://secure.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -130,31 +130,31 @@ func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeFile(t, domainPath, "# same routes, reordered\nhttps://secure.example.test\nAPI.EXAMPLE.TEST\napi.example.test # duplicate\n")
+	writeFile(t, upstreamPath, "# same routes, reordered\nhttps://secure.example.test\nAPI.EXAMPLE.TEST\napi.example.test # duplicate\n")
 	assertNoEvent(t, events, 300*time.Millisecond)
 
-	writeFile(t, domainPath, "changed.example.test\n")
+	writeFile(t, upstreamPath, "changed.example.test\n")
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().HostSelectors
+	entries := event.Snapshot.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "changed.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
-	if event.Snapshot.DomainListEntriesRevision() != 2 {
-		t.Fatalf("Domain List Entries Revision = %d", event.Snapshot.DomainListEntriesRevision())
+	if event.Snapshot.UpstreamListEntriesRevision() != 2 {
+		t.Fatalf("Upstream List Entries Revision = %d", event.Snapshot.UpstreamListEntriesRevision())
 	}
 }
 
-func TestWatchDoesNotAdvanceDomainListEntriesRevisionForPathOnlyChange(t *testing.T) {
+func TestWatchDoesNotAdvanceUpstreamListEntriesRevisionForPathOnlyChange(t *testing.T) {
 	home := t.TempDir()
-	firstDomainPath := filepath.Join(home, "first-domains.txt")
-	secondDomainPath := filepath.Join(home, "second-domains.txt")
+	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
+	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstDomainPath, "api.example.test\n")
-	writeFile(t, secondDomainPath, "# same entries\nAPI.EXAMPLE.TEST\n")
-	writeConfig(t, configPath, firstDomainPath, false)
+	writeFile(t, firstUpstreamPath, "api.example.test\n")
+	writeFile(t, secondUpstreamPath, "# same entries\nAPI.EXAMPLE.TEST\n")
+	writeConfig(t, configPath, firstUpstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -165,29 +165,29 @@ func TestWatchDoesNotAdvanceDomainListEntriesRevisionForPathOnlyChange(t *testin
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeConfig(t, configPath, secondDomainPath, false)
+	writeConfig(t, configPath, secondUpstreamPath, false)
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if event.Snapshot.DomainListPath() != secondDomainPath {
-		t.Fatalf("Domain List path = %q", event.Snapshot.DomainListPath())
+	if event.Snapshot.UpstreamListPath() != secondUpstreamPath {
+		t.Fatalf("Upstream List path = %q", event.Snapshot.UpstreamListPath())
 	}
-	if event.Snapshot.DomainListEntriesRevision() != initial.DomainListEntriesRevision() {
+	if event.Snapshot.UpstreamListEntriesRevision() != initial.UpstreamListEntriesRevision() {
 		t.Fatalf(
-			"path-only change advanced Domain List Entries Revision from %d to %d",
-			initial.DomainListEntriesRevision(),
-			event.Snapshot.DomainListEntriesRevision(),
+			"path-only change advanced Upstream List Entries Revision from %d to %d",
+			initial.UpstreamListEntriesRevision(),
+			event.Snapshot.UpstreamListEntriesRevision(),
 		)
 	}
 }
 
-func TestWatchAppliesDomainWarningsAndRecovers(t *testing.T) {
+func TestWatchAppliesUpstreamWarningsAndRecovers(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "initial.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "initial.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -197,36 +197,36 @@ func TestWatchAppliesDomainWarningsAndRecovers(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeFile(t, domainPath, "https://invalid.example.test/path\n")
+	writeFile(t, upstreamPath, "https://invalid.example.test/path\n")
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if len(event.Snapshot.DomainList().HostSelectors) != 0 ||
-		len(event.Snapshot.DomainList().Warnings) != 1 {
+	if len(event.Snapshot.UpstreamList().HostSelectors) != 0 ||
+		len(event.Snapshot.UpstreamList().Warnings) != 1 {
 		t.Fatalf("invalid edit snapshot = %#v", event.Snapshot)
 	}
 
-	writeFile(t, domainPath, "recovered.example.test\n")
+	writeFile(t, upstreamPath, "recovered.example.test\n")
 	event = waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().HostSelectors
+	entries := event.Snapshot.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
-	if warnings := event.Snapshot.DomainList().Warnings; len(warnings) != 0 {
+	if warnings := event.Snapshot.UpstreamList().Warnings; len(warnings) != 0 {
 		t.Fatalf("warnings after recovery = %#v", warnings)
 	}
 }
 
-func TestWatchPublishesDomainWarningsDespiteConfigNoise(t *testing.T) {
+func TestWatchPublishesUpstreamWarningsDespiteConfigNoise(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "initial.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "initial.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -235,14 +235,14 @@ func TestWatchPublishesDomainWarningsDespiteConfigNoise(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := watchSource(ctx, source)
-	writeFile(t, domainPath, "https://invalid.example.test/path\n")
-	writeFile(t, configPath, "# noise\ndomain-list: "+domainPath+"\nca-trusted: false\n")
+	writeFile(t, upstreamPath, "https://invalid.example.test/path\n")
+	writeFile(t, configPath, "# noise\nupstream-list: "+upstreamPath+"\nca-trusted: false\n")
 
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if warnings := event.Snapshot.DomainList().Warnings; len(warnings) != 1 {
+	if warnings := event.Snapshot.UpstreamList().Warnings; len(warnings) != 1 {
 		t.Fatalf("warnings = %#v", warnings)
 	}
 }
@@ -250,10 +250,10 @@ func TestWatchPublishesDomainWarningsDespiteConfigNoise(t *testing.T) {
 func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "initial.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "initial.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -267,15 +267,15 @@ func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
 	// Keep the invalid state longer than the watcher debounce but shorter than
 	// its invalid-source confirmation window.
 	time.Sleep(500 * time.Millisecond)
-	writeConfig(t, configPath, domainPath, false)
+	writeConfig(t, configPath, upstreamPath, false)
 	time.Sleep(200 * time.Millisecond)
-	writeFile(t, domainPath, "recovered.example.test\n")
+	writeFile(t, upstreamPath, "recovered.example.test\n")
 
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().HostSelectors
+	entries := event.Snapshot.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -283,10 +283,10 @@ func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
 
 func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "initial.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "initial.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -296,13 +296,13 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	temporaryPath := filepath.Join(home, ".domains.txt.tmp")
+	temporaryPath := filepath.Join(home, ".upstreams.txt.tmp")
 	writeFile(t, temporaryPath, "replacement.example.test\n")
 	assertNoEvent(t, events, 300*time.Millisecond)
-	if err := os.Remove(domainPath); err != nil {
+	if err := os.Remove(upstreamPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(temporaryPath, domainPath); err != nil {
+	if err := os.Rename(temporaryPath, upstreamPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -310,7 +310,7 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().HostSelectors
+	entries := event.Snapshot.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "replacement.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -318,10 +318,10 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 
 func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "initial.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "initial.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -331,16 +331,16 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeFile(t, domainPath, "first.example.test\n")
-	waitForCachedDomain(t, source, "first.example.test")
-	writeFile(t, domainPath, "latest.example.test\n")
-	waitForCachedDomain(t, source, "latest.example.test")
+	writeFile(t, upstreamPath, "first.example.test\n")
+	waitForCachedHost(t, source, "first.example.test")
+	writeFile(t, upstreamPath, "latest.example.test\n")
+	waitForCachedHost(t, source, "latest.example.test")
 
 	first := waitForEvent(t, events)
 	if first.Err != nil {
 		t.Fatal(first.Err)
 	}
-	firstEntries := first.Snapshot.DomainList().HostSelectors
+	firstEntries := first.Snapshot.UpstreamList().HostSelectors
 	if len(firstEntries) != 1 || firstEntries[0].Hostname != "first.example.test" {
 		t.Fatalf("first entries = %#v", firstEntries)
 	}
@@ -349,29 +349,29 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().HostSelectors
+	entries := event.Snapshot.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "latest.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
-	if event.Snapshot.DomainListEntriesRevision() != 3 {
-		t.Fatalf("coalesced Domain List Entries Revision = %d", event.Snapshot.DomainListEntriesRevision())
+	if event.Snapshot.UpstreamListEntriesRevision() != 3 {
+		t.Fatalf("coalesced Upstream List Entries Revision = %d", event.Snapshot.UpstreamListEntriesRevision())
 	}
 }
 
 func TestReloadReestablishesSnapshotAndLifecycleBaselineBeforeWatch(t *testing.T) {
 	home := t.TempDir()
-	firstDomainPath := filepath.Join(home, "first-domains.txt")
-	secondDomainPath := filepath.Join(home, "second-domains.txt")
+	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
+	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstDomainPath, "first.example.test\n")
-	writeFile(t, secondDomainPath, "second.example.test\n")
-	writeConfig(t, configPath, firstDomainPath, true)
+	writeFile(t, firstUpstreamPath, "first.example.test\n")
+	writeFile(t, secondUpstreamPath, "second.example.test\n")
+	writeConfig(t, configPath, firstUpstreamPath, true)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeConfig(t, configPath, secondDomainPath, false)
+	writeConfig(t, configPath, secondUpstreamPath, false)
 	reloaded, err := source.Reload()
 	if err != nil {
 		t.Fatal(err)
@@ -382,8 +382,8 @@ func TestReloadReestablishesSnapshotAndLifecycleBaselineBeforeWatch(t *testing.T
 	if reloaded.CATrustPending() {
 		t.Fatal("reload left CA trust pending")
 	}
-	if reloaded.DomainListEntriesRevision() != 2 {
-		t.Fatalf("reloaded Domain List Entries Revision = %d", reloaded.DomainListEntriesRevision())
+	if reloaded.UpstreamListEntriesRevision() != 2 {
+		t.Fatalf("reloaded Upstream List Entries Revision = %d", reloaded.UpstreamListEntriesRevision())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -394,10 +394,10 @@ func TestReloadReestablishesSnapshotAndLifecycleBaselineBeforeWatch(t *testing.T
 
 func TestReloadFailsAfterWatchStarts(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "api.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "api.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -406,7 +406,7 @@ func TestReloadFailsAfterWatchStarts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := watchSource(ctx, source)
-	writeFile(t, domainPath, "changed.example.test\n")
+	writeFile(t, upstreamPath, "changed.example.test\n")
 	if event := waitForEvent(t, events); event.Err != nil {
 		t.Fatal(event.Err)
 	}
@@ -421,10 +421,10 @@ func TestReloadFailsAfterWatchStarts(t *testing.T) {
 
 func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "first.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "first.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -434,28 +434,28 @@ func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeFile(t, domainPath, "next.example.test\nhttps://bad.example.test/path\n")
+	writeFile(t, upstreamPath, "next.example.test\nhttps://bad.example.test/path\n")
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
 	cached := source.Current()
-	entries := cached.DomainList().HostSelectors
+	entries := cached.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "next.example.test" {
 		t.Fatalf("cached entries = %#v", entries)
 	}
-	if warnings := cached.DomainList().Warnings; len(warnings) != 1 {
+	if warnings := cached.UpstreamList().Warnings; len(warnings) != 1 {
 		t.Fatalf("cached warnings = %#v", warnings)
 	}
 }
 
-func TestWatchTreatsMissingLiveDomainListAsFatal(t *testing.T) {
+func TestWatchTreatsMissingLiveUpstreamListAsFatal(t *testing.T) {
 	home := t.TempDir()
-	firstDomainPath := filepath.Join(home, "first-domains.txt")
-	missingDomainPath := filepath.Join(home, "missing-domains.txt")
+	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
+	missingUpstreamPath := filepath.Join(home, "missing-upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstDomainPath, "first.example.test\n")
-	writeConfig(t, configPath, firstDomainPath, false)
+	writeFile(t, firstUpstreamPath, "first.example.test\n")
+	writeConfig(t, configPath, firstUpstreamPath, false)
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -465,19 +465,19 @@ func TestWatchTreatsMissingLiveDomainListAsFatal(t *testing.T) {
 	defer cancel()
 	events := watchSource(ctx, source)
 
-	writeConfig(t, configPath, missingDomainPath, false)
+	writeConfig(t, configPath, missingUpstreamPath, false)
 	event := waitForEvent(t, events)
-	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Domain List Error") {
+	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Upstream List Error") {
 		t.Fatalf("event error = %v", event.Err)
 	}
 }
 
 func TestWatchTreatsUnreadableLiveConfigAsFatal(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "first.example.test\n")
-	writeConfig(t, configPath, domainPath, false)
+	writeFile(t, upstreamPath, "first.example.test\n")
+	writeConfig(t, configPath, upstreamPath, false)
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -500,16 +500,16 @@ func TestLoadIgnoresUnknownConfigKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	configPath := filepath.Join(home, "config.yaml")
-	domainPath := filepath.Join(home, "domains.txt")
-	writeFile(t, domainPath, "api.example.test\n")
-	writeFile(t, configPath, "unknown-setting: ignored\ndomain-list: "+domainPath+"\n")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
+	writeFile(t, upstreamPath, "api.example.test\n")
+	writeFile(t, configPath, "unknown-setting: ignored\nupstream-list: "+upstreamPath+"\n")
 
 	loaded, err := liveconfig.LoadExisting(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.DomainListPath() != domainPath {
-		t.Fatalf("domain path = %q", loaded.DomainListPath())
+	if loaded.UpstreamListPath() != upstreamPath {
+		t.Fatalf("upstream list path = %q", loaded.UpstreamListPath())
 	}
 	if loaded.CATrusted() {
 		t.Fatal("omitted ca-trusted should default to false")
@@ -518,11 +518,11 @@ func TestLoadIgnoresUnknownConfigKeys(t *testing.T) {
 
 func TestLoadRejectsSymlinkedConfigFile(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "domains.txt")
+	upstreamPath := filepath.Join(home, "upstreams.txt")
 	realConfigPath := filepath.Join(home, "real-config.yaml")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, domainPath, "api.example.test\n")
-	writeConfig(t, realConfigPath, domainPath, false)
+	writeFile(t, upstreamPath, "api.example.test\n")
+	writeConfig(t, realConfigPath, upstreamPath, false)
 	if err := os.Symlink(realConfigPath, configPath); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
@@ -545,14 +545,14 @@ func TestOpenCreatesCommentedDefaults(t *testing.T) {
 	if loaded.CATrusted() {
 		t.Fatal("ca-trusted default should disable trusted HTTPS")
 	}
-	if loaded.DomainListPath() != filepath.Join(home, ".seamless-cors", "domains.txt") {
-		t.Fatalf("domain path = %q", loaded.DomainListPath())
+	if loaded.UpstreamListPath() != filepath.Join(home, ".seamless-cors", "upstreams.txt") {
+		t.Fatalf("upstream list path = %q", loaded.UpstreamListPath())
 	}
 	configText, err := os.ReadFile(loaded.ConfigPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(configText, []byte("# One domain or origin per line.")) {
+	if !bytes.Contains(configText, []byte("# One upstream host or origin per line.")) {
 		t.Fatalf("generated config is not commented:\n%s", configText)
 	}
 	if !bytes.Contains(configText, []byte("ca-trusted: false")) {
@@ -560,45 +560,45 @@ func TestOpenCreatesCommentedDefaults(t *testing.T) {
 	}
 }
 
-func TestOpenCreatesMissingConfiguredDomainList(t *testing.T) {
+func TestOpenCreatesMissingConfiguredUpstreamList(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "nested", "config", "domains.txt")
+	upstreamPath := filepath.Join(home, "nested", "config", "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, configPath, "domain-list: "+domainPath+"\n")
+	writeFile(t, configPath, "upstream-list: "+upstreamPath+"\n")
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entries := source.Current().DomainList().HostSelectors; len(entries) != 0 {
-		t.Fatalf("bootstrapped Domain List entries = %#v", entries)
+	if entries := source.Current().UpstreamList().HostSelectors; len(entries) != 0 {
+		t.Fatalf("bootstrapped Upstream List entries = %#v", entries)
 	}
-	domainText, err := os.ReadFile(domainPath)
+	upstreamText, err := os.ReadFile(upstreamPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(domainText) != "# One domain or origin per line.\n# api.dev.example.com\n" {
-		t.Fatalf("bootstrapped Domain List = %q", domainText)
+	if string(upstreamText) != "# One upstream host or origin per line.\n# api.dev.example.com\n" {
+		t.Fatalf("bootstrapped Upstream List = %q", upstreamText)
 	}
 }
 
-func TestLoadExistingDoesNotCreateMissingConfiguredDomainList(t *testing.T) {
+func TestLoadExistingDoesNotCreateMissingConfiguredUpstreamList(t *testing.T) {
 	home := t.TempDir()
-	domainPath := filepath.Join(home, "nested", "domains.txt")
+	upstreamPath := filepath.Join(home, "nested", "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, configPath, "domain-list: "+domainPath+"\n")
+	writeFile(t, configPath, "upstream-list: "+upstreamPath+"\n")
 
 	if _, err := liveconfig.LoadExisting(configPath); !os.IsNotExist(err) {
 		t.Fatalf("load error = %v, want not-exist", err)
 	}
-	if _, err := os.Stat(filepath.Dir(domainPath)); !os.IsNotExist(err) {
-		t.Fatalf("passive load created Domain List parent: %v", err)
+	if _, err := os.Stat(filepath.Dir(upstreamPath)); !os.IsNotExist(err) {
+		t.Fatalf("passive load created Upstream List parent: %v", err)
 	}
 }
 
-func writeConfig(t *testing.T, path, domainPath string, caTrusted bool) {
+func writeConfig(t *testing.T, path, upstreamPath string, caTrusted bool) {
 	t.Helper()
-	writeFile(t, path, "domain-list: "+domainPath+"\nca-trusted: "+map[bool]string{true: "true", false: "false"}[caTrusted]+"\n")
+	writeFile(t, path, "upstream-list: "+upstreamPath+"\nca-trusted: "+map[bool]string{true: "true", false: "false"}[caTrusted]+"\n")
 }
 
 func writeFile(t *testing.T, path, contents string) {
@@ -659,15 +659,15 @@ func assertNoEvent(t *testing.T, events <-chan liveConfigEvent, duration time.Du
 	}
 }
 
-func waitForCachedDomain(t *testing.T, source *liveconfig.Source, host string) {
+func waitForCachedHost(t *testing.T, source *liveconfig.Source, host string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		entries := source.Current().DomainList().HostSelectors
+		entries := source.Current().UpstreamList().HostSelectors
 		if len(entries) == 1 && entries[0].Hostname == host {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("cached Domain List did not become %q", host)
+	t.Fatalf("cached Upstream List did not become %q", host)
 }

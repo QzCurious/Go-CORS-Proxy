@@ -230,12 +230,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		Kind:     StartResultStarted,
 		CAEnsure: caEnsure,
 		Guidance: &StartGuidanceDetail{
-			ConfigPath:         snapshot.ConfigPath(),
-			DomainListPath:     snapshot.DomainListPath(),
-			ManagedPACActive:   true,
-			ManagedPACServices: pacStart.InstalledServices,
-			CATrusted:          snapshot.CATrusted(),
-			DomainListWarnings: domainListWarningDetails(snapshot.DomainList().Warnings),
+			ConfigPath:           snapshot.ConfigPath(),
+			UpstreamListPath:     snapshot.UpstreamListPath(),
+			ManagedPACActive:     true,
+			ManagedPACServices:   pacStart.InstalledServices,
+			CATrusted:            snapshot.CATrusted(),
+			UpstreamListWarnings: upstreamListWarningDetails(snapshot.UpstreamList().Warnings),
 		},
 	}, nil
 }

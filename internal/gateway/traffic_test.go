@@ -10,14 +10,14 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 )
 
-func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {
+func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
 	home := t.TempDir()
-	firstDomainPath := filepath.Join(home, "first-domains.txt")
-	secondDomainPath := filepath.Join(home, "second-domains.txt")
+	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
+	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
-	writeTrafficTestFile(t, firstDomainPath, "api.example.test\n")
-	writeTrafficTestFile(t, secondDomainPath, "# same entries\nAPI.EXAMPLE.TEST\n")
-	writeTrafficTestFile(t, configPath, "domain-list: "+firstDomainPath+"\nca-trusted: false\n")
+	writeTrafficTestFile(t, firstUpstreamPath, "api.example.test\n")
+	writeTrafficTestFile(t, secondUpstreamPath, "# same entries\nAPI.EXAMPLE.TEST\n")
+	writeTrafficTestFile(t, configPath, "upstream-list: "+firstUpstreamPath+"\nca-trusted: false\n")
 
 	source, err := liveconfig.Open(configPath)
 	if err != nil {
@@ -40,28 +40,28 @@ func TestPACVersionFollowsDomainListEntriesRevision(t *testing.T) {
 	go runtime.watchLiveConfig(ctx, errs)
 	initialPACURL := runtime.PACURL()
 
-	writeTrafficTestFile(t, configPath, "domain-list: "+secondDomainPath+"\nca-trusted: false\n")
+	writeTrafficTestFile(t, configPath, "upstream-list: "+secondUpstreamPath+"\nca-trusted: false\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return state.DomainList == secondDomainPath
+		return state.UpstreamList == secondUpstreamPath
 	})
 	if runtime.PACURL() != initialPACURL {
 		t.Fatalf("path-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
 	}
 
-	writeTrafficTestFile(t, secondDomainPath, "API.EXAMPLE.TEST\nhttps://bad.example.test/path\n")
+	writeTrafficTestFile(t, secondUpstreamPath, "API.EXAMPLE.TEST\nhttps://bad.example.test/path\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return len(state.DomainListWarnings) == 1
+		return len(state.UpstreamListWarnings) == 1
 	})
 	if runtime.PACURL() != initialPACURL {
 		t.Fatalf("warning-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
 	}
 
-	writeTrafficTestFile(t, secondDomainPath, "changed.example.test\n")
+	writeTrafficTestFile(t, secondUpstreamPath, "changed.example.test\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return state.DomainCount == 1 && runtime.PACURL() != initialPACURL
+		return state.UpstreamCount == 1 && runtime.PACURL() != initialPACURL
 	})
 	if runtime.PACURL() == initialPACURL {
-		t.Fatalf("Domain List Entries Revision change did not advance PAC URL %q", initialPACURL)
+		t.Fatalf("Upstream List Entries Revision change did not advance PAC URL %q", initialPACURL)
 	}
 }
 

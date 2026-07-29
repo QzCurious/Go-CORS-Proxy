@@ -6,7 +6,7 @@ English | [繁體中文](README.zh-TW.md)
 across origins without changing application URLs or adding CORS support to the
 upstream server.
 
-It uses a Proxy Auto-Configuration (PAC) file to route only the domains you
+It uses a Proxy Auto-Configuration (PAC) file to route only the upstreams you
 choose through the local gateway. HTTP works directly, with HTTPS support as an
 opt-in feature.
 
@@ -67,10 +67,10 @@ seamless-cors start
 ```
 
 On first start, seamless-cors creates `~/.seamless-cors/config.yaml` and
-`~/.seamless-cors/domains.txt`.
+`~/.seamless-cors/upstreams.txt`.
 
 Add the upstream hostnames or origins for which you want to enable CORS, one per
-line, to `~/.seamless-cors/domains.txt`:
+line, to `~/.seamless-cors/upstreams.txt`:
 
 ```text
 api.dev.example.com
@@ -78,7 +78,7 @@ https://api.example.com:8443
 *.test.example.com
 ```
 
-The domain list is watched for changes while the gateway is running.
+The upstream list is watched for changes while the gateway is running.
 
 To enable HTTPS interception, set `ca-trusted: true` in `config.yaml` and
 restart the gateway. Your operating system will ask you to approve installing

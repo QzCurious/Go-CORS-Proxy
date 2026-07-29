@@ -311,14 +311,14 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 		if result.Guidance != nil {
 			fmt.Fprintln(stdout, "seamless-cors running")
 			fmt.Fprintf(stdout, "config: %s\n", homeRelativePath(result.Guidance.ConfigPath))
-			fmt.Fprintf(stdout, "domain-list: %s\n", homeRelativePath(result.Guidance.DomainListPath))
+			fmt.Fprintf(stdout, "upstream-list: %s\n", homeRelativePath(result.Guidance.UpstreamListPath))
 			if result.Guidance.ManagedPACActive {
 				fmt.Fprintln(stdout, "managed-pac: active")
 				if len(result.Guidance.ManagedPACServices) > 0 {
 					fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Guidance.ManagedPACServices, ", "))
 				}
 			}
-			renderDomainListWarnings(stdout, result.Guidance.DomainListWarnings)
+			renderUpstreamListWarnings(stdout, result.Guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
@@ -414,9 +414,9 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		if result.Owner != nil {
 			fmt.Fprintf(stdout, "gateway-router-endpoint: %s\n", result.Owner.RouterListen)
 		}
-		fmt.Fprintf(stdout, "domain-list: %s\n", result.Runtime.DomainListPath)
-		fmt.Fprintf(stdout, "domains: %d\n", result.Runtime.DomainCount)
-		renderDomainListWarnings(stdout, result.Runtime.DomainListWarnings)
+		fmt.Fprintf(stdout, "upstream-list: %s\n", result.Runtime.UpstreamListPath)
+		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
+		renderUpstreamListWarnings(stdout, result.Runtime.UpstreamListWarnings)
 		if result.Kind == gateway.GatewayStatusRunning {
 			fmt.Fprintln(stdout, "managed-pac: active")
 		} else {
@@ -450,11 +450,11 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 	}
 }
 
-func renderDomainListWarnings(stdout io.Writer, warnings []gateway.DomainListWarningDetail) {
+func renderUpstreamListWarnings(stdout io.Writer, warnings []gateway.UpstreamListWarningDetail) {
 	for _, warning := range warnings {
 		fmt.Fprintf(
 			stdout,
-			"warning: domain-list line %d: %s: %s\n",
+			"warning: upstream-list line %d: %s: %s\n",
 			warning.Line,
 			warning.Text,
 			warning.Diagnostic,

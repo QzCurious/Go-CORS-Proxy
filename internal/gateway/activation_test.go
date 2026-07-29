@@ -18,11 +18,11 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	domainPath := filepath.Join(configDir, "domains.txt")
-	if err := os.WriteFile(domainPath, nil, 0o600); err != nil {
+	upstreamPath := filepath.Join(configDir, "upstreams.txt")
+	if err := os.WriteFile(upstreamPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	config := "domain-list: " + domainPath + "\nca-trusted: false\n"
+	config := "upstream-list: " + upstreamPath + "\nca-trusted: false\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}

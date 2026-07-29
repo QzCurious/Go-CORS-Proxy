@@ -1,4 +1,4 @@
-package domainlist
+package upstreamlist
 
 type HostnameMatch uint8
 
@@ -23,23 +23,23 @@ type OriginSelector struct {
 	Port     string
 }
 
-// Warning describes one ignored invalid Domain List line.
+// Warning describes one ignored invalid Upstream List line.
 type Warning struct {
 	Line       int
 	Text       string
 	Diagnostic string
 }
 
-// DomainList is the decoded, normalized Domain List.
-type DomainList struct {
+// UpstreamList is the decoded, normalized Upstream List.
+type UpstreamList struct {
 	HostSelectors   []HostSelector
 	OriginSelectors []OriginSelector
 	Warnings        []Warning
 }
 
-// SameEntries reports whether two Domain Lists contain the same normalized
+// SameEntries reports whether two Upstream Lists contain the same normalized
 // selector sets. Source ordering and warnings do not affect entry identity.
-func SameEntries(left, right DomainList) bool {
+func SameEntries(left, right UpstreamList) bool {
 	return sameHostSelectors(left.HostSelectors, right.HostSelectors) &&
 		sameOriginSelectors(left.OriginSelectors, right.OriginSelectors)
 }

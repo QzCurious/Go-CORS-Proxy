@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -19,8 +19,8 @@ type targetRole uint8
 
 const (
 	configTarget targetRole = iota
-	domainTarget
-	candidateDomainTarget
+	upstreamTarget
+	candidateUpstreamTarget
 )
 
 type targetState struct {
@@ -105,7 +105,7 @@ func (s *Source) watch(ctx context.Context, output chan watchEvent) {
 		publishLatest(output, watchEvent{err: err})
 		return
 	}
-	if err := state.addTarget(current.DomainListPath(), domainTarget); err != nil {
+	if err := state.addTarget(current.UpstreamListPath(), upstreamTarget); err != nil {
 		publishLatest(output, watchEvent{err: err})
 		return
 	}
@@ -254,7 +254,7 @@ func (w *watcherState) cancelAllConfirmations() {
 }
 
 func (w *watcherState) reconcile() (watchEvent, bool, error) {
-	current, desired, configFingerprint, domainFingerprint := w.source.snapshot()
+	current, desired, configFingerprint, upstreamFingerprint := w.source.snapshot()
 	configData, err := readRegularFile(current.ConfigPath())
 	if err != nil {
 		return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
@@ -262,9 +262,9 @@ func (w *watcherState) reconcile() (watchEvent, bool, error) {
 	nextConfigFingerprint := sha256.Sum256(configData)
 	configChanged := nextConfigFingerprint != configFingerprint
 	loaded := loadResult{
-		Config:     desired,
-		ConfigPath: current.ConfigPath(),
-		DomainPath: current.DomainListPath(),
+		Config:       desired,
+		ConfigPath:   current.ConfigPath(),
+		UpstreamPath: current.UpstreamListPath(),
 	}
 	if configChanged {
 		loaded, err = parseFileConfig(current.ConfigPath(), configData)
@@ -272,39 +272,39 @@ func (w *watcherState) reconcile() (watchEvent, bool, error) {
 			return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
 		}
 	}
-	if err := w.setCandidateTarget(loaded.DomainPath); err != nil {
+	if err := w.setCandidateTarget(loaded.UpstreamPath); err != nil {
 		return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
 	}
-	domainData, err := readRegularFile(loaded.DomainPath)
+	upstreamData, err := readRegularFile(loaded.UpstreamPath)
 	if err != nil {
-		return watchEvent{}, false, invalidDomainError(loaded.DomainPath, err)
+		return watchEvent{}, false, invalidUpstreamError(loaded.UpstreamPath, err)
 	}
-	nextDomainFingerprint := sha256.Sum256(domainData)
-	domainChanged := nextDomainFingerprint != domainFingerprint || loaded.DomainPath != current.DomainListPath()
-	if !configChanged && !domainChanged {
-		if err := w.commitDomainTarget(current.DomainListPath()); err != nil {
+	nextUpstreamFingerprint := sha256.Sum256(upstreamData)
+	upstreamChanged := nextUpstreamFingerprint != upstreamFingerprint || loaded.UpstreamPath != current.UpstreamListPath()
+	if !configChanged && !upstreamChanged {
+		if err := w.commitUpstreamTarget(current.UpstreamListPath()); err != nil {
 			return watchEvent{}, false, err
 		}
 		return watchEvent{}, false, nil
 	}
-	decoded := current.DomainList()
-	if domainChanged {
-		decoded, err = domainlist.Decode(domainData)
+	decoded := current.UpstreamList()
+	if upstreamChanged {
+		decoded, err = upstreamlist.Decode(upstreamData)
 		if err != nil {
-			return watchEvent{}, false, invalidDomainError(loaded.DomainPath, err)
+			return watchEvent{}, false, invalidUpstreamError(loaded.UpstreamPath, err)
 		}
 	}
 	next := snapshotFromLoadResult(
 		loaded,
 		decoded,
-		current.DomainListEntriesRevision(),
+		current.UpstreamListEntriesRevision(),
 		loaded.Config.CATrusted != w.source.baselineCATrusted,
 		w.source.baselineCATrusted,
 	)
-	if err := w.commitDomainTarget(loaded.DomainPath); err != nil {
+	if err := w.commitUpstreamTarget(loaded.UpstreamPath); err != nil {
 		return watchEvent{}, false, err
 	}
-	next, semanticChanged := w.source.commit(next, loaded.Config, nextConfigFingerprint, nextDomainFingerprint)
+	next, semanticChanged := w.source.commit(next, loaded.Config, nextConfigFingerprint, nextUpstreamFingerprint)
 	if !semanticChanged {
 		return watchEvent{}, false, nil
 	}
@@ -314,14 +314,14 @@ func (w *watcherState) reconcile() (watchEvent, bool, error) {
 func (s *Source) snapshot() (Snapshot, fileConfig, [sha256.Size]byte, [sha256.Size]byte) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.current, s.desiredConfig, s.configFingerprint, s.domainFingerprint
+	return s.current, s.desiredConfig, s.configFingerprint, s.upstreamFingerprint
 }
 
-func (s *Source) commit(next Snapshot, desired fileConfig, configFingerprint, domainFingerprint [sha256.Size]byte) (Snapshot, bool) {
+func (s *Source) commit(next Snapshot, desired fileConfig, configFingerprint, upstreamFingerprint [sha256.Size]byte) (Snapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !domainlist.SameEntries(s.current.domainList, next.domainList) {
-		next.domainListEntriesRevision = s.current.domainListEntriesRevision + 1
+	if !upstreamlist.SameEntries(s.current.upstreamList, next.upstreamList) {
+		next.upstreamListEntriesRevision = s.current.upstreamListEntriesRevision + 1
 	}
 	semanticChanged := !sameSemanticSnapshot(s.current, next)
 	if semanticChanged {
@@ -329,14 +329,14 @@ func (s *Source) commit(next Snapshot, desired fileConfig, configFingerprint, do
 	}
 	s.desiredConfig = desired
 	s.configFingerprint = configFingerprint
-	s.domainFingerprint = domainFingerprint
+	s.upstreamFingerprint = upstreamFingerprint
 	return next, semanticChanged
 }
 
 func (w *watcherState) addTarget(path string, role targetRole) error {
 	path = filepath.Clean(path)
 	if target, ok := w.targets[path]; ok {
-		if role != candidateDomainTarget {
+		if role != candidateUpstreamTarget {
 			target.role = role
 		}
 		return nil
@@ -355,7 +355,7 @@ func (w *watcherState) addTarget(path string, role targetRole) error {
 func (w *watcherState) setCandidateTarget(path string) error {
 	path = filepath.Clean(path)
 	for targetPath, target := range w.targets {
-		if target.role != candidateDomainTarget || targetPath == path {
+		if target.role != candidateUpstreamTarget || targetPath == path {
 			continue
 		}
 		if target.timer != nil {
@@ -366,17 +366,17 @@ func (w *watcherState) setCandidateTarget(path string) error {
 	if err := w.removeUnusedDirectories(); err != nil {
 		return err
 	}
-	return w.addTarget(path, candidateDomainTarget)
+	return w.addTarget(path, candidateUpstreamTarget)
 }
 
-func (w *watcherState) commitDomainTarget(path string) error {
+func (w *watcherState) commitUpstreamTarget(path string) error {
 	path = filepath.Clean(path)
 	for targetPath, target := range w.targets {
 		switch {
 		case targetPath == w.source.Current().ConfigPath():
 			target.role = configTarget
 		case targetPath == path:
-			target.role = domainTarget
+			target.role = upstreamTarget
 		default:
 			if target.timer != nil {
 				target.timer.Stop()
@@ -413,8 +413,8 @@ func invalidConfigError(path string, err error) error {
 	return &invalidSourceError{path: path, err: fmt.Errorf("Fatal Config Error: %w", err)}
 }
 
-func invalidDomainError(path string, err error) error {
-	return &invalidSourceError{path: path, err: fmt.Errorf("Fatal Domain List Error: %w", err)}
+func invalidUpstreamError(path string, err error) error {
+	return &invalidSourceError{path: path, err: fmt.Errorf("Fatal Upstream List Error: %w", err)}
 }
 
 func publishLatest(output chan watchEvent, event watchEvent) {

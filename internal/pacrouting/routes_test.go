@@ -4,18 +4,18 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/QzCurious/seamless-cors/internal/domainlist"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-func TestDeriveDomainRoutesExpandsSchemesWithoutPorts(t *testing.T) {
-	selectors := []domainlist.HostSelector{
-		{Hostname: "api.example.test", HostnameMatch: domainlist.HostnameExact},
-		{Hostname: "qa.example.test", HostnameMatch: domainlist.HostnameSingleLevel},
-		{Hostname: "dev.example.test", HostnameMatch: domainlist.HostnameRecursive},
+func TestDeriveHostRoutesExpandsSchemesWithoutPorts(t *testing.T) {
+	selectors := []upstreamlist.HostSelector{
+		{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
+		{Hostname: "qa.example.test", HostnameMatch: upstreamlist.HostnameSingleLevel},
+		{Hostname: "dev.example.test", HostnameMatch: upstreamlist.HostnameRecursive},
 	}
 
-	got := deriveDomainRoutes(selectors, true)
-	want := []domainRoute{
+	got := deriveHostRoutes(selectors, true)
+	want := []hostRoute{
 		{Scheme: "http", Hostname: "api.example.test", HostnameMatch: "Exact"},
 		{Scheme: "https", Hostname: "api.example.test", HostnameMatch: "Exact"},
 		{Scheme: "http", Hostname: "qa.example.test", HostnameMatch: "SingleLevel"},
@@ -24,25 +24,25 @@ func TestDeriveDomainRoutesExpandsSchemesWithoutPorts(t *testing.T) {
 		{Scheme: "https", Hostname: "dev.example.test", HostnameMatch: "Recursive"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Domain Routes = %#v, want %#v", got, want)
+		t.Fatalf("Host Routes = %#v, want %#v", got, want)
 	}
 }
 
-func TestDeriveDomainRoutesExcludesUntrustedHTTPS(t *testing.T) {
-	selectors := []domainlist.HostSelector{
-		{Hostname: "api.example.test", HostnameMatch: domainlist.HostnameExact},
+func TestDeriveHostRoutesExcludesUntrustedHTTPS(t *testing.T) {
+	selectors := []upstreamlist.HostSelector{
+		{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
 	}
-	got := deriveDomainRoutes(selectors, false)
-	want := []domainRoute{
+	got := deriveHostRoutes(selectors, false)
+	want := []hostRoute{
 		{Scheme: "http", Hostname: "api.example.test", HostnameMatch: "Exact"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Domain Routes = %#v, want %#v", got, want)
+		t.Fatalf("Host Routes = %#v, want %#v", got, want)
 	}
 }
 
 func TestDeriveOriginRoutesExpandsDefaultPorts(t *testing.T) {
-	selectors := []domainlist.OriginSelector{
+	selectors := []upstreamlist.OriginSelector{
 		{Scheme: "https", Hostname: "api.example.test"},
 		{Scheme: "https", Hostname: "api.example.test", Port: "443"},
 		{Scheme: "http", Hostname: "api.example.test", Port: "8080"},
@@ -62,7 +62,7 @@ func TestDeriveOriginRoutesExpandsDefaultPorts(t *testing.T) {
 }
 
 func TestDeriveOriginRoutesExcludesUntrustedHTTPS(t *testing.T) {
-	selectors := []domainlist.OriginSelector{
+	selectors := []upstreamlist.OriginSelector{
 		{Scheme: "https", Hostname: "secure.example.test"},
 		{Scheme: "http", Hostname: "plain.example.test"},
 	}

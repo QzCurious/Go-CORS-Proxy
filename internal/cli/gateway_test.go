@@ -78,10 +78,10 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 			Guidance: &gateway.StartGuidanceDetail{
 				ManagedPACActive:   true,
 				ManagedPACServices: []string{"Wi-Fi"},
-				DomainListWarnings: []gateway.DomainListWarningDetail{{
+				UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
 					Line:       2,
 					Text:       "https://*.bad.example.test",
-					Diagnostic: "wildcards require hostname shorthand",
+					Diagnostic: "wildcards require a Host Selector",
 				}},
 			},
 		}
@@ -95,7 +95,7 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 		"seamless-cors running",
 		"managed-pac: active",
 		"managed-pac-services: Wi-Fi",
-		"warning: domain-list line 2: https://*.bad.example.test: wildcards require hostname shorthand",
+		"warning: upstream-list line 2: https://*.bad.example.test: wildcards require a Host Selector",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
@@ -111,14 +111,14 @@ func TestStartCommandShortensHomePaths(t *testing.T) {
 	renderStartResult(&out, gateway.StartResult{
 		Kind: gateway.StartResultStarted,
 		Guidance: &gateway.StartGuidanceDetail{
-			ConfigPath:     filepath.Join(home, ".seamless-cors", "config.yaml"),
-			DomainListPath: filepath.Join(home, ".seamless-cors", "domains.txt"),
+			ConfigPath:       filepath.Join(home, ".seamless-cors", "config.yaml"),
+			UpstreamListPath: filepath.Join(home, ".seamless-cors", "upstreams.txt"),
 		},
 	})
 
 	wantConfig := "config: " + filepath.Join("~", ".seamless-cors", "config.yaml")
-	wantDomains := "domain-list: " + filepath.Join("~", ".seamless-cors", "domains.txt")
-	for _, want := range []string{wantConfig, wantDomains} {
+	wantUpstreams := "upstream-list: " + filepath.Join("~", ".seamless-cors", "upstreams.txt")
+	for _, want := range []string{wantConfig, wantUpstreams} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
 		}
@@ -199,19 +199,19 @@ func TestStatusCommandRendersStaleCacheGuidance(t *testing.T) {
 	}
 }
 
-func TestStatusRendersCurrentDomainListWarnings(t *testing.T) {
+func TestStatusRendersCurrentUpstreamListWarnings(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{
 		Kind: gateway.GatewayStatusRunning,
 		Runtime: &gateway.RuntimeStatusDetail{
-			DomainListWarnings: []gateway.DomainListWarningDetail{{
+			UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
 				Line:       4,
 				Text:       "bad/origin",
-				Diagnostic: "host shorthand must not include scheme, port, path, or IPv6",
+				Diagnostic: "Host Selector must not include a scheme, port, or path",
 			}},
 		},
 	})
-	if !strings.Contains(out.String(), "warning: domain-list line 4: bad/origin: host shorthand") {
+	if !strings.Contains(out.String(), "warning: upstream-list line 4: bad/origin: Host Selector") {
 		t.Fatalf("status output = %q", out.String())
 	}
 }

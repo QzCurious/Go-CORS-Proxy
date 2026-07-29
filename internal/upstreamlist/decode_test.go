@@ -1,4 +1,4 @@
-package domainlist
+package upstreamlist
 
 import (
 	"reflect"
@@ -16,7 +16,7 @@ http://[::1]:3000
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := DomainList{
+	want := UpstreamList{
 		HostSelectors: []HostSelector{
 			{Hostname: "api.example.test", HostnameMatch: HostnameExact},
 			{Hostname: "qa.example.test", HostnameMatch: HostnameSingleLevel},
@@ -59,7 +59,7 @@ https://example.test:443
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := DomainList{
+	want := UpstreamList{
 		HostSelectors: []HostSelector{
 			{Hostname: "example.test", HostnameMatch: HostnameExact},
 		},
@@ -117,10 +117,10 @@ example.test
 }
 
 func TestSameEntriesComparesNormalizedPortValues(t *testing.T) {
-	left := DomainList{OriginSelectors: []OriginSelector{
+	left := UpstreamList{OriginSelectors: []OriginSelector{
 		{Scheme: "https", Hostname: "example.test", Port: "443"},
 	}}
-	right := DomainList{OriginSelectors: []OriginSelector{
+	right := UpstreamList{OriginSelectors: []OriginSelector{
 		{Scheme: "https", Hostname: "example.test", Port: "443"},
 	}}
 	if !SameEntries(left, right) {
@@ -259,7 +259,7 @@ func TestDecodeRemovesInlineCommentsAndRejectsNonHostnameText(t *testing.T) {
 	}
 }
 
-func TestOriginSelectorDoesNotApplyDomainWildcardSemantics(t *testing.T) {
+func TestOriginSelectorDoesNotApplyHostWildcardSemantics(t *testing.T) {
 	decoded, err := Decode([]byte("https://*.example.test\n"))
 	if err != nil {
 		t.Fatal(err)

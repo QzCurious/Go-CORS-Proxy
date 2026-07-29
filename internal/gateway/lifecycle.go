@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/domainlist"
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
@@ -98,15 +98,15 @@ type PACReplacementConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidanceDetail struct {
-	ConfigPath         string                    `json:"configPath"`
-	DomainListPath     string                    `json:"domainListPath"`
-	ManagedPACActive   bool                      `json:"managedPacActive"`
-	ManagedPACServices []string                  `json:"managedPacServices,omitempty"`
-	CATrusted          bool                      `json:"caTrusted"`
-	DomainListWarnings []DomainListWarningDetail `json:"domainListWarnings,omitempty"`
+	ConfigPath           string                      `json:"configPath"`
+	UpstreamListPath     string                      `json:"upstreamListPath"`
+	ManagedPACActive     bool                        `json:"managedPacActive"`
+	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
+	CATrusted            bool                        `json:"caTrusted"`
+	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
 }
 
-type DomainListWarningDetail struct {
+type UpstreamListWarningDetail struct {
 	Line       int    `json:"line"`
 	Text       string `json:"text"`
 	Diagnostic string `json:"diagnostic"`
@@ -214,14 +214,14 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen        string                       `json:"proxyListen"`
-	PACListen          string                       `json:"pacListen"`
-	DomainListPath     string                       `json:"domainListPath"`
-	DomainCount        int                          `json:"domainCount"`
-	DomainListWarnings []DomainListWarningDetail    `json:"domainListWarnings,omitempty"`
-	CATrusted          bool                         `json:"caTrusted"`
-	ManagedPACServices []string                     `json:"managedPacServices,omitempty"`
-	PendingLifecycle   []PendingLifecycleChangeKind `json:"pendingLifecycle,omitempty"`
+	ProxyListen          string                       `json:"proxyListen"`
+	PACListen            string                       `json:"pacListen"`
+	UpstreamListPath     string                       `json:"upstreamListPath"`
+	UpstreamCount        int                          `json:"upstreamCount"`
+	UpstreamListWarnings []UpstreamListWarningDetail  `json:"upstreamListWarnings,omitempty"`
+	CATrusted            bool                         `json:"caTrusted"`
+	ManagedPACServices   []string                     `json:"managedPacServices,omitempty"`
+	PendingLifecycle     []PendingLifecycleChangeKind `json:"pendingLifecycle,omitempty"`
 }
 
 type PendingLifecycleChangeKind string
@@ -460,14 +460,14 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
-			ProxyListen:        state.ProxyListen,
-			PACListen:          state.PACListen,
-			DomainListPath:     state.DomainList,
-			DomainCount:        state.DomainCount,
-			DomainListWarnings: state.DomainListWarnings,
-			CATrusted:          state.CATrusted,
-			ManagedPACServices: managedPACServices(pac),
-			PendingLifecycle:   pendingLifecycleKinds(state.CATrustPending),
+			ProxyListen:          state.ProxyListen,
+			PACListen:            state.PACListen,
+			UpstreamListPath:     state.UpstreamList,
+			UpstreamCount:        state.UpstreamCount,
+			UpstreamListWarnings: state.UpstreamListWarnings,
+			CATrusted:            state.CATrusted,
+			ManagedPACServices:   managedPACServices(pac),
+			PendingLifecycle:     pendingLifecycleKinds(state.CATrustPending),
 		}
 		return result, nil
 	}
@@ -480,10 +480,10 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	return result, nil
 }
 
-func domainListWarningDetails(warnings []domainlist.Warning) []DomainListWarningDetail {
-	details := make([]DomainListWarningDetail, 0, len(warnings))
+func upstreamListWarningDetails(warnings []upstreamlist.Warning) []UpstreamListWarningDetail {
+	details := make([]UpstreamListWarningDetail, 0, len(warnings))
 	for _, warning := range warnings {
-		details = append(details, DomainListWarningDetail{
+		details = append(details, UpstreamListWarningDetail{
 			Line:       warning.Line,
 			Text:       warning.Text,
 			Diagnostic: warning.Diagnostic,
