@@ -24,7 +24,7 @@ func Generate(opts Options) string {
 		OriginRoutes []string      `json:"OriginRoutes"`
 	}{
 		Proxy:        opts.ProxyListen,
-		DomainRoutes: deriveDomainRoutes(opts.DomainList.DomainSelectors, opts.CATrusted),
+		DomainRoutes: deriveDomainRoutes(opts.DomainList.HostSelectors, opts.CATrusted),
 		OriginRoutes: deriveOriginRoutes(opts.DomainList.OriginSelectors, opts.CATrusted),
 	}
 
@@ -41,9 +41,9 @@ type domainRoute struct {
 	HostnameMatch string `json:"HostnameMatch"`
 }
 
-// deriveDomainRoutes expands every Domain Selector into its active HTTP(S)
+// deriveDomainRoutes expands every Host Selector into its active HTTP(S)
 // routes. HTTP is always active; HTTPS requires trusted interception.
-func deriveDomainRoutes(selectors []domainlist.DomainSelector, caTrusted bool) []domainRoute {
+func deriveDomainRoutes(selectors []domainlist.HostSelector, caTrusted bool) []domainRoute {
 	routes := make([]domainRoute, 0, len(selectors)*2)
 	for _, selector := range selectors {
 		routes = append(routes, domainRouteFromSelector(selector, "http"))
@@ -54,7 +54,7 @@ func deriveDomainRoutes(selectors []domainlist.DomainSelector, caTrusted bool) [
 	return routes
 }
 
-func domainRouteFromSelector(selector domainlist.DomainSelector, scheme string) domainRoute {
+func domainRouteFromSelector(selector domainlist.HostSelector, scheme string) domainRoute {
 	return domainRoute{
 		Scheme:        scheme,
 		Hostname:      selector.Hostname,

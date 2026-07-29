@@ -505,7 +505,7 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Domain List**:
-The user-managed newline-delimited configuration decoded by the Domain List module into Domain Selectors, Origin Selectors, and Domain List Warnings for PAC Routing; Live Configuration reads and observes its ordinary-file source at a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
+The user-managed newline-delimited configuration decoded by the Domain List module into Host Selectors, Origin Selectors, and Domain List Warnings for PAC Routing; Live Configuration reads and observes its ordinary-file source at a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
 _Avoid_: symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
 **Domain List Comment**:
@@ -525,19 +525,19 @@ A live configuration behavior where a missing, unreadable, or structurally undec
 _Avoid_: stale valid routing, unreadable-as-empty, silent source failure
 
 **Domain List Entry**:
-A normalized routing value decoded by the Domain List module as either a Domain Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
+A normalized routing value decoded by the Domain List module as either a Host Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
 _Avoid_: source-text-bearing entry, rule, matcher expression
 
-**Domain Selector**:
-A Domain List Entry variant containing a lowercase ASCII hostname and Hostname Match without a scheme or port, selecting matching hosts across HTTP and HTTPS on any port. Domain Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
-_Avoid_: Hostname Shorthand, scheme-less origin, port-qualified domain
+**Host Selector**:
+A Domain List Entry variant containing a lowercase ASCII hostname and Hostname Match without a scheme or port, selecting matching hosts across HTTP and HTTPS on any port. Host Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
+_Avoid_: Domain Selector, Hostname Selector, Hostname Shorthand, scheme-less origin, port-qualified domain
 
 **Domain Route**:
-A scheme-qualified hostname match derived from a Domain Selector for the PAC Route Set. A Domain Selector derives an HTTP Domain Route and, when Trusted HTTPS Interception is enabled, an HTTPS Domain Route; each route matches its hostname pattern on any port.
+A scheme-qualified hostname match derived from a Host Selector for the PAC Route Set. A Host Selector derives an HTTP Domain Route and, when Trusted HTTPS Interception is enabled, an HTTPS Domain Route; each route matches its hostname pattern on any port.
 _Avoid_: Origin Route, port-qualified domain, PAC-owned selector
 
 **Origin Selector**:
-A Domain List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname, and optional normalized explicit port, matched exactly without applying Domain Selector wildcard semantics. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; accepted explicit ports are not range-validated, and IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
+A Domain List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname, and optional normalized explicit port, matched exactly without applying Host Selector wildcard semantics. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; accepted explicit ports are not range-validated, and IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
 _Avoid_: Full Origin, URL selector, scheme-qualified domain
 
 **Origin Route**:
@@ -545,7 +545,7 @@ An exact origin representation derived from an Origin Selector for the PAC Route
 _Avoid_: duplicate Origin Selector, URL rule, inferred PAC port
 
 **Hostname Match**:
-The explicit Domain Selector meaning that selects an exact hostname, exactly one leading subdomain label, or one-or-more leading subdomain labels without encoding that meaning in the normalized hostname.
+The explicit Host Selector meaning that selects an exact hostname, exactly one leading subdomain label, or one-or-more leading subdomain labels without encoding that meaning in the normalized hostname.
 _Avoid_: wildcard-bearing hostname, consumer-parsed wildcard
 
 **Domain List Routing Policy**:

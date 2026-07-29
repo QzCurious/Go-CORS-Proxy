@@ -12,7 +12,7 @@ func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {
 		ProxyListen: "127.0.0.1:8080",
 		CATrusted:   true,
 		DomainList: domainlist.DomainList{
-			DomainSelectors: []domainlist.DomainSelector{
+			HostSelectors: []domainlist.HostSelector{
 				{Hostname: "qa.example.test", HostnameMatch: domainlist.HostnameSingleLevel},
 			},
 			OriginSelectors: []domainlist.OriginSelector{

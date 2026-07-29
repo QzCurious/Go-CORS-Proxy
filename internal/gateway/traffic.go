@@ -237,7 +237,7 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		PACListen:          r.listeners[1].Addr().String(),
 		DomainList:         r.currentSnapshot.DomainListPath(),
 		CATrusted:          r.currentSnapshot.CATrusted(),
-		DomainCount:        len(domainList.DomainSelectors) + len(domainList.OriginSelectors),
+		DomainCount:        len(domainList.HostSelectors) + len(domainList.OriginSelectors),
 		DomainListWarnings: domainListWarningDetails(domainList.Warnings),
 		CATrustPending:     r.currentSnapshot.CATrustPending(),
 	}

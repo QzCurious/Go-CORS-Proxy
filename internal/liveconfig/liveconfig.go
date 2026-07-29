@@ -189,7 +189,7 @@ func snapshotFromLoadResult(loaded loadResult, decoded domainlist.DomainList, do
 
 func cloneDomainList(source domainlist.DomainList) domainlist.DomainList {
 	cloned := domainlist.DomainList{
-		DomainSelectors: append([]domainlist.DomainSelector(nil), source.DomainSelectors...),
+		HostSelectors:   append([]domainlist.HostSelector(nil), source.HostSelectors...),
 		OriginSelectors: append([]domainlist.OriginSelector(nil), source.OriginSelectors...),
 		Warnings:        append([]domainlist.Warning(nil), source.Warnings...),
 	}

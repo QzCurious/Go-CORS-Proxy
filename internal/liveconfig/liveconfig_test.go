@@ -46,7 +46,7 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if live.DomainListPath() != secondDomainPath {
 		t.Fatalf("domain list path = %q", live.DomainListPath())
 	}
-	entries := live.DomainList().DomainSelectors
+	entries := live.DomainList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -138,7 +138,7 @@ func TestWatchPublishesOnlySemanticDomainListChanges(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().DomainSelectors
+	entries := event.Snapshot.DomainList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "changed.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -202,7 +202,7 @@ func TestWatchAppliesDomainWarningsAndRecovers(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if len(event.Snapshot.DomainList().DomainSelectors) != 0 ||
+	if len(event.Snapshot.DomainList().HostSelectors) != 0 ||
 		len(event.Snapshot.DomainList().Warnings) != 1 {
 		t.Fatalf("invalid edit snapshot = %#v", event.Snapshot)
 	}
@@ -212,7 +212,7 @@ func TestWatchAppliesDomainWarningsAndRecovers(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().DomainSelectors
+	entries := event.Snapshot.DomainList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -275,7 +275,7 @@ func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().DomainSelectors
+	entries := event.Snapshot.DomainList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -310,7 +310,7 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().DomainSelectors
+	entries := event.Snapshot.DomainList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "replacement.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -340,7 +340,7 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	if first.Err != nil {
 		t.Fatal(first.Err)
 	}
-	firstEntries := first.Snapshot.DomainList().DomainSelectors
+	firstEntries := first.Snapshot.DomainList().HostSelectors
 	if len(firstEntries) != 1 || firstEntries[0].Hostname != "first.example.test" {
 		t.Fatalf("first entries = %#v", firstEntries)
 	}
@@ -349,7 +349,7 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.DomainList().DomainSelectors
+	entries := event.Snapshot.DomainList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "latest.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}
@@ -440,7 +440,7 @@ func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 		t.Fatal(event.Err)
 	}
 	cached := source.Current()
-	entries := cached.DomainList().DomainSelectors
+	entries := cached.DomainList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "next.example.test" {
 		t.Fatalf("cached entries = %#v", entries)
 	}
@@ -570,7 +570,7 @@ func TestOpenCreatesMissingConfiguredDomainList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entries := source.Current().DomainList().DomainSelectors; len(entries) != 0 {
+	if entries := source.Current().DomainList().HostSelectors; len(entries) != 0 {
 		t.Fatalf("bootstrapped Domain List entries = %#v", entries)
 	}
 	domainText, err := os.ReadFile(domainPath)
@@ -663,7 +663,7 @@ func waitForCachedDomain(t *testing.T, source *liveconfig.Source, host string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		entries := source.Current().DomainList().DomainSelectors
+		entries := source.Current().DomainList().HostSelectors
 		if len(entries) == 1 && entries[0].Hostname == host {
 			return
 		}

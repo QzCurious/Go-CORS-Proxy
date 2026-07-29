@@ -8,7 +8,7 @@ import (
 )
 
 func TestDeriveDomainRoutesExpandsSchemesWithoutPorts(t *testing.T) {
-	selectors := []domainlist.DomainSelector{
+	selectors := []domainlist.HostSelector{
 		{Hostname: "api.example.test", HostnameMatch: domainlist.HostnameExact},
 		{Hostname: "qa.example.test", HostnameMatch: domainlist.HostnameSingleLevel},
 		{Hostname: "dev.example.test", HostnameMatch: domainlist.HostnameRecursive},
@@ -29,7 +29,7 @@ func TestDeriveDomainRoutesExpandsSchemesWithoutPorts(t *testing.T) {
 }
 
 func TestDeriveDomainRoutesExcludesUntrustedHTTPS(t *testing.T) {
-	selectors := []domainlist.DomainSelector{
+	selectors := []domainlist.HostSelector{
 		{Hostname: "api.example.test", HostnameMatch: domainlist.HostnameExact},
 	}
 	got := deriveDomainRoutes(selectors, false)

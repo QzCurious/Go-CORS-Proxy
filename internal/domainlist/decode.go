@@ -39,8 +39,8 @@ func Decode(data []byte) (DomainList, error) {
 			continue
 		}
 
-		// Handle the line as a Domain Selector.
-		selector, err := decodeDomainSelector(selectorText)
+		// Handle the line as a Host Selector.
+		selector, err := decodeHostSelector(selectorText)
 		if err != nil {
 			decoded.Warnings = append(decoded.Warnings, Warning{
 				Line:       lineNo,
@@ -49,19 +49,19 @@ func Decode(data []byte) (DomainList, error) {
 			})
 			continue
 		}
-		decoded.DomainSelectors = append(decoded.DomainSelectors, selector)
+		decoded.HostSelectors = append(decoded.HostSelectors, selector)
 	}
 
 	// Deduplicate normalized entries.
 	deduplicated := DomainList{Warnings: decoded.Warnings}
 
-	seenDomains := make(map[DomainSelector]struct{}, len(decoded.DomainSelectors))
-	for _, selector := range decoded.DomainSelectors {
-		if _, ok := seenDomains[selector]; ok {
+	seenHosts := make(map[HostSelector]struct{}, len(decoded.HostSelectors))
+	for _, selector := range decoded.HostSelectors {
+		if _, ok := seenHosts[selector]; ok {
 			continue
 		}
-		seenDomains[selector] = struct{}{}
-		deduplicated.DomainSelectors = append(deduplicated.DomainSelectors, selector)
+		seenHosts[selector] = struct{}{}
+		deduplicated.HostSelectors = append(deduplicated.HostSelectors, selector)
 	}
 
 	seenOrigins := make(map[OriginSelector]struct{}, len(decoded.OriginSelectors))
@@ -111,10 +111,10 @@ func normalizePort(port string) string {
 	return normalized
 }
 
-func decodeDomainSelector(selectorText string) (DomainSelector, error) {
+func decodeHostSelector(selectorText string) (HostSelector, error) {
 	u, err := url.Parse("//" + selectorText)
 	if err != nil {
-		return DomainSelector{}, err
+		return HostSelector{}, err
 	}
 
 	parsedHostnameText := u.Hostname()
@@ -122,18 +122,18 @@ func decodeDomainSelector(selectorText string) (DomainSelector, error) {
 		parsedHostnameText = "[" + parsedHostnameText + "]"
 	}
 	if selectorText != parsedHostnameText {
-		return DomainSelector{}, fmt.Errorf("Domain Selector must contain only a hostname")
+		return HostSelector{}, fmt.Errorf("Host Selector must contain only a hostname")
 	}
 
 	hostname, err := normalizedHostname(u)
 	if err != nil {
-		return DomainSelector{}, err
+		return HostSelector{}, err
 	}
 	hostnameMatch, hostname, err := decodeHostnameMatch(hostname)
 	if err != nil {
-		return DomainSelector{}, err
+		return HostSelector{}, err
 	}
-	return DomainSelector{
+	return HostSelector{
 		Hostname:      hostname,
 		HostnameMatch: hostnameMatch,
 	}, nil

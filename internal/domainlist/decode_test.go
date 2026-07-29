@@ -17,7 +17,7 @@ http://[::1]:3000
 		t.Fatal(err)
 	}
 	want := DomainList{
-		DomainSelectors: []DomainSelector{
+		HostSelectors: []HostSelector{
 			{Hostname: "api.example.test", HostnameMatch: HostnameExact},
 			{Hostname: "qa.example.test", HostnameMatch: HostnameSingleLevel},
 		},
@@ -60,7 +60,7 @@ https://example.test:443
 		t.Fatal(err)
 	}
 	want := DomainList{
-		DomainSelectors: []DomainSelector{
+		HostSelectors: []HostSelector{
 			{Hostname: "example.test", HostnameMatch: HostnameExact},
 		},
 		OriginSelectors: []OriginSelector{
@@ -95,7 +95,7 @@ https://example.test:99999
 	}
 }
 
-func TestDecodeSupportsDomainSelectorHostnameMatches(t *testing.T) {
+func TestDecodeSupportsHostSelectorHostnameMatches(t *testing.T) {
 	decoded, err := Decode([]byte(`
 example.test
 *.qa.example.test
@@ -105,14 +105,14 @@ example.test
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []DomainSelector{
+	want := []HostSelector{
 		{Hostname: "example.test", HostnameMatch: HostnameExact},
 		{Hostname: "qa.example.test", HostnameMatch: HostnameSingleLevel},
 		{Hostname: "internal", HostnameMatch: HostnameRecursive},
 		{Hostname: "::1", HostnameMatch: HostnameExact},
 	}
-	if !reflect.DeepEqual(decoded.DomainSelectors, want) {
-		t.Fatalf("Domain Selectors = %#v, want %#v", decoded.DomainSelectors, want)
+	if !reflect.DeepEqual(decoded.HostSelectors, want) {
+		t.Fatalf("Host Selectors = %#v, want %#v", decoded.HostSelectors, want)
 	}
 }
 
@@ -147,7 +147,7 @@ func TestDecodeDiscardsOriginUserInformation(t *testing.T) {
 	}
 	want := []OriginSelector{{Scheme: "https", Hostname: "example.test"}}
 	if !reflect.DeepEqual(decoded.OriginSelectors, want) ||
-		len(decoded.DomainSelectors) != 0 ||
+		len(decoded.HostSelectors) != 0 ||
 		len(decoded.Warnings) != 0 {
 		t.Fatalf("decode result = %#v", decoded)
 	}
@@ -163,9 +163,9 @@ api#bad.example.test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.DomainSelectors) != 1 ||
-		decoded.DomainSelectors[0].Hostname != "valid.example.test" {
-		t.Fatalf("Domain Selectors = %#v", decoded.DomainSelectors)
+	if len(decoded.HostSelectors) != 1 ||
+		decoded.HostSelectors[0].Hostname != "valid.example.test" {
+		t.Fatalf("Host Selectors = %#v", decoded.HostSelectors)
 	}
 	if len(decoded.Warnings) != 3 ||
 		decoded.Warnings[0].Line != 3 ||
@@ -195,7 +195,7 @@ https:///missing-host
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.DomainSelectors) != 0 ||
+	if len(decoded.HostSelectors) != 0 ||
 		len(decoded.OriginSelectors) != 0 ||
 		len(decoded.Warnings) != 14 {
 		t.Fatalf("decoded = %#v", decoded)
@@ -218,7 +218,7 @@ valid.example.test
 		t.Fatal(err)
 	}
 	if len(decoded.OriginSelectors) != 0 ||
-		len(decoded.DomainSelectors) != 1 ||
+		len(decoded.HostSelectors) != 1 ||
 		len(decoded.Warnings) != 2 {
 		t.Fatalf("decoded = %#v", decoded)
 	}
@@ -234,10 +234,10 @@ func TestDecodeRequiresASCIIOrPunycodeHostname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []DomainSelector{
+	want := []HostSelector{
 		{Hostname: "xn--fsq.example", HostnameMatch: HostnameExact},
 	}
-	if len(decoded.Warnings) != 1 || !reflect.DeepEqual(decoded.DomainSelectors, want) {
+	if len(decoded.Warnings) != 1 || !reflect.DeepEqual(decoded.HostSelectors, want) {
 		t.Fatalf("decoded = %#v", decoded)
 	}
 }
@@ -247,9 +247,9 @@ func TestDecodeRemovesInlineCommentsAndRejectsNonHostnameText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.DomainSelectors) != 1 ||
-		decoded.DomainSelectors[0].Hostname != "api.example.test" {
-		t.Fatalf("Domain Selectors = %#v", decoded.DomainSelectors)
+	if len(decoded.HostSelectors) != 1 ||
+		decoded.HostSelectors[0].Hostname != "api.example.test" {
+		t.Fatalf("Host Selectors = %#v", decoded.HostSelectors)
 	}
 	if len(decoded.Warnings) != 1 ||
 		decoded.Warnings[0].Line != 1 ||
@@ -266,7 +266,7 @@ func TestOriginSelectorDoesNotApplyDomainWildcardSemantics(t *testing.T) {
 	}
 	want := []OriginSelector{{Scheme: "https", Hostname: "*.example.test"}}
 	if !reflect.DeepEqual(decoded.OriginSelectors, want) ||
-		len(decoded.DomainSelectors) != 0 ||
+		len(decoded.HostSelectors) != 0 ||
 		len(decoded.Warnings) != 0 {
 		t.Fatalf("decode result = %#v", decoded)
 	}

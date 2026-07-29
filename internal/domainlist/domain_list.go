@@ -8,9 +8,9 @@ const (
 	HostnameRecursive
 )
 
-// DomainSelector selects an HTTP or HTTPS hostname on any port.
+// HostSelector selects an HTTP or HTTPS hostname on any port.
 // Hostname never includes wildcard syntax.
-type DomainSelector struct {
+type HostSelector struct {
 	Hostname      string
 	HostnameMatch HostnameMatch
 }
@@ -32,7 +32,7 @@ type Warning struct {
 
 // DomainList is the decoded, normalized Domain List.
 type DomainList struct {
-	DomainSelectors []DomainSelector
+	HostSelectors   []HostSelector
 	OriginSelectors []OriginSelector
 	Warnings        []Warning
 }
@@ -40,15 +40,15 @@ type DomainList struct {
 // SameEntries reports whether two Domain Lists contain the same normalized
 // selector sets. Source ordering and warnings do not affect entry identity.
 func SameEntries(left, right DomainList) bool {
-	return sameDomainSelectors(left.DomainSelectors, right.DomainSelectors) &&
+	return sameHostSelectors(left.HostSelectors, right.HostSelectors) &&
 		sameOriginSelectors(left.OriginSelectors, right.OriginSelectors)
 }
 
-func sameDomainSelectors(left, right []DomainSelector) bool {
+func sameHostSelectors(left, right []HostSelector) bool {
 	if len(left) != len(right) {
 		return false
 	}
-	selectors := make(map[DomainSelector]struct{}, len(left))
+	selectors := make(map[HostSelector]struct{}, len(left))
 	for _, selector := range left {
 		selectors[selector] = struct{}{}
 	}
