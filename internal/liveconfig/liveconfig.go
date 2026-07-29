@@ -2,8 +2,6 @@ package liveconfig
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,7 +23,6 @@ type Snapshot struct {
 	upstreamListPath            string
 	upstreamList                upstreamlist.UpstreamList
 	upstreamListEntriesRevision uint64
-	caTrustPending              bool
 }
 
 func (s Snapshot) CATrusted() bool {
@@ -38,10 +35,6 @@ func (s Snapshot) UpstreamList() upstreamlist.UpstreamList {
 
 func (s Snapshot) UpstreamListEntriesRevision() uint64 {
 	return s.upstreamListEntriesRevision
-}
-
-func (s Snapshot) CATrustPending() bool {
-	return s.caTrustPending
 }
 
 func (s Snapshot) ConfigPath() string {
@@ -59,19 +52,14 @@ type fileConfig struct {
 
 type loadResult struct {
 	Config       fileConfig
-	ConfigData   []byte
 	ConfigPath   string
 	UpstreamPath string
 }
 
 type Source struct {
-	mu                  sync.RWMutex
-	current             Snapshot
-	desiredConfig       fileConfig
-	baselineCATrusted   bool
-	configFingerprint   [sha256.Size]byte
-	upstreamFingerprint [sha256.Size]byte
-	watchStarted        bool
+	mu                 sync.RWMutex
+	current            Snapshot
+	observationStarted bool
 }
 
 func Open(configPath string) (*Source, error) {
@@ -82,13 +70,12 @@ func Open(configPath string) (*Source, error) {
 	if err := bootstrapUpstreamList(loaded.UpstreamPath); err != nil {
 		return nil, err
 	}
-	decoded, upstreamData, err := loadUpstreamList(loaded.UpstreamPath)
+	decoded, err := loadUpstreamList(loaded.UpstreamPath)
 	if err != nil {
 		return nil, err
 	}
-	snapshot := snapshotFromLoadResult(loaded, decoded, 1, false, loaded.Config.CATrusted)
-	source := newSource(loaded.Config, snapshot, loaded.ConfigData, upstreamData)
-	return source, nil
+	snapshot := snapshotFromLoadResult(loaded, decoded, 1)
+	return &Source{current: snapshot}, nil
 }
 
 func LoadExisting(configPath string) (Snapshot, error) {
@@ -96,21 +83,11 @@ func LoadExisting(configPath string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	decoded, _, err := loadUpstreamList(loaded.UpstreamPath)
+	decoded, err := loadUpstreamList(loaded.UpstreamPath)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return snapshotFromLoadResult(loaded, decoded, 1, false, loaded.Config.CATrusted), nil
-}
-
-func newSource(desired fileConfig, snapshot Snapshot, configData, upstreamData []byte) *Source {
-	return &Source{
-		current:             snapshot,
-		desiredConfig:       desired,
-		baselineCATrusted:   snapshot.CATrusted(),
-		configFingerprint:   sha256.Sum256(configData),
-		upstreamFingerprint: sha256.Sum256(upstreamData),
-	}
+	return snapshotFromLoadResult(loaded, decoded, 1), nil
 }
 
 func (s *Source) Current() Snapshot {
@@ -119,42 +96,32 @@ func (s *Source) Current() Snapshot {
 	return s.current
 }
 
-func (s *Source) Reload() (Snapshot, error) {
+// Refresh reads the configured sources and commits their newest semantic
+// snapshot. It is intended for explicit revalidation before observation starts.
+func (s *Source) Refresh() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.watchStarted {
-		return Snapshot{}, errors.New("Live Configuration Reload must be called before Watch")
+	if s.observationStarted {
+		return Snapshot{}, fmt.Errorf("Live Configuration Refresh must be called before Observe")
 	}
-	loaded, err := loadExisting(s.current.configPath)
+	result, err := s.refreshLocked()
 	if err != nil {
 		return Snapshot{}, err
 	}
-	decoded, upstreamData, err := loadUpstreamList(loaded.UpstreamPath)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	revision := s.current.upstreamListEntriesRevision
-	if !upstreamlist.SameEntries(s.current.upstreamList, decoded) {
-		revision++
-	}
-	snapshot := snapshotFromLoadResult(loaded, decoded, revision, false, loaded.Config.CATrusted)
-	s.current = snapshot
-	s.desiredConfig = loaded.Config
-	s.baselineCATrusted = loaded.Config.CATrusted
-	s.configFingerprint = sha256.Sum256(loaded.ConfigData)
-	s.upstreamFingerprint = sha256.Sum256(upstreamData)
-	return snapshot, nil
+	return result.snapshot, nil
 }
 
-func (s *Source) Watch(ctx context.Context, apply func(Snapshot)) error {
+// Observe publishes a new snapshot whenever the configured meaning changes.
+// Filesystem events are implementation details and are never exposed.
+func (s *Source) Observe(ctx context.Context, apply func(Snapshot)) error {
 	if apply == nil {
-		return errors.New("Live Configuration Watch requires an apply function")
+		return fmt.Errorf("Live Configuration Observe requires an apply function")
 	}
-	if err := s.startWatch(); err != nil {
+	if err := s.startObservation(); err != nil {
 		return err
 	}
 	events := make(chan watchEvent, 1)
-	go s.watch(ctx, events)
+	go s.observe(ctx, events)
 	for event := range events {
 		if event.err != nil {
 			return event.err
@@ -164,26 +131,65 @@ func (s *Source) Watch(ctx context.Context, apply func(Snapshot)) error {
 	return nil
 }
 
+type refreshResult struct {
+	snapshot     Snapshot
+	upstreamPath string
+	changed      bool
+}
+
+func (s *Source) refreshObserved() (refreshResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshLocked()
+}
+
+func (s *Source) refreshLocked() (refreshResult, error) {
+	loaded, err := loadExisting(s.current.configPath)
+	if err != nil {
+		return refreshResult{}, invalidConfigError(s.current.configPath, err)
+	}
+	result := refreshResult{upstreamPath: loaded.UpstreamPath}
+	decoded, err := loadUpstreamList(loaded.UpstreamPath)
+	if err != nil {
+		return result, invalidUpstreamError(loaded.UpstreamPath, err)
+	}
+
+	next := snapshotFromLoadResult(
+		loaded,
+		decoded,
+		s.current.upstreamListEntriesRevision,
+	)
+	if !upstreamlist.SameEntries(s.current.upstreamList, next.upstreamList) {
+		next.upstreamListEntriesRevision++
+	}
+	if sameSemanticSnapshot(s.current, next) {
+		result.snapshot = s.current
+		return result, nil
+	}
+	s.current = next
+	result.snapshot = next
+	result.changed = true
+	return result, nil
+}
+
 func sameSemanticSnapshot(left, right Snapshot) bool {
 	if left.caTrusted != right.caTrusted ||
 		left.configPath != right.configPath ||
 		left.upstreamListPath != right.upstreamListPath ||
-		left.caTrustPending != right.caTrustPending ||
-		!slices.Equal(left.upstreamList.Warnings, right.upstreamList.Warnings) ||
-		!upstreamlist.SameEntries(left.upstreamList, right.upstreamList) {
+		left.upstreamListEntriesRevision != right.upstreamListEntriesRevision ||
+		!slices.Equal(left.upstreamList.Warnings, right.upstreamList.Warnings) {
 		return false
 	}
 	return true
 }
 
-func snapshotFromLoadResult(loaded loadResult, decoded upstreamlist.UpstreamList, upstreamListEntriesRevision uint64, caTrustPending bool, activeCATrusted bool) Snapshot {
+func snapshotFromLoadResult(loaded loadResult, decoded upstreamlist.UpstreamList, upstreamListEntriesRevision uint64) Snapshot {
 	return Snapshot{
-		caTrusted:                   activeCATrusted,
+		caTrusted:                   loaded.Config.CATrusted,
 		configPath:                  loaded.ConfigPath,
 		upstreamListPath:            loaded.UpstreamPath,
 		upstreamList:                cloneUpstreamList(decoded),
 		upstreamListEntriesRevision: upstreamListEntriesRevision,
-		caTrustPending:              caTrustPending,
 	}
 }
 
@@ -271,7 +277,6 @@ func parseFileConfig(configPath string, data []byte) (loadResult, error) {
 	}
 	return loadResult{
 		Config:       cfg,
-		ConfigData:   data,
 		ConfigPath:   configPath,
 		UpstreamPath: cfg.UpstreamList,
 	}, nil
@@ -305,16 +310,16 @@ func expandPath(path string) (string, error) {
 	return absolutePath(os.ExpandEnv(path))
 }
 
-func loadUpstreamList(path string) (upstreamlist.UpstreamList, []byte, error) {
+func loadUpstreamList(path string) (upstreamlist.UpstreamList, error) {
 	data, err := readRegularFile(path)
 	if err != nil {
-		return upstreamlist.UpstreamList{}, nil, err
+		return upstreamlist.UpstreamList{}, err
 	}
 	decoded, err := upstreamlist.Decode(data)
 	if err != nil {
-		return upstreamlist.UpstreamList{}, nil, err
+		return upstreamlist.UpstreamList{}, err
 	}
-	return decoded, data, nil
+	return decoded, nil
 }
 
 func absolutePath(path string) (string, error) {

@@ -214,19 +214,16 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen          string                       `json:"proxyListen"`
-	PACListen            string                       `json:"pacListen"`
-	UpstreamListPath     string                       `json:"upstreamListPath"`
-	UpstreamCount        int                          `json:"upstreamCount"`
-	UpstreamListWarnings []UpstreamListWarningDetail  `json:"upstreamListWarnings,omitempty"`
-	CATrusted            bool                         `json:"caTrusted"`
-	ManagedPACServices   []string                     `json:"managedPacServices,omitempty"`
-	PendingLifecycle     []PendingLifecycleChangeKind `json:"pendingLifecycle,omitempty"`
+	ProxyListen          string                      `json:"proxyListen"`
+	PACListen            string                      `json:"pacListen"`
+	UpstreamListPath     string                      `json:"upstreamListPath"`
+	UpstreamCount        int                         `json:"upstreamCount"`
+	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
+	CATrusted            bool                        `json:"caTrusted"`
+	TrustedHTTPSActive   bool                        `json:"trustedHttpsActive"`
+	CATrustWarning       string                      `json:"caTrustWarning,omitempty"`
+	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
 }
-
-type PendingLifecycleChangeKind string
-
-const PendingLifecycleChangeCATrusted PendingLifecycleChangeKind = "ca-trusted"
 
 type CleanupStatusDetail struct {
 	State    CleanupStatusState           `json:"state"`
@@ -466,8 +463,9 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			UpstreamCount:        state.UpstreamCount,
 			UpstreamListWarnings: state.UpstreamListWarnings,
 			CATrusted:            state.CATrusted,
+			TrustedHTTPSActive:   state.TrustedHTTPSActive,
+			CATrustWarning:       state.CATrustWarning,
 			ManagedPACServices:   managedPACServices(pac),
-			PendingLifecycle:     pendingLifecycleKinds(state.CATrustPending),
 		}
 		return result, nil
 	}
@@ -499,7 +497,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	if err != nil {
 		return InstallResult{}, err
 	}
-	if f.activeRuntimeCATrusted() {
+	if f.activeRuntimeUsesTrustedHTTPS() {
 		report, inspectErr := userca.InspectContext(ctx, caDir, f.userCATrustStore)
 		if inspectErr != nil {
 			return InstallResult{}, inspectErr
@@ -531,7 +529,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 func (f *lifecycle) Uninstall(ctx context.Context) (UninstallResult, error) {
 	f.caAdmissionMu.Lock()
 	defer f.caAdmissionMu.Unlock()
-	if f.activeRuntimeCATrusted() {
+	if f.activeRuntimeUsesTrustedHTTPS() {
 		return UninstallResult{Kind: UninstallResultBlockedRuntimeActive}, nil
 	}
 	caDir, err := userca.DefaultDir()
@@ -555,10 +553,11 @@ func (f *lifecycle) Uninstall(ctx context.Context) (UninstallResult, error) {
 	return UninstallResult{Kind: UninstallResultUninstalled}, nil
 }
 
-func (f *lifecycle) activeRuntimeCATrusted() bool {
+func (f *lifecycle) activeRuntimeUsesTrustedHTTPS() bool {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.runtime != nil && f.runtime.snapshot.CATrusted()
+	active := f.runtime
+	f.mu.Unlock()
+	return active != nil && active.engine.snapshot().TrustedHTTPSActive
 }
 
 func (f *lifecycle) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
@@ -674,13 +673,6 @@ func caHealthStatus(health userca.Health) CAHealthStatus {
 	default:
 		return CAHealthUnknown
 	}
-}
-
-func pendingLifecycleKinds(caTrustPending bool) []PendingLifecycleChangeKind {
-	if caTrustPending {
-		return []PendingLifecycleChangeKind{PendingLifecycleChangeCATrusted}
-	}
-	return nil
 }
 
 func installAdvisories() []InstallAdvisory {

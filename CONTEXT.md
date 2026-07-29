@@ -189,11 +189,11 @@ A generated HTTPS server certificate for the specific upstream hostname being in
 _Avoid_: Upstream List-wide leaf certificate, wildcard-first certificate strategy, persisted leaf identity
 
 **Trusted HTTPS Interception**:
-A lifecycle behavior where HTTPS traffic that reaches the Proxy Listener is intercepted only when `ca-trusted` is enabled and the Installed User CA is trusted for the current user.
-_Avoid_: untrusted HTTPS interception, broken MITM, Upstream List gated interception
+A runtime behavior where HTTPS traffic that reaches the Proxy Listener is intercepted only when `ca-trusted` is enabled and a usable Installed User CA is available. A live enablement adopts an already-usable authority without installing or repairing UserCA; otherwise configuration remains enabled while interception stays inactive with a warning.
+_Avoid_: untrusted HTTPS interception, broken MITM, Upstream List gated interception, live CA Ensure
 
 **Explicit Trusted HTTPS**:
-A lifecycle default where generated configuration starts with `ca-trusted: false` and an omitted setting also resolves to false. HTTPS interception is enabled only by an explicit `ca-trusted: true`. Installed User CA trust is still added or replaced only through CA Ensure and required platform approval.
+A lifecycle default where generated configuration starts with `ca-trusted: false` and an omitted setting also resolves to false. HTTPS interception is requested only by an explicit `ca-trusted: true`, while adding or replacing Installed User CA trust remains a start-time or explicit UserCA operation requiring platform approval.
 _Avoid_: default HTTPS interception, silent trust installation, config-only trust
 
 **Live Configuration**:
@@ -201,7 +201,7 @@ A gateway module and code boundary that exclusively owns observing and reading u
 _Avoid_: external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
 
 **Live Configuration Snapshot**:
-The validated immutable current-state configuration value exposed by Live Configuration, including runtime-effective settings, whether Trusted HTTPS Interception intent is pending until the next runtime, and diagnostic source metadata. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
+The validated immutable current-state configuration value exposed by Live Configuration, containing configured meaning and diagnostic source metadata without interpreting UserCA availability or other consumer capabilities. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
 _Avoid_: configuration event history, raw YAML config, file-change event, content fingerprint, watcher notification
 
 **Upstream List Entries Revision**:
@@ -229,7 +229,7 @@ A user-facing command that controls gateway-owned state or reports on it, includ
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads valid configuration, completes required CA Ensure only when effective configuration enables CA trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject. The sequence composes independent CA and PAC lifecycle operations without merging their consent and is the only public route to Gateway Activation.
+The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads valid configuration, completes required CA Ensure only when configuration enables CA trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject. The sequence composes independent CA and PAC lifecycle operations without merging their consent and is the only public route to Gateway Activation.
 _Avoid_: monolithic activation, public raw activation, combined consent, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
@@ -253,7 +253,7 @@ The gateway module behind the Proxy Listener that owns CORS repair, Local Prefli
 _Avoid_: Upstream List admission module, PAC Routing module, generic proxy
 
 **Explicit Configuration**:
-Deprecated term for Config File. Prefer Config File when referring to the user-editable YAML source and Live Configuration when referring to the resolved runtime-effective configuration.
+Deprecated term for Config File. Prefer Config File when referring to the user-editable YAML source and Live Configuration when referring to validated semantic configuration.
 _Avoid_: hidden user settings, flag-only configuration, listener address configuration
 
 **Path Expansion**:
@@ -392,14 +392,6 @@ _Avoid_: admission-time CA install, second trust prompt, stale CA Ensure Result,
 A start execution outcome where required platform-owned trust approval is denied during CA Ensure, so Gateway Activation is not attempted and managed PAC state is not activated.
 _Avoid_: consent-required start, infrastructure error, partial trusted start
 
-**Pending Lifecycle Change**:
-A restart-applied Config File change detected while the gateway is running and reported to the user without being applied automatically.
-_Avoid_: surprise permission prompt, implicit restart
-
-**Restart-Applied Lifecycle**:
-A lifecycle behavior where Pending Lifecycle Changes take effect only after the gateway is restarted.
-_Avoid_: apply-lifecycle command, hot lifecycle swap
-
 **PAC Replacement Consent Detail**:
 A surface-neutral description of every service in the proposed Managed PAC Service Set, explicitly identifying every foreign PAC entry covered by one collective agreement, together with the PAC Replacement Consent Fingerprint and no-restoration cleanup behavior.
 _Avoid_: service-selection UI, lifecycle consent detail, prompt text, OS trust approval payload, start plan token
@@ -425,7 +417,7 @@ A lifecycle boundary where CA Trust Consent and Installed User CA availability f
 _Avoid_: domain-gated CA trust, implicit CA delay, route-dependent trust setup
 
 **Start Sequence Order**:
-A startup lifecycle order where Gateway Footprint Cleanup and configuration validation precede required CA Ensure, or skip CA lifecycle work entirely when effective `ca-trusted` is false; PAC Replacement Consent assessment then precedes Trusted Runtime Admission; admitted Gateway Runtime begins serving before Managed PAC installation; and Start Guidance follows successful installation on at least one selected service.
+A startup lifecycle order where Gateway Footprint Cleanup and configuration validation precede required CA Ensure, or skip CA lifecycle work entirely when configured `ca-trusted` is false; PAC Replacement Consent assessment then precedes Trusted Runtime Admission; admitted Gateway Runtime begins serving before Managed PAC installation; and Start Guidance follows successful installation on at least one selected service.
 _Avoid_: PAC-before-runtime serving, PAC-first start, cleanup-after-approval, combined consent, traffic-before-trust validation, degraded trusted mode, CA rollback after PAC decline, start guidance before PAC installation
 
 **All-Service PAC Management**:
@@ -449,7 +441,7 @@ A CA lifecycle command behavior where installing reports existing usable CA trus
 _Avoid_: reinstalling usable CA, runtime CA rotation, noisy no-op install, repeated trust approval
 
 **Active Trusted Runtime CA Guard**:
-A CA lifecycle rule where an admitting or serving runtime using CA trust permits idempotent UserCA install but blocks CA replacement and UserCA uninstall until that runtime stops. A runtime whose effective configuration does not use CA trust does not hold this guard.
+A CA lifecycle rule where an admitting or serving runtime actively using Trusted HTTPS Interception permits idempotent UserCA install but blocks CA replacement and UserCA uninstall until that runtime stops. Configuration alone does not hold this guard when interception could not become active.
 _Avoid_: blanket active-runtime block, runtime CA rotation, cached-leaf re-signing, active trusted CA removal
 
 **Config-Independent CA Uninstall**:
@@ -768,7 +760,7 @@ QA engineer: "Read-Only Status reports that the gateway is not running and leave
 
 Developer: "Can editing configuration unexpectedly trigger an OS permission prompt?"
 
-QA engineer: "No, lifecycle settings live in the Config File but become a Pending Lifecycle Change while the gateway is running."
+QA engineer: "No. Live `ca-trusted` enablement only adopts an already-usable Installed User CA and never performs CA Ensure."
 
 Developer: "What happens if a default listener port is already in use?"
 
@@ -786,9 +778,9 @@ Developer: "Do I need to know which listener browsers use?"
 
 QA engineer: "No, PAC Routing connects browsers to the Proxy Listener through managed proxy settings."
 
-Developer: "How do pending lifecycle changes take effect?"
+Developer: "What happens if I enable `ca-trusted` while the gateway is already running?"
 
-QA engineer: "Restart-Applied Lifecycle means they apply on the next gateway start."
+QA engineer: "Live Configuration publishes the enabled setting immediately. Trusted HTTPS Interception activates only when an already-usable Installed User CA can be adopted; otherwise status reports a warning and HTTPS routing remains direct."
 
 Developer: "What happens if the gateway crashes after changing my proxy settings?"
 

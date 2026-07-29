@@ -2,13 +2,11 @@ package liveconfig
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -70,17 +68,17 @@ type watchEvent struct {
 	err      error
 }
 
-func (s *Source) startWatch() error {
+func (s *Source) startObservation() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.watchStarted {
-		return errors.New("Live Configuration Watch may only be called once")
+	if s.observationStarted {
+		return errors.New("Live Configuration Observe may only be called once")
 	}
-	s.watchStarted = true
+	s.observationStarted = true
 	return nil
 }
 
-func (s *Source) watch(ctx context.Context, output chan watchEvent) {
+func (s *Source) observe(ctx context.Context, output chan watchEvent) {
 	defer close(output)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -254,83 +252,22 @@ func (w *watcherState) cancelAllConfirmations() {
 }
 
 func (w *watcherState) reconcile() (watchEvent, bool, error) {
-	current, desired, configFingerprint, upstreamFingerprint := w.source.snapshot()
-	configData, err := readRegularFile(current.ConfigPath())
+	result, err := w.source.refreshObserved()
+	if result.upstreamPath != "" {
+		if targetErr := w.setCandidateTarget(result.upstreamPath); targetErr != nil {
+			return watchEvent{}, false, invalidConfigError(w.source.Current().ConfigPath(), targetErr)
+		}
+	}
 	if err != nil {
-		return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
-	}
-	nextConfigFingerprint := sha256.Sum256(configData)
-	configChanged := nextConfigFingerprint != configFingerprint
-	loaded := loadResult{
-		Config:       desired,
-		ConfigPath:   current.ConfigPath(),
-		UpstreamPath: current.UpstreamListPath(),
-	}
-	if configChanged {
-		loaded, err = parseFileConfig(current.ConfigPath(), configData)
-		if err != nil {
-			return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
-		}
-	}
-	if err := w.setCandidateTarget(loaded.UpstreamPath); err != nil {
-		return watchEvent{}, false, invalidConfigError(current.ConfigPath(), err)
-	}
-	upstreamData, err := readRegularFile(loaded.UpstreamPath)
-	if err != nil {
-		return watchEvent{}, false, invalidUpstreamError(loaded.UpstreamPath, err)
-	}
-	nextUpstreamFingerprint := sha256.Sum256(upstreamData)
-	upstreamChanged := nextUpstreamFingerprint != upstreamFingerprint || loaded.UpstreamPath != current.UpstreamListPath()
-	if !configChanged && !upstreamChanged {
-		if err := w.commitUpstreamTarget(current.UpstreamListPath()); err != nil {
-			return watchEvent{}, false, err
-		}
-		return watchEvent{}, false, nil
-	}
-	decoded := current.UpstreamList()
-	if upstreamChanged {
-		decoded, err = upstreamlist.Decode(upstreamData)
-		if err != nil {
-			return watchEvent{}, false, invalidUpstreamError(loaded.UpstreamPath, err)
-		}
-	}
-	next := snapshotFromLoadResult(
-		loaded,
-		decoded,
-		current.UpstreamListEntriesRevision(),
-		loaded.Config.CATrusted != w.source.baselineCATrusted,
-		w.source.baselineCATrusted,
-	)
-	if err := w.commitUpstreamTarget(loaded.UpstreamPath); err != nil {
 		return watchEvent{}, false, err
 	}
-	next, semanticChanged := w.source.commit(next, loaded.Config, nextConfigFingerprint, nextUpstreamFingerprint)
-	if !semanticChanged {
+	if err := w.commitUpstreamTarget(result.snapshot.UpstreamListPath()); err != nil {
+		return watchEvent{}, false, err
+	}
+	if !result.changed {
 		return watchEvent{}, false, nil
 	}
-	return watchEvent{snapshot: next}, true, nil
-}
-
-func (s *Source) snapshot() (Snapshot, fileConfig, [sha256.Size]byte, [sha256.Size]byte) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.current, s.desiredConfig, s.configFingerprint, s.upstreamFingerprint
-}
-
-func (s *Source) commit(next Snapshot, desired fileConfig, configFingerprint, upstreamFingerprint [sha256.Size]byte) (Snapshot, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !upstreamlist.SameEntries(s.current.upstreamList, next.upstreamList) {
-		next.upstreamListEntriesRevision = s.current.upstreamListEntriesRevision + 1
-	}
-	semanticChanged := !sameSemanticSnapshot(s.current, next)
-	if semanticChanged {
-		s.current = next
-	}
-	s.desiredConfig = desired
-	s.configFingerprint = configFingerprint
-	s.upstreamFingerprint = upstreamFingerprint
-	return next, semanticChanged
+	return watchEvent{snapshot: result.snapshot}, true, nil
 }
 
 func (w *watcherState) addTarget(path string, role targetRole) error {

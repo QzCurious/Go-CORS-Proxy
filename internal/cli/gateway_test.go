@@ -216,6 +216,28 @@ func TestStatusRendersCurrentUpstreamListWarnings(t *testing.T) {
 	}
 }
 
+func TestStatusRendersInactiveConfiguredCATrust(t *testing.T) {
+	var out bytes.Buffer
+	renderStatus(&out, gateway.StatusResult{
+		Kind: gateway.GatewayStatusRunning,
+		Runtime: &gateway.RuntimeStatusDetail{
+			CATrusted:          true,
+			TrustedHTTPSActive: false,
+			CATrustWarning:     "ca-trusted is configured, but the Installed User CA is missing",
+		},
+	})
+	status := out.String()
+	for _, expected := range []string{
+		"ca-trusted: true",
+		"trusted-https-active: false",
+		"warning: ca-trusted is configured, but the Installed User CA is missing",
+	} {
+		if !strings.Contains(status, expected) {
+			t.Fatalf("status output = %q, want %q", status, expected)
+		}
+	}
+}
+
 func TestStatusRendersOwnerEndingGuidance(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{

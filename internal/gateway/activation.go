@@ -80,7 +80,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}, nil
 	}
 
-	latest, err := source.Reload()
+	latest, err := source.Refresh()
 	if err != nil {
 		return postCAFailure(fmt.Errorf("effective configuration revalidation failed: %w", err))
 	}
@@ -89,7 +89,17 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	}
 	snapshot = latest
 
-	engine, err := newRuntime(source, snapshot)
+	loadUsableAuthority := func(ctx context.Context) (*userca.Authority, userca.Report, error) {
+		dir, err := userca.DefaultDir()
+		if err != nil {
+			return nil, userca.Report{Health: userca.HealthUnknown}, err
+		}
+		return userca.LoadUsableContext(ctx, dir, s.lifecycle.userCATrustStore)
+	}
+	engine, err := newRuntime(source, snapshot, trustedHTTPSAdmission{
+		guard:      &s.lifecycle.caAdmissionMu,
+		loadUsable: loadUsableAuthority,
+	})
 	if err != nil {
 		return postCAFailure(err)
 	}

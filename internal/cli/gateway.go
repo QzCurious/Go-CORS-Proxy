@@ -426,12 +426,9 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
 		}
 		fmt.Fprintf(stdout, "ca-trusted: %t\n", result.Runtime.CATrusted)
-		if len(result.Runtime.PendingLifecycle) > 0 {
-			var values []string
-			for _, pending := range result.Runtime.PendingLifecycle {
-				values = append(values, string(pending))
-			}
-			fmt.Fprintf(stdout, "pending lifecycle changes: %s\n", strings.Join(values, ", "))
+		fmt.Fprintf(stdout, "trusted-https-active: %t\n", result.Runtime.TrustedHTTPSActive)
+		if result.Runtime.CATrustWarning != "" {
+			fmt.Fprintf(stdout, "warning: %s\n", result.Runtime.CATrustWarning)
 		}
 	}
 	fmt.Fprintf(stdout, "installed-ca: %s\n", result.InstalledCA.Health)

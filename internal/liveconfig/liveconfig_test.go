@@ -12,7 +12,7 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 )
 
-func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) {
+func TestObservePublishesConfiguredCATrustChanges(t *testing.T) {
 	home := t.TempDir()
 	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
 	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
@@ -35,7 +35,7 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeConfig(t, configPath, secondUpstreamPath, true)
 	event := waitForEvent(t, events)
@@ -53,11 +53,8 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if live.UpstreamListEntriesRevision() != 2 {
 		t.Fatalf("Upstream List Entries Revision after path and entries change = %d", live.UpstreamListEntriesRevision())
 	}
-	if live.CATrusted() {
-		t.Fatal("restart-applied CA trust was hot-applied")
-	}
-	if !live.CATrustPending() {
-		t.Fatal("CA trust change is not pending")
+	if !live.CATrusted() {
+		t.Fatal("configured CA trust was not published")
 	}
 
 	cached := source.Current()
@@ -71,11 +68,8 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 		t.Fatal(event.Err)
 	}
 	live = event.Snapshot
-	if live.CATrusted() {
-		t.Fatal("Upstream List reload hot-applied CA trust")
-	}
-	if !live.CATrustPending() {
-		t.Fatal("CA trust change is not pending after Upstream List reload")
+	if !live.CATrusted() {
+		t.Fatal("configured CA trust was not retained")
 	}
 	if live.UpstreamListEntriesRevision() != 3 {
 		t.Fatalf("Upstream List Entries Revision after entry change = %d", live.UpstreamListEntriesRevision())
@@ -86,11 +80,11 @@ func TestWatchEmitsEffectiveConfigAndKeepsLifecycleChangesPending(t *testing.T) 
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if event.Snapshot.CATrustPending() {
-		t.Fatal("CA trust change remains pending after revert")
+	if event.Snapshot.CATrusted() {
+		t.Fatal("configured CA trust was not disabled")
 	}
 	if event.Snapshot.UpstreamListEntriesRevision() != 3 {
-		t.Fatalf("pending lifecycle change advanced Upstream List Entries Revision to %d", event.Snapshot.UpstreamListEntriesRevision())
+		t.Fatalf("CA trust change advanced Upstream List Entries Revision to %d", event.Snapshot.UpstreamListEntriesRevision())
 	}
 }
 
@@ -115,7 +109,7 @@ func TestSnapshotUpstreamListIsImmutable(t *testing.T) {
 	}
 }
 
-func TestWatchPublishesOnlySemanticUpstreamListChanges(t *testing.T) {
+func TestObservePublishesOnlySemanticUpstreamListChanges(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -128,7 +122,7 @@ func TestWatchPublishesOnlySemanticUpstreamListChanges(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeFile(t, upstreamPath, "# same routes, reordered\nhttps://secure.example.test\nAPI.EXAMPLE.TEST\napi.example.test # duplicate\n")
 	assertNoEvent(t, events, 300*time.Millisecond)
@@ -147,7 +141,7 @@ func TestWatchPublishesOnlySemanticUpstreamListChanges(t *testing.T) {
 	}
 }
 
-func TestWatchDoesNotAdvanceUpstreamListEntriesRevisionForPathOnlyChange(t *testing.T) {
+func TestObserveDoesNotAdvanceUpstreamListEntriesRevisionForPathOnlyChange(t *testing.T) {
 	home := t.TempDir()
 	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
 	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
@@ -163,7 +157,7 @@ func TestWatchDoesNotAdvanceUpstreamListEntriesRevisionForPathOnlyChange(t *test
 	initial := source.Current()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeConfig(t, configPath, secondUpstreamPath, false)
 	event := waitForEvent(t, events)
@@ -182,7 +176,7 @@ func TestWatchDoesNotAdvanceUpstreamListEntriesRevisionForPathOnlyChange(t *test
 	}
 }
 
-func TestWatchAppliesUpstreamWarningsAndRecovers(t *testing.T) {
+func TestObserveAppliesUpstreamWarningsAndRecovers(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -195,7 +189,7 @@ func TestWatchAppliesUpstreamWarningsAndRecovers(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeFile(t, upstreamPath, "https://invalid.example.test/path\n")
 	event := waitForEvent(t, events)
@@ -221,7 +215,7 @@ func TestWatchAppliesUpstreamWarningsAndRecovers(t *testing.T) {
 	}
 }
 
-func TestWatchPublishesUpstreamWarningsDespiteConfigNoise(t *testing.T) {
+func TestObservePublishesUpstreamWarningsDespiteConfigNoise(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -234,7 +228,7 @@ func TestWatchPublishesUpstreamWarningsDespiteConfigNoise(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 	writeFile(t, upstreamPath, "https://invalid.example.test/path\n")
 	writeFile(t, configPath, "# noise\nupstream-list: "+upstreamPath+"\nca-trusted: false\n")
 
@@ -247,7 +241,7 @@ func TestWatchPublishesUpstreamWarningsDespiteConfigNoise(t *testing.T) {
 	}
 }
 
-func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
+func TestObserveSurvivesTransientEmptyConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	upstreamPath := filepath.Join(home, "upstreams.txt")
@@ -261,7 +255,7 @@ func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeFile(t, configPath, "")
 	// Keep the invalid state longer than the watcher debounce but shorter than
@@ -281,7 +275,7 @@ func TestWatchSurvivesTransientEmptyConfig(t *testing.T) {
 	}
 }
 
-func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
+func TestObserveIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -294,7 +288,7 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	temporaryPath := filepath.Join(home, ".upstreams.txt.tmp")
 	writeFile(t, temporaryPath, "replacement.example.test\n")
@@ -316,7 +310,7 @@ func TestWatchIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
 	}
 }
 
-func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
+func TestObserveCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -329,7 +323,7 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeFile(t, upstreamPath, "first.example.test\n")
 	waitForCachedHost(t, source, "first.example.test")
@@ -358,7 +352,7 @@ func TestWatchCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
 	}
 }
 
-func TestReloadReestablishesSnapshotAndLifecycleBaselineBeforeWatch(t *testing.T) {
+func TestRefreshReestablishesSnapshotBeforeObserve(t *testing.T) {
 	home := t.TempDir()
 	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
 	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
@@ -372,27 +366,24 @@ func TestReloadReestablishesSnapshotAndLifecycleBaselineBeforeWatch(t *testing.T
 		t.Fatal(err)
 	}
 	writeConfig(t, configPath, secondUpstreamPath, false)
-	reloaded, err := source.Reload()
+	refreshed, err := source.Refresh()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.CATrusted() {
-		t.Fatal("reloaded CA trust = true")
+	if refreshed.CATrusted() {
+		t.Fatal("refreshed CA trust = true")
 	}
-	if reloaded.CATrustPending() {
-		t.Fatal("reload left CA trust pending")
-	}
-	if reloaded.UpstreamListEntriesRevision() != 2 {
-		t.Fatalf("reloaded Upstream List Entries Revision = %d", reloaded.UpstreamListEntriesRevision())
+	if refreshed.UpstreamListEntriesRevision() != 2 {
+		t.Fatalf("refreshed Upstream List Entries Revision = %d", refreshed.UpstreamListEntriesRevision())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 	assertNoEvent(t, events, 300*time.Millisecond)
 	cancel()
 }
 
-func TestReloadFailsAfterWatchStarts(t *testing.T) {
+func TestRefreshFailsAfterObserveStarts(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -405,21 +396,21 @@ func TestReloadFailsAfterWatchStarts(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 	writeFile(t, upstreamPath, "changed.example.test\n")
 	if event := waitForEvent(t, events); event.Err != nil {
 		t.Fatal(event.Err)
 	}
 
-	if _, err := source.Reload(); err == nil || !strings.Contains(err.Error(), "before Watch") {
-		t.Fatalf("Reload error = %v", err)
+	if _, err := source.Refresh(); err == nil || !strings.Contains(err.Error(), "before Observe") {
+		t.Fatalf("Refresh error = %v", err)
 	}
 	cancel()
 	for range events {
 	}
 }
 
-func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
+func TestObserveAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -432,7 +423,7 @@ func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeFile(t, upstreamPath, "next.example.test\nhttps://bad.example.test/path\n")
 	event := waitForEvent(t, events)
@@ -449,7 +440,7 @@ func TestWatchAppliesValidEntriesAlongsideWarnings(t *testing.T) {
 	}
 }
 
-func TestWatchTreatsMissingLiveUpstreamListAsFatal(t *testing.T) {
+func TestObserveTreatsMissingLiveUpstreamListAsFatal(t *testing.T) {
 	home := t.TempDir()
 	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
 	missingUpstreamPath := filepath.Join(home, "missing-upstreams.txt")
@@ -463,7 +454,7 @@ func TestWatchTreatsMissingLiveUpstreamListAsFatal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	writeConfig(t, configPath, missingUpstreamPath, false)
 	event := waitForEvent(t, events)
@@ -472,7 +463,7 @@ func TestWatchTreatsMissingLiveUpstreamListAsFatal(t *testing.T) {
 	}
 }
 
-func TestWatchTreatsUnreadableLiveConfigAsFatal(t *testing.T) {
+func TestObserveTreatsUnreadableLiveConfigAsFatal(t *testing.T) {
 	home := t.TempDir()
 	upstreamPath := filepath.Join(home, "upstreams.txt")
 	configPath := filepath.Join(home, "config.yaml")
@@ -485,7 +476,7 @@ func TestWatchTreatsUnreadableLiveConfigAsFatal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := watchSource(ctx, source)
+	events := observeSource(ctx, source)
 
 	if err := os.Remove(configPath); err != nil {
 		t.Fatal(err)
@@ -613,11 +604,11 @@ type liveConfigEvent struct {
 	Err      error
 }
 
-func watchSource(ctx context.Context, source *liveconfig.Source) <-chan liveConfigEvent {
+func observeSource(ctx context.Context, source *liveconfig.Source) <-chan liveConfigEvent {
 	events := make(chan liveConfigEvent)
 	go func() {
 		defer close(events)
-		err := source.Watch(ctx, func(snapshot liveconfig.Snapshot) {
+		err := source.Observe(ctx, func(snapshot liveconfig.Snapshot) {
 			select {
 			case events <- liveConfigEvent{Snapshot: snapshot}:
 			case <-ctx.Done():
