@@ -18,13 +18,13 @@
 
 瀏覽器直接對沒有回傳 CORS headers 的 API 發送跨來源 `GET` request。
 
-![Simple request demo](demo/cors-simple-requests/cors-simple-requests.mp4)
+![Simple request demo](demo/cors-simple-requests/cors-simple-requests.gif)
 
 ### Preflighted request
 
 瀏覽器發送 JSON `POST` request 前，會先送出 `OPTIONS` preflight request。
 
-![Preflighted request demo](demo/cors-preflighted-requests/cors-preflighted-requests.mp4)
+![Preflighted request demo](demo/cors-preflighted-requests/cors-preflighted-requests.gif)
 
 ## 安裝
 
