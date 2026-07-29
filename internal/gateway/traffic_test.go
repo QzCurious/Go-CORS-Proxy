@@ -15,20 +15,8 @@ import (
 )
 
 func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
-	home := t.TempDir()
-	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
-	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeTrafficTestFile(t, firstUpstreamPath, "api.example.test\n")
-	writeTrafficTestFile(t, secondUpstreamPath, "# same entries\nAPI.EXAMPLE.TEST\n")
-	writeTrafficTestFile(t, configPath, "upstream-list: "+firstUpstreamPath+"\nca-trusted: false\n")
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial := source.Current()
-	runtime, err := newRuntime(source, initial, trustedHTTPSAdmission{})
+	config, initial, _, upstreamPath := createTrafficConfig(t, "api.example.test\n", false)
+	runtime, err := newRuntime(config, initial, trustedHTTPSAdmission{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,15 +32,7 @@ func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
 	go runtime.watchLiveConfig(ctx, errs)
 	initialPACURL := runtime.PACURL()
 
-	writeTrafficTestFile(t, configPath, "upstream-list: "+secondUpstreamPath+"\nca-trusted: false\n")
-	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return state.UpstreamList == secondUpstreamPath
-	})
-	if runtime.PACURL() != initialPACURL {
-		t.Fatalf("path-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
-	}
-
-	writeTrafficTestFile(t, secondUpstreamPath, "API.EXAMPLE.TEST\nhttps://bad.example.test/path\n")
+	writeTrafficTestFile(t, upstreamPath, "API.EXAMPLE.TEST\nhttps://bad.example.test/path\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
 		return len(state.UpstreamListWarnings) == 1
 	})
@@ -60,7 +40,7 @@ func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
 		t.Fatalf("warning-only change advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
 	}
 
-	writeTrafficTestFile(t, secondUpstreamPath, "changed.example.test\n")
+	writeTrafficTestFile(t, upstreamPath, "changed.example.test\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
 		return state.UpstreamCount == 1 && runtime.PACURL() != initialPACURL
 	})
@@ -71,21 +51,14 @@ func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
 
 func TestLiveCATrustUsesOnlyAnAlreadyUsableAuthority(t *testing.T) {
 	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeTrafficTestFile(t, upstreamPath, "api.example.test\n")
-	writeTrafficTestFile(t, configPath, "upstream-list: "+upstreamPath+"\nca-trusted: false\n")
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("HOME", home)
+	config, initial, configPath, _ := createTrafficConfigAtCurrentHome(t, "api.example.test\n", false)
 	store := &trafficTestTrustStore{}
 	authority, _, err := userca.Ensure(filepath.Join(home, "ca"), store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := newRuntime(source, source.Current(), trustedHTTPSAdmission{
+	runtime, err := newRuntime(config, initial, trustedHTTPSAdmission{
 		loadUsable: func(context.Context) (*userca.Authority, userca.Report, error) {
 			return authority, userca.Report{Health: userca.HealthUsable}, nil
 		},
@@ -99,12 +72,15 @@ func TestLiveCATrustUsesOnlyAnAlreadyUsableAuthority(t *testing.T) {
 	}
 
 	initialPACURL := runtime.PACURL()
-	writeTrafficTestFile(t, configPath, "upstream-list: "+upstreamPath+"\nca-trusted: true\n")
-	enabled, err := source.Refresh()
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.applyLiveConfig(context.Background(), enabled)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan serverError, 1)
+	go runtime.watchLiveConfig(ctx, errs)
+
+	writeTrafficTestFile(t, configPath, "ca-trusted: true\n")
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
+		return state.CATrusted && state.TrustedHTTPSActive
+	})
 	state := runtime.snapshot()
 	if !state.CATrusted || !state.TrustedHTTPSActive || state.CATrustWarning != "" {
 		t.Fatalf("enabled CA trust state = %#v", state)
@@ -113,12 +89,10 @@ func TestLiveCATrustUsesOnlyAnAlreadyUsableAuthority(t *testing.T) {
 		t.Fatal("enabling trusted HTTPS did not advance the PAC URL")
 	}
 
-	writeTrafficTestFile(t, configPath, "upstream-list: "+upstreamPath+"\nca-trusted: false\n")
-	disabled, err := source.Refresh()
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.applyLiveConfig(context.Background(), disabled)
+	writeTrafficTestFile(t, configPath, "ca-trusted: false\n")
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
+		return !state.CATrusted
+	})
 	state = runtime.snapshot()
 	if state.CATrusted || state.TrustedHTTPSActive || state.CATrustWarning != "" {
 		t.Fatalf("disabled CA trust state = %#v", state)
@@ -126,17 +100,8 @@ func TestLiveCATrustUsesOnlyAnAlreadyUsableAuthority(t *testing.T) {
 }
 
 func TestLiveCATrustWarnsWhenUserCAIsNotUsable(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeTrafficTestFile(t, upstreamPath, "api.example.test\n")
-	writeTrafficTestFile(t, configPath, "upstream-list: "+upstreamPath+"\nca-trusted: false\n")
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := newRuntime(source, source.Current(), trustedHTTPSAdmission{
+	config, initial, configPath, _ := createTrafficConfig(t, "api.example.test\n", false)
+	runtime, err := newRuntime(config, initial, trustedHTTPSAdmission{
 		loadUsable: func(context.Context) (*userca.Authority, userca.Report, error) {
 			return nil, userca.Report{Health: userca.HealthMissing}, nil
 		},
@@ -150,12 +115,15 @@ func TestLiveCATrustWarnsWhenUserCAIsNotUsable(t *testing.T) {
 	}
 
 	initialPACURL := runtime.PACURL()
-	writeTrafficTestFile(t, configPath, "upstream-list: "+upstreamPath+"\nca-trusted: true\n")
-	configured, err := source.Refresh()
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.applyLiveConfig(context.Background(), configured)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan serverError, 1)
+	go runtime.watchLiveConfig(ctx, errs)
+
+	writeTrafficTestFile(t, configPath, "ca-trusted: true\n")
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
+		return state.CATrusted
+	})
 	state := runtime.snapshot()
 	if !state.CATrusted || state.TrustedHTTPSActive {
 		t.Fatalf("unavailable CA trust state = %#v", state)
@@ -210,6 +178,34 @@ func writeTrafficTestFile(t *testing.T, path, contents string) {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func createTrafficConfig(t *testing.T, upstreams string, caTrusted bool) (*liveconfig.Config, liveconfig.Snapshot, string, string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	return createTrafficConfigAtCurrentHome(t, upstreams, caTrusted)
+}
+
+func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string, caTrusted bool) (*liveconfig.Config, liveconfig.Snapshot, string, string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := liveconfig.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".seamless-cors")
+	configPath := filepath.Join(dir, "config.yaml")
+	upstreamPath := filepath.Join(dir, "upstreams.txt")
+	writeTrafficTestFile(t, configPath, "ca-trusted: "+map[bool]string{true: "true", false: "false"}[caTrusted]+"\n")
+	writeTrafficTestFile(t, upstreamPath, upstreams)
+	snapshot, err := config.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config, snapshot, configPath, upstreamPath
 }
 
 func waitForTrafficConfig(t *testing.T, runtime *trafficRuntime, errs <-chan serverError, ready func(runtimeState) bool) {

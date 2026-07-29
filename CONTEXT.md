@@ -205,12 +205,12 @@ The validated immutable current-state configuration value exposed by Live Config
 _Avoid_: configuration event history, raw YAML config, file-change event, content fingerprint, watcher notification
 
 **Upstream List Entries Revision**:
-A run-local, non-persistent monotonic identity exposed with Live Configuration, beginning with the initial validated Upstream List Entries and advancing only when the normalized, deduplicated entry set changes. It allows consumers to apply the newest coalesced routing input without treating Upstream List path changes or representation-only edits as routing changes.
-_Avoid_: persisted Upstream List revision, Upstream List file revision, PAC content comparison, source-content fingerprint, path-change revision
+A run-local, non-persistent monotonic identity exposed with Live Configuration, beginning with the initial validated Upstream List Entries and advancing only when the normalized, deduplicated entry set changes. It allows consumers to apply the newest coalesced routing input without treating representation-only edits as routing changes.
+_Avoid_: persisted Upstream List revision, Upstream List file revision, PAC content comparison, source-content fingerprint
 
 **Config File**:
-The user-editable YAML source read by Live Configuration for gateway settings such as Upstream List location and Trusted HTTPS Interception intent; it is an ordinary file addressed by a cleaned absolute path and is not a separate code boundary from Live Configuration. Live change observation is supported only when the file is hosted on a local filesystem.
-_Avoid_: symlinked config, network-filesystem observation guarantee, Explicit Configuration package, public raw config model, config subsystem
+The user-editable YAML source at `~/.seamless-cors/config.yaml`, read by Live Configuration for gateway settings such as Trusted HTTPS Interception intent. It is an ordinary file rather than a separate code boundary from Live Configuration, and its live change observation is supported only on a local filesystem.
+_Avoid_: configurable Config File path, symlinked config, network-filesystem observation guarantee, Explicit Configuration package, public raw config model, config subsystem
 
 **All-Or-Nothing Config**:
 A configuration behavior where a valid config file is applied as a whole and an invalid config file is rejected without partially changing gateway behavior.
@@ -256,12 +256,8 @@ _Avoid_: Upstream List admission module, PAC Routing module, generic proxy
 Deprecated term for Config File. Prefer Config File when referring to the user-editable YAML source and Live Configuration when referring to validated semantic configuration.
 _Avoid_: hidden user settings, flag-only configuration, listener address configuration
 
-**Path Expansion**:
-A configuration behavior where path fields support home-directory and environment-variable expansion.
-_Avoid_: arbitrary string expansion
-
 **Home Config Directory**:
-The default seamless-cors location at `.seamless-cors` under the user's home directory. Live Configuration owns configuration sources within it, while Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
+The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Live Configuration owns configuration sources within it, while Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
 _Avoid_: platform-native app config directory
 
 **Runtime State Directory**:
@@ -341,8 +337,8 @@ A gateway ownership rule where only one Gateway Owner may run for a user at a ti
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
 **Configuration Bootstrap**:
-A start-only behavior where a missing default Config File and any missing configured Upstream List are created automatically before validation continues, including required parent directories. The same start command continues with an Empty Upstream List, while passive configuration reads remain non-mutating and an existing unsafe, non-file, or unreadable Upstream List remains an error.
-_Avoid_: init command, manual file scaffolding, read-time mutation, default-path-only Upstream List creation, replacing invalid paths
+A start-only behavior where the fixed Config File and Upstream List are created automatically when missing before validation continues, including required parent directories. The same start command continues with an Empty Upstream List, while passive configuration reads remain non-mutating and an existing unsafe, non-file, or unreadable Upstream List remains an error.
+_Avoid_: init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
 **Commented Default Config**:
 A Configuration Bootstrap behavior where generated configuration includes short comments only for meaningful user-editable settings.
@@ -433,8 +429,8 @@ Top-level user-facing commands that explicitly install, repair, or remove the In
 _Avoid_: nested CA command tree, hidden CA removal, per-start CA trust, config editing command, runtime CA rotation, active-trusted-runtime CA mutation, extra command confirmation
 
 **Config-Independent CA Install**:
-A CA lifecycle command boundary where installing or repairing the Installed User CA does not require, create, or modify the Config File, though existing configuration may be read for guidance.
-_Avoid_: install-time config bootstrap, install changing `ca-trusted`, config-required CA repair
+A CA lifecycle command boundary where installing or repairing the Installed User CA does not read, require, create, or modify Live Configuration.
+_Avoid_: install-time config bootstrap, config-dependent install guidance, install changing `ca-trusted`, config-required CA repair
 
 **Idempotent CA Install**:
 A CA lifecycle command behavior where installing reports existing usable CA trust as success without requesting platform approval or changing CA material, including while a trusted Gateway Runtime is active.
@@ -497,8 +493,8 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Upstream List**:
-The user-managed newline-delimited configuration decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing; Live Configuration reads and observes its ordinary-file source at a cleaned absolute path. Live change observation is supported only when the file is hosted on a local filesystem.
-_Avoid_: Domain List, Target List, symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
+The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Live Configuration reads and observes this ordinary-file source, whose live change observation is supported only on a local filesystem.
+_Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
 **Upstream List Comment**:
 A full-line or inline note in the Upstream List that is ignored during matching.
@@ -818,17 +814,13 @@ Developer: "Can I run two gateway owners at once?"
 
 QA engineer: "No, Single User Instance uses the Gateway State Cache to guard active gateway ownership."
 
-Developer: "Can config paths use `~` or environment variables?"
-
-QA engineer: "Yes, Path Expansion applies to path fields only."
-
 Developer: "Can the gateway start with no upstreams?"
 
 QA engineer: "Yes, Empty Upstream List is valid, so the gateway runs while PAC Routing matches no upstreams until valid Upstream List Entries are added."
 
 Developer: "Do I need to run an init command first?"
 
-QA engineer: "No, Configuration Bootstrap creates a missing default Config File and any missing configured Upstream List, and Empty Upstream List lets that same start command keep running with no matched upstreams yet."
+QA engineer: "No, Configuration Bootstrap creates the fixed Config File and Upstream List when missing, and Empty Upstream List lets that same start command keep running with no matched upstreams yet."
 
 Developer: "Will generated config explain the settings?"
 

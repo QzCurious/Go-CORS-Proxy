@@ -373,12 +373,6 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
 	}
-	for _, advisory := range result.Advisories {
-		if advisory.Kind == gateway.InstallAdvisoryConfigCATrustedDisabled && advisory.ConfigCATrustedDisabled != nil {
-			fmt.Fprintln(stdout, "HTTPS interception is disabled by config: ca-trusted: false.")
-			fmt.Fprintln(stdout, "Set ca-trusted: true to use the Installed User CA.")
-		}
-	}
 }
 
 func renderUninstallResult(stdout io.Writer, result gateway.UninstallResult) {

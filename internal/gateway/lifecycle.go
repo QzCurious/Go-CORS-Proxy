@@ -159,23 +159,6 @@ const (
 type InstallResult struct {
 	Kind               InstallResultKind `json:"kind"`
 	InstalledCAExpires time.Time         `json:"installedCAExpires,omitempty"`
-	Advisories         []InstallAdvisory `json:"advisories,omitempty"`
-}
-
-type InstallAdvisory struct {
-	Kind                    InstallAdvisoryKind              `json:"kind"`
-	ConfigCATrustedDisabled *ConfigCATrustedDisabledAdvisory `json:"configCaTrustedDisabled,omitempty"`
-}
-
-type InstallAdvisoryKind string
-
-const InstallAdvisoryConfigCATrustedDisabled InstallAdvisoryKind = "config-ca-trusted-disabled"
-
-type ConfigCATrustedDisabledAdvisory struct {
-	ConfigPath    string `json:"configPath"`
-	Setting       string `json:"setting"`
-	CurrentValue  bool   `json:"currentValue"`
-	RequiredValue bool   `json:"requiredValue"`
 }
 
 type UninstallResultKind string
@@ -506,7 +489,6 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 			return InstallResult{
 				Kind:               InstallResultAlreadyUsable,
 				InstalledCAExpires: report.Expires,
-				Advisories:         installAdvisories(),
 			}, nil
 		}
 		return InstallResult{Kind: InstallResultBlockedRuntimeActive}, nil
@@ -522,7 +504,6 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	return InstallResult{
 		Kind:               kind,
 		InstalledCAExpires: result.Expires,
-		Advisories:         installAdvisories(),
 	}, nil
 }
 
@@ -673,20 +654,4 @@ func caHealthStatus(health userca.Health) CAHealthStatus {
 	default:
 		return CAHealthUnknown
 	}
-}
-
-func installAdvisories() []InstallAdvisory {
-	loaded, err := liveconfig.LoadExisting("")
-	if err != nil || loaded.CATrusted() {
-		return nil
-	}
-	return []InstallAdvisory{{
-		Kind: InstallAdvisoryConfigCATrustedDisabled,
-		ConfigCATrustedDisabled: &ConfigCATrustedDisabledAdvisory{
-			ConfigPath:    loaded.ConfigPath(),
-			Setting:       "ca-trusted",
-			CurrentValue:  false,
-			RequiredValue: true,
-		},
-	}}
 }

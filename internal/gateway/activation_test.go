@@ -22,7 +22,7 @@ func TestExecuteStartBindsCollectiveConsentToForeignPACState(t *testing.T) {
 	if err := os.WriteFile(upstreamPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	config := "upstream-list: " + upstreamPath + "\nca-trusted: false\n"
+	config := "ca-trusted: false\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +92,28 @@ func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T)
 	}
 	if len(result.CleanupFailures) != 1 || result.CleanupFailures[0].Subject != CleanupSubjectManagedPAC {
 		t.Fatalf("cleanup failures = %#v", result.CleanupFailures)
+	}
+}
+
+func TestInstallDoesNotReadOrBootstrapLiveConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	lifecycle, err := newLifecycle(
+		&lifecycleTestSystemSettings{},
+		emptyTestTrustStore{},
+		newCoordinator(filepath.Join(home, ".seamless-cors", "runtime")),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := lifecycle.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(home, ".seamless-cors", "config.yaml")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("CA install created or inspected Live Configuration: %v", err)
 	}
 }
 

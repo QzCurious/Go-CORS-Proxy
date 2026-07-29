@@ -27,11 +27,14 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}
 	}
 
-	source, err := liveconfig.Open("")
+	config, err := liveconfig.Create()
 	if err != nil {
 		return StartResult{}, err
 	}
-	snapshot := source.Current()
+	snapshot, err := config.Snapshot()
+	if err != nil {
+		return StartResult{}, err
+	}
 
 	var authority *userca.Authority
 	var caEnsure *CAEnsureResult
@@ -80,15 +83,6 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}, nil
 	}
 
-	latest, err := source.Refresh()
-	if err != nil {
-		return postCAFailure(fmt.Errorf("effective configuration revalidation failed: %w", err))
-	}
-	if !snapshot.CATrusted() && latest.CATrusted() {
-		return postCAFailure(fmt.Errorf("ca-trusted became enabled during start; retry to perform CA Ensure before activation"))
-	}
-	snapshot = latest
-
 	loadUsableAuthority := func(ctx context.Context) (*userca.Authority, userca.Report, error) {
 		dir, err := userca.DefaultDir()
 		if err != nil {
@@ -96,7 +90,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}
 		return userca.LoadUsableContext(ctx, dir, s.lifecycle.userCATrustStore)
 	}
-	engine, err := newRuntime(source, snapshot, trustedHTTPSAdmission{
+	engine, err := newRuntime(config, snapshot, trustedHTTPSAdmission{
 		guard:      &s.lifecycle.caAdmissionMu,
 		loadUsable: loadUsableAuthority,
 	})

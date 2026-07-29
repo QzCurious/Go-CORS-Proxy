@@ -13,16 +13,7 @@ import (
 const changeDebounce = 100 * time.Millisecond
 const invalidConfirmation = time.Second
 
-type targetRole uint8
-
-const (
-	configTarget targetRole = iota
-	upstreamTarget
-	candidateUpstreamTarget
-)
-
 type targetState struct {
-	role       targetRole
 	generation uint64
 	timer      *time.Timer
 }
@@ -46,7 +37,7 @@ func (e *invalidSourceError) Unwrap() error {
 }
 
 type watcherState struct {
-	source                 *Source
+	config                 *Config
 	watcher                *fsnotify.Watcher
 	targets                map[string]*targetState
 	watchedDirs            map[string]struct{}
@@ -68,17 +59,17 @@ type watchEvent struct {
 	err      error
 }
 
-func (s *Source) startObservation() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.observationStarted {
+func (c *Config) startObservation() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.observationStarted {
 		return errors.New("Live Configuration Observe may only be called once")
 	}
-	s.observationStarted = true
+	c.observationStarted = true
 	return nil
 }
 
-func (s *Source) observe(ctx context.Context, output chan watchEvent) {
+func (c *Config) observe(ctx context.Context, output chan watchEvent) {
 	defer close(output)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -88,7 +79,7 @@ func (s *Source) observe(ctx context.Context, output chan watchEvent) {
 	defer watcher.Close()
 
 	state := &watcherState{
-		source:        s,
+		config:        c,
 		watcher:       watcher,
 		targets:       make(map[string]*targetState),
 		watchedDirs:   make(map[string]struct{}),
@@ -98,12 +89,11 @@ func (s *Source) observe(ctx context.Context, output chan watchEvent) {
 		confirmations: make(map[string]*confirmationState),
 	}
 	defer state.close()
-	current := s.Current()
-	if err := state.addTarget(current.ConfigPath(), configTarget); err != nil {
+	if err := state.addTarget(c.configPath); err != nil {
 		publishLatest(output, watchEvent{err: err})
 		return
 	}
-	if err := state.addTarget(current.UpstreamListPath(), upstreamTarget); err != nil {
+	if err := state.addTarget(c.upstreamListPath); err != nil {
 		publishLatest(output, watchEvent{err: err})
 		return
 	}
@@ -252,16 +242,8 @@ func (w *watcherState) cancelAllConfirmations() {
 }
 
 func (w *watcherState) reconcile() (watchEvent, bool, error) {
-	result, err := w.source.refreshObserved()
-	if result.upstreamPath != "" {
-		if targetErr := w.setCandidateTarget(result.upstreamPath); targetErr != nil {
-			return watchEvent{}, false, invalidConfigError(w.source.Current().ConfigPath(), targetErr)
-		}
-	}
+	result, err := w.config.refreshObserved()
 	if err != nil {
-		return watchEvent{}, false, err
-	}
-	if err := w.commitUpstreamTarget(result.snapshot.UpstreamListPath()); err != nil {
 		return watchEvent{}, false, err
 	}
 	if !result.changed {
@@ -270,12 +252,9 @@ func (w *watcherState) reconcile() (watchEvent, bool, error) {
 	return watchEvent{snapshot: result.snapshot}, true, nil
 }
 
-func (w *watcherState) addTarget(path string, role targetRole) error {
+func (w *watcherState) addTarget(path string) error {
 	path = filepath.Clean(path)
-	if target, ok := w.targets[path]; ok {
-		if role != candidateUpstreamTarget {
-			target.role = role
-		}
+	if _, ok := w.targets[path]; ok {
 		return nil
 	}
 	dir := filepath.Dir(path)
@@ -285,65 +264,8 @@ func (w *watcherState) addTarget(path string, role targetRole) error {
 		}
 		w.watchedDirs[dir] = struct{}{}
 	}
-	w.targets[path] = &targetState{role: role}
+	w.targets[path] = &targetState{}
 	return nil
-}
-
-func (w *watcherState) setCandidateTarget(path string) error {
-	path = filepath.Clean(path)
-	for targetPath, target := range w.targets {
-		if target.role != candidateUpstreamTarget || targetPath == path {
-			continue
-		}
-		if target.timer != nil {
-			target.timer.Stop()
-		}
-		delete(w.targets, targetPath)
-	}
-	if err := w.removeUnusedDirectories(); err != nil {
-		return err
-	}
-	return w.addTarget(path, candidateUpstreamTarget)
-}
-
-func (w *watcherState) commitUpstreamTarget(path string) error {
-	path = filepath.Clean(path)
-	for targetPath, target := range w.targets {
-		switch {
-		case targetPath == w.source.Current().ConfigPath():
-			target.role = configTarget
-		case targetPath == path:
-			target.role = upstreamTarget
-		default:
-			if target.timer != nil {
-				target.timer.Stop()
-			}
-			delete(w.targets, targetPath)
-		}
-	}
-	return w.removeUnusedDirectories()
-}
-
-func (w *watcherState) removeUnusedDirectories() error {
-	for dir := range w.watchedDirs {
-		if w.directoryHasTarget(dir) {
-			continue
-		}
-		if err := w.watcher.Remove(dir); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
-			return fmt.Errorf("Live Configuration cannot stop observing %s: %w", dir, err)
-		}
-		delete(w.watchedDirs, dir)
-	}
-	return nil
-}
-
-func (w *watcherState) directoryHasTarget(dir string) bool {
-	for path := range w.targets {
-		if filepath.Dir(path) == dir {
-			return true
-		}
-	}
-	return false
 }
 
 func invalidConfigError(path string, err error) error {

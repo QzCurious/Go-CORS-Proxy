@@ -28,7 +28,7 @@ type trafficRuntime struct {
 	pacHandler                  *pacrouting.DynamicHandler
 	pac                         *http.Server
 	listeners                   []net.Listener
-	liveConfig                  *liveconfig.Source
+	liveConfig                  *liveconfig.Config
 	pacVersion                  uint64
 	pacUpdates                  chan string
 	upstreamListEntriesRevision uint64
@@ -64,7 +64,7 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(source *liveconfig.Source, snapshot liveconfig.Snapshot, admission trustedHTTPSAdmission) (*trafficRuntime, error) {
+func newRuntime(config *liveconfig.Config, snapshot liveconfig.Snapshot, admission trustedHTTPSAdmission) (*trafficRuntime, error) {
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -89,7 +89,7 @@ func newRuntime(source *liveconfig.Source, snapshot liveconfig.Snapshot, admissi
 	}
 	return &trafficRuntime{
 		currentSnapshot:             snapshot,
-		liveConfig:                  source,
+		liveConfig:                  config,
 		caAdmissionGuard:            admission.guard,
 		loadUsableAuthority:         admission.loadUsable,
 		proxyHandler:                proxyHandler,

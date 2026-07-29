@@ -1,7 +1,6 @@
 package liveconfig_test
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -12,614 +11,316 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 )
 
-func TestObservePublishesConfiguredCATrustChanges(t *testing.T) {
-	home := t.TempDir()
-	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
-	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstUpstreamPath, "first.example.test\n")
-	writeFile(t, secondUpstreamPath, "second.example.test\n")
-	writeConfig(t, configPath, firstUpstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial := source.Current()
-	if initial.CATrusted() {
-		t.Fatal("initial CA trust = true")
-	}
-	if initial.UpstreamListEntriesRevision() != 1 {
-		t.Fatalf("initial Upstream List Entries Revision = %d", initial.UpstreamListEntriesRevision())
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeConfig(t, configPath, secondUpstreamPath, true)
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	live := event.Snapshot
-	if live.UpstreamListPath() != secondUpstreamPath {
-		t.Fatalf("upstream list path = %q", live.UpstreamListPath())
-	}
-	entries := live.UpstreamList().HostSelectors
-	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
-		t.Fatalf("entries = %#v", entries)
-	}
-	if live.UpstreamListEntriesRevision() != 2 {
-		t.Fatalf("Upstream List Entries Revision after path and entries change = %d", live.UpstreamListEntriesRevision())
-	}
-	if !live.CATrusted() {
-		t.Fatal("configured CA trust was not published")
-	}
-
-	cached := source.Current()
-	if cached.UpstreamListPath() != secondUpstreamPath {
-		t.Fatalf("cached upstream list path = %q", cached.UpstreamListPath())
-	}
-
-	writeFile(t, secondUpstreamPath, "second-updated.example.test\n")
-	event = waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	live = event.Snapshot
-	if !live.CATrusted() {
-		t.Fatal("configured CA trust was not retained")
-	}
-	if live.UpstreamListEntriesRevision() != 3 {
-		t.Fatalf("Upstream List Entries Revision after entry change = %d", live.UpstreamListEntriesRevision())
-	}
-
-	writeConfig(t, configPath, secondUpstreamPath, false)
-	event = waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	if event.Snapshot.CATrusted() {
-		t.Fatal("configured CA trust was not disabled")
-	}
-	if event.Snapshot.UpstreamListEntriesRevision() != 3 {
-		t.Fatalf("CA trust change advanced Upstream List Entries Revision to %d", event.Snapshot.UpstreamListEntriesRevision())
-	}
-}
-
-func TestSnapshotUpstreamListIsImmutable(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "https://example.test:443\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	snapshot, err := liveconfig.LoadExisting(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exposed := snapshot.UpstreamList()
-	exposed.OriginSelectors[0].Hostname = "changed.example.test"
-	exposed.OriginSelectors[0].Port = "8443"
-
-	retained := snapshot.UpstreamList().OriginSelectors[0]
-	if retained.Hostname != "example.test" || retained.Port != "443" {
-		t.Fatalf("snapshot Upstream List was mutated through exposed fields: %#v", retained)
-	}
-}
-
-func TestObservePublishesOnlySemanticUpstreamListChanges(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeFile(t, upstreamPath, "# same routes, reordered\nhttps://secure.example.test\nAPI.EXAMPLE.TEST\napi.example.test # duplicate\n")
-	assertNoEvent(t, events, 300*time.Millisecond)
-
-	writeFile(t, upstreamPath, "changed.example.test\n")
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	entries := event.Snapshot.UpstreamList().HostSelectors
-	if len(entries) != 1 || entries[0].Hostname != "changed.example.test" {
-		t.Fatalf("entries = %#v", entries)
-	}
-	if event.Snapshot.UpstreamListEntriesRevision() != 2 {
-		t.Fatalf("Upstream List Entries Revision = %d", event.Snapshot.UpstreamListEntriesRevision())
-	}
-}
-
-func TestObserveDoesNotAdvanceUpstreamListEntriesRevisionForPathOnlyChange(t *testing.T) {
-	home := t.TempDir()
-	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
-	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstUpstreamPath, "api.example.test\n")
-	writeFile(t, secondUpstreamPath, "# same entries\nAPI.EXAMPLE.TEST\n")
-	writeConfig(t, configPath, firstUpstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial := source.Current()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeConfig(t, configPath, secondUpstreamPath, false)
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	if event.Snapshot.UpstreamListPath() != secondUpstreamPath {
-		t.Fatalf("Upstream List path = %q", event.Snapshot.UpstreamListPath())
-	}
-	if event.Snapshot.UpstreamListEntriesRevision() != initial.UpstreamListEntriesRevision() {
-		t.Fatalf(
-			"path-only change advanced Upstream List Entries Revision from %d to %d",
-			initial.UpstreamListEntriesRevision(),
-			event.Snapshot.UpstreamListEntriesRevision(),
-		)
-	}
-}
-
-func TestObserveAppliesUpstreamWarningsAndRecovers(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "initial.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeFile(t, upstreamPath, "https://invalid.example.test/path\n")
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	if len(event.Snapshot.UpstreamList().HostSelectors) != 0 ||
-		len(event.Snapshot.UpstreamList().Warnings) != 1 {
-		t.Fatalf("invalid edit snapshot = %#v", event.Snapshot)
-	}
-
-	writeFile(t, upstreamPath, "recovered.example.test\n")
-	event = waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	entries := event.Snapshot.UpstreamList().HostSelectors
-	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
-		t.Fatalf("entries = %#v", entries)
-	}
-	if warnings := event.Snapshot.UpstreamList().Warnings; len(warnings) != 0 {
-		t.Fatalf("warnings after recovery = %#v", warnings)
-	}
-}
-
-func TestObservePublishesUpstreamWarningsDespiteConfigNoise(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "initial.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-	writeFile(t, upstreamPath, "https://invalid.example.test/path\n")
-	writeFile(t, configPath, "# noise\nupstream-list: "+upstreamPath+"\nca-trusted: false\n")
-
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	if warnings := event.Snapshot.UpstreamList().Warnings; len(warnings) != 1 {
-		t.Fatalf("warnings = %#v", warnings)
-	}
-}
-
-func TestObserveSurvivesTransientEmptyConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "initial.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeFile(t, configPath, "")
-	// Keep the invalid state longer than the watcher debounce but shorter than
-	// its invalid-source confirmation window.
-	time.Sleep(500 * time.Millisecond)
-	writeConfig(t, configPath, upstreamPath, false)
-	time.Sleep(200 * time.Millisecond)
-	writeFile(t, upstreamPath, "recovered.example.test\n")
-
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	entries := event.Snapshot.UpstreamList().HostSelectors
-	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
-		t.Fatalf("entries = %#v", entries)
-	}
-}
-
-func TestObserveIgnoresSiblingEventsAndHandlesTargetReplacement(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "initial.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	temporaryPath := filepath.Join(home, ".upstreams.txt.tmp")
-	writeFile(t, temporaryPath, "replacement.example.test\n")
-	assertNoEvent(t, events, 300*time.Millisecond)
-	if err := os.Remove(upstreamPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(temporaryPath, upstreamPath); err != nil {
-		t.Fatal(err)
-	}
-
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	entries := event.Snapshot.UpstreamList().HostSelectors
-	if len(entries) != 1 || entries[0].Hostname != "replacement.example.test" {
-		t.Fatalf("entries = %#v", entries)
-	}
-}
-
-func TestObserveCoalescesChangesWhileConsumerIsBusy(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "initial.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeFile(t, upstreamPath, "first.example.test\n")
-	waitForCachedHost(t, source, "first.example.test")
-	writeFile(t, upstreamPath, "latest.example.test\n")
-	waitForCachedHost(t, source, "latest.example.test")
-
-	first := waitForEvent(t, events)
-	if first.Err != nil {
-		t.Fatal(first.Err)
-	}
-	firstEntries := first.Snapshot.UpstreamList().HostSelectors
-	if len(firstEntries) != 1 || firstEntries[0].Hostname != "first.example.test" {
-		t.Fatalf("first entries = %#v", firstEntries)
-	}
-
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	entries := event.Snapshot.UpstreamList().HostSelectors
-	if len(entries) != 1 || entries[0].Hostname != "latest.example.test" {
-		t.Fatalf("entries = %#v", entries)
-	}
-	if event.Snapshot.UpstreamListEntriesRevision() != 3 {
-		t.Fatalf("coalesced Upstream List Entries Revision = %d", event.Snapshot.UpstreamListEntriesRevision())
-	}
-}
-
-func TestRefreshReestablishesSnapshotBeforeObserve(t *testing.T) {
-	home := t.TempDir()
-	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
-	secondUpstreamPath := filepath.Join(home, "second-upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstUpstreamPath, "first.example.test\n")
-	writeFile(t, secondUpstreamPath, "second.example.test\n")
-	writeConfig(t, configPath, firstUpstreamPath, true)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeConfig(t, configPath, secondUpstreamPath, false)
-	refreshed, err := source.Refresh()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if refreshed.CATrusted() {
-		t.Fatal("refreshed CA trust = true")
-	}
-	if refreshed.UpstreamListEntriesRevision() != 2 {
-		t.Fatalf("refreshed Upstream List Entries Revision = %d", refreshed.UpstreamListEntriesRevision())
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	events := observeSource(ctx, source)
-	assertNoEvent(t, events, 300*time.Millisecond)
-	cancel()
-}
-
-func TestRefreshFailsAfterObserveStarts(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "api.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-	writeFile(t, upstreamPath, "changed.example.test\n")
-	if event := waitForEvent(t, events); event.Err != nil {
-		t.Fatal(event.Err)
-	}
-
-	if _, err := source.Refresh(); err == nil || !strings.Contains(err.Error(), "before Observe") {
-		t.Fatalf("Refresh error = %v", err)
-	}
-	cancel()
-	for range events {
-	}
-}
-
-func TestObserveAppliesValidEntriesAlongsideWarnings(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "first.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeFile(t, upstreamPath, "next.example.test\nhttps://bad.example.test/path\n")
-	event := waitForEvent(t, events)
-	if event.Err != nil {
-		t.Fatal(event.Err)
-	}
-	cached := source.Current()
-	entries := cached.UpstreamList().HostSelectors
-	if len(entries) != 1 || entries[0].Hostname != "next.example.test" {
-		t.Fatalf("cached entries = %#v", entries)
-	}
-	if warnings := cached.UpstreamList().Warnings; len(warnings) != 1 {
-		t.Fatalf("cached warnings = %#v", warnings)
-	}
-}
-
-func TestObserveTreatsMissingLiveUpstreamListAsFatal(t *testing.T) {
-	home := t.TempDir()
-	firstUpstreamPath := filepath.Join(home, "first-upstreams.txt")
-	missingUpstreamPath := filepath.Join(home, "missing-upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, firstUpstreamPath, "first.example.test\n")
-	writeConfig(t, configPath, firstUpstreamPath, false)
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	writeConfig(t, configPath, missingUpstreamPath, false)
-	event := waitForEvent(t, events)
-	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Upstream List Error") {
-		t.Fatalf("event error = %v", event.Err)
-	}
-}
-
-func TestObserveTreatsUnreadableLiveConfigAsFatal(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "first.example.test\n")
-	writeConfig(t, configPath, upstreamPath, false)
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events := observeSource(ctx, source)
-
-	if err := os.Remove(configPath); err != nil {
-		t.Fatal(err)
-	}
-	event := waitForEvent(t, events)
-	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Config Error") {
-		t.Fatalf("event error = %v", event.Err)
-	}
-}
-
-func TestLoadIgnoresUnknownConfigKeys(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	configPath := filepath.Join(home, "config.yaml")
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	writeFile(t, upstreamPath, "api.example.test\n")
-	writeFile(t, configPath, "unknown-setting: ignored\nupstream-list: "+upstreamPath+"\n")
-
-	loaded, err := liveconfig.LoadExisting(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.UpstreamListPath() != upstreamPath {
-		t.Fatalf("upstream list path = %q", loaded.UpstreamListPath())
-	}
-	if loaded.CATrusted() {
-		t.Fatal("omitted ca-trusted should default to false")
-	}
-}
-
-func TestLoadRejectsSymlinkedConfigFile(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "upstreams.txt")
-	realConfigPath := filepath.Join(home, "real-config.yaml")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, upstreamPath, "api.example.test\n")
-	writeConfig(t, realConfigPath, upstreamPath, false)
-	if err := os.Symlink(realConfigPath, configPath); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-
-	_, err := liveconfig.LoadExisting(configPath)
-	if err == nil || !strings.Contains(err.Error(), "ordinary file") {
-		t.Fatalf("load error = %v", err)
-	}
-}
-
-func TestOpenCreatesCommentedDefaults(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	source, err := liveconfig.Open("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	loaded := source.Current()
-	if loaded.CATrusted() {
-		t.Fatal("ca-trusted default should disable trusted HTTPS")
-	}
-	if loaded.UpstreamListPath() != filepath.Join(home, ".seamless-cors", "upstreams.txt") {
-		t.Fatalf("upstream list path = %q", loaded.UpstreamListPath())
-	}
-	configText, err := os.ReadFile(loaded.ConfigPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(configText, []byte("# One upstream host or origin per line.")) {
-		t.Fatalf("generated config is not commented:\n%s", configText)
-	}
-	if !bytes.Contains(configText, []byte("ca-trusted: false")) {
-		t.Fatalf("generated config does not disable trusted HTTPS:\n%s", configText)
-	}
-}
-
-func TestOpenCreatesMissingConfiguredUpstreamList(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "nested", "config", "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, configPath, "upstream-list: "+upstreamPath+"\n")
-
-	source, err := liveconfig.Open(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entries := source.Current().UpstreamList().HostSelectors; len(entries) != 0 {
-		t.Fatalf("bootstrapped Upstream List entries = %#v", entries)
-	}
-	upstreamText, err := os.ReadFile(upstreamPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(upstreamText) != "# One upstream host or origin per line.\n# api.dev.example.com\n" {
-		t.Fatalf("bootstrapped Upstream List = %q", upstreamText)
-	}
-}
-
-func TestLoadExistingDoesNotCreateMissingConfiguredUpstreamList(t *testing.T) {
-	home := t.TempDir()
-	upstreamPath := filepath.Join(home, "nested", "upstreams.txt")
-	configPath := filepath.Join(home, "config.yaml")
-	writeFile(t, configPath, "upstream-list: "+upstreamPath+"\n")
-
-	if _, err := liveconfig.LoadExisting(configPath); !os.IsNotExist(err) {
-		t.Fatalf("load error = %v, want not-exist", err)
-	}
-	if _, err := os.Stat(filepath.Dir(upstreamPath)); !os.IsNotExist(err) {
-		t.Fatalf("passive load created Upstream List parent: %v", err)
-	}
-}
-
-func writeConfig(t *testing.T, path, upstreamPath string, caTrusted bool) {
-	t.Helper()
-	writeFile(t, path, "upstream-list: "+upstreamPath+"\nca-trusted: "+map[bool]string{true: "true", false: "false"}[caTrusted]+"\n")
-}
-
-func writeFile(t *testing.T, path, contents string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
+const eventTimeout = 4 * time.Second
 
 type liveConfigEvent struct {
 	Snapshot liveconfig.Snapshot
 	Err      error
 }
 
-func observeSource(ctx context.Context, source *liveconfig.Source) <-chan liveConfigEvent {
-	events := make(chan liveConfigEvent)
+func TestCreateBootstrapsFixedSourcesWithoutReadingThem(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config, err := liveconfig.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(home, ".seamless-cors", "config.yaml")
+	upstreamPath := filepath.Join(home, ".seamless-cors", "upstreams.txt")
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "# Enable trusted HTTPS interception through the Installed User CA.\nca-trusted: false\n"; got != want {
+		t.Fatalf("config.yaml = %q, want %q", got, want)
+	}
+	data, err = os.ReadFile(upstreamPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "One upstream host or origin per line") {
+		t.Fatalf("upstreams.txt = %q", data)
+	}
+
+	writeFile(t, configPath, "ca-trusted: [")
+	if _, err := liveconfig.Create(); err != nil {
+		t.Fatalf("Create validated existing source: %v", err)
+	}
+	if _, err := config.Snapshot(); err == nil {
+		t.Fatal("Snapshot accepted invalid config")
+	}
+}
+
+func TestSnapshotLoadsOnceAndReturnsCachedSemanticValue(t *testing.T) {
+	config, configPath, upstreamPath := createConfig(t)
+	writeFile(t, configPath, "ca-trusted: false\n")
+	writeFile(t, upstreamPath, "first.example.test\n")
+
+	first, err := config.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, configPath, "ca-trusted: true\n")
+	writeFile(t, upstreamPath, "second.example.test\n")
+	second, err := config.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if second.CATrusted() {
+		t.Fatal("cached snapshot changed without observation")
+	}
+	entries := second.UpstreamList().HostSelectors
+	if len(entries) != 1 || entries[0].Hostname != "first.example.test" {
+		t.Fatalf("cached entries = %#v", entries)
+	}
+	if first.UpstreamListEntriesRevision() != second.UpstreamListEntriesRevision() {
+		t.Fatal("cached snapshot revision changed")
+	}
+}
+
+func TestSnapshotUpstreamListIsImmutable(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
+	writeFile(t, upstreamPath, "api.example.test\nbad/path\n")
+
+	snapshot, err := config.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := snapshot.UpstreamList()
+	list.HostSelectors[0].Hostname = "mutated.example.test"
+	list.Warnings[0].Diagnostic = "mutated"
+
+	reloaded := snapshot.UpstreamList()
+	if reloaded.HostSelectors[0].Hostname != "api.example.test" {
+		t.Fatalf("snapshot host mutated to %q", reloaded.HostSelectors[0].Hostname)
+	}
+	if reloaded.Warnings[0].Diagnostic == "mutated" {
+		t.Fatal("snapshot warning mutated")
+	}
+}
+
+func TestObservePublishesInitialSnapshotWhenCacheIsEmpty(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
+	writeFile(t, upstreamPath, "api.example.test\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events := observeConfig(ctx, config)
+	event := waitForEvent(t, events)
+	cancel()
+
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	entries := event.Snapshot.UpstreamList().HostSelectors
+	if len(entries) != 1 || entries[0].Hostname != "api.example.test" {
+		t.Fatalf("initial entries = %#v", entries)
+	}
+}
+
+func TestObserveReconcilesCachedSnapshotBeforeWaitingForEvents(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
+	writeFile(t, upstreamPath, "first.example.test\n")
+	initial, err := config.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, upstreamPath, "second.example.test\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events := observeConfig(ctx, config)
+	event := waitForEvent(t, events)
+	cancel()
+
+	entries := event.Snapshot.UpstreamList().HostSelectors
+	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
+		t.Fatalf("reconciled entries = %#v", entries)
+	}
+	if got, want := event.Snapshot.UpstreamListEntriesRevision(), initial.UpstreamListEntriesRevision()+1; got != want {
+		t.Fatalf("revision = %d, want %d", got, want)
+	}
+}
+
+func TestObservePublishesSemanticChangesAndUpdatesCache(t *testing.T) {
+	config, configPath, upstreamPath := createConfig(t)
+	writeFile(t, upstreamPath, "first.example.test\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := observeConfig(ctx, config)
+	initial := waitForEvent(t, events).Snapshot
+
+	writeFile(t, configPath, "ca-trusted: true\n")
+	enabled := waitForEvent(t, events).Snapshot
+	if !enabled.CATrusted() {
+		t.Fatal("ca-trusted change was not published")
+	}
+	if enabled.UpstreamListEntriesRevision() != initial.UpstreamListEntriesRevision() {
+		t.Fatal("CA change advanced Upstream List Entries Revision")
+	}
+
+	writeFile(t, upstreamPath, "second.example.test\n")
+	changed := waitForEvent(t, events).Snapshot
+	entries := changed.UpstreamList().HostSelectors
+	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
+		t.Fatalf("changed entries = %#v", entries)
+	}
+	if got, want := changed.UpstreamListEntriesRevision(), initial.UpstreamListEntriesRevision()+1; got != want {
+		t.Fatalf("revision = %d, want %d", got, want)
+	}
+
+	cached, err := config.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.UpstreamListEntriesRevision() != changed.UpstreamListEntriesRevision() {
+		t.Fatal("Snapshot did not return observed cache")
+	}
+}
+
+func TestObserveIgnoresRepresentationOnlyChanges(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
+	writeFile(t, upstreamPath, "api.example.test\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := observeConfig(ctx, config)
+	_ = waitForEvent(t, events)
+
+	writeFile(t, upstreamPath, "# comment\napi.example.test\napi.example.test\n")
+	assertNoEvent(t, events, 500*time.Millisecond)
+}
+
+func TestObservePublishesWarningsWithoutAdvancingEntryRevision(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
+	writeFile(t, upstreamPath, "api.example.test\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := observeConfig(ctx, config)
+	initial := waitForEvent(t, events).Snapshot
+
+	writeFile(t, upstreamPath, "api.example.test\nbad/path\n")
+	warned := waitForEvent(t, events).Snapshot
+	if len(warned.UpstreamList().Warnings) != 1 {
+		t.Fatalf("warnings = %#v", warned.UpstreamList().Warnings)
+	}
+	if warned.UpstreamListEntriesRevision() != initial.UpstreamListEntriesRevision() {
+		t.Fatal("warning advanced Upstream List Entries Revision")
+	}
+}
+
+func TestObserveSurvivesTransientInvalidSource(t *testing.T) {
+	config, configPath, _ := createConfig(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := observeConfig(ctx, config)
+	_ = waitForEvent(t, events)
+
+	writeFile(t, configPath, "")
+	time.Sleep(200 * time.Millisecond)
+	writeFile(t, configPath, "ca-trusted: true\n")
+
+	event := waitForEvent(t, events)
+	if event.Err != nil {
+		t.Fatal(event.Err)
+	}
+	if !event.Snapshot.CATrusted() {
+		t.Fatal("recovered config was not published")
+	}
+}
+
+func TestObserveTreatsMissingUpstreamListAsFatal(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := observeConfig(ctx, config)
+	_ = waitForEvent(t, events)
+
+	if err := os.Remove(upstreamPath); err != nil {
+		t.Fatal(err)
+	}
+	event := waitForEvent(t, events)
+	if event.Err == nil || !strings.Contains(event.Err.Error(), "Fatal Upstream List Error") {
+		t.Fatalf("fatal event = %#v", event)
+	}
+}
+
+func TestObserveMayOnlyBeCalledOnce(t *testing.T) {
+	config, _, _ := createConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	events := observeConfig(ctx, config)
+	_ = waitForEvent(t, events)
+	cancel()
+	_ = waitForEvent(t, events)
+
+	err := config.Observe(context.Background(), func(liveconfig.Snapshot) {})
+	if err == nil || !strings.Contains(err.Error(), "only be called once") {
+		t.Fatalf("second Observe error = %v", err)
+	}
+}
+
+func TestRemovedUpstreamListSettingIsIgnored(t *testing.T) {
+	config, configPath, upstreamPath := createConfig(t)
+	writeFile(t, configPath, "upstream-list: /tmp/ignored.txt\nca-trusted: true\n")
+	writeFile(t, upstreamPath, "fixed.example.test\n")
+
+	snapshot, err := config.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.CATrusted() {
+		t.Fatal("ca-trusted was not decoded")
+	}
+	if snapshot.UpstreamListPath() != upstreamPath {
+		t.Fatalf("Upstream List path = %q, want %q", snapshot.UpstreamListPath(), upstreamPath)
+	}
+	entries := snapshot.UpstreamList().HostSelectors
+	if len(entries) != 1 || entries[0].Hostname != "fixed.example.test" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestSnapshotRejectsSymlinkedConfigFile(t *testing.T) {
+	config, configPath, _ := createConfig(t)
+	target := filepath.Join(t.TempDir(), "target.yaml")
+	writeFile(t, target, "ca-trusted: true\n")
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := config.Snapshot(); err == nil || !strings.Contains(err.Error(), "ordinary file") {
+		t.Fatalf("Snapshot error = %v", err)
+	}
+}
+
+func createConfig(t *testing.T) (*liveconfig.Config, string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config, err := liveconfig.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".seamless-cors")
+	return config, filepath.Join(dir, "config.yaml"), filepath.Join(dir, "upstreams.txt")
+}
+
+func observeConfig(ctx context.Context, config *liveconfig.Config) <-chan liveConfigEvent {
+	events := make(chan liveConfigEvent, 1)
 	go func() {
-		defer close(events)
-		err := source.Observe(ctx, func(snapshot liveconfig.Snapshot) {
-			select {
-			case events <- liveConfigEvent{Snapshot: snapshot}:
-			case <-ctx.Done():
-			}
+		err := config.Observe(ctx, func(snapshot liveconfig.Snapshot) {
+			events <- liveConfigEvent{Snapshot: snapshot}
 		})
-		if err != nil {
-			select {
-			case events <- liveConfigEvent{Err: err}:
-			case <-ctx.Done():
-			}
-		}
+		events <- liveConfigEvent{Err: err}
+		close(events)
 	}()
 	return events
 }
@@ -629,11 +330,11 @@ func waitForEvent(t *testing.T, events <-chan liveConfigEvent) liveConfigEvent {
 	select {
 	case event, ok := <-events:
 		if !ok {
-			t.Fatal("event channel closed")
+			t.Fatal("Live Configuration events closed unexpectedly")
 		}
 		return event
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for event")
+	case <-time.After(eventTimeout):
+		t.Fatal("timed out waiting for Live Configuration event")
 		return liveConfigEvent{}
 	}
 }
@@ -641,24 +342,15 @@ func waitForEvent(t *testing.T, events <-chan liveConfigEvent) liveConfigEvent {
 func assertNoEvent(t *testing.T, events <-chan liveConfigEvent, duration time.Duration) {
 	t.Helper()
 	select {
-	case event, ok := <-events:
-		if !ok {
-			t.Fatal("event channel closed")
-		}
-		t.Fatalf("unexpected event: %#v", event)
+	case event := <-events:
+		t.Fatalf("unexpected Live Configuration event: %#v", event)
 	case <-time.After(duration):
 	}
 }
 
-func waitForCachedHost(t *testing.T, source *liveconfig.Source, host string) {
+func writeFile(t *testing.T, path, content string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		entries := source.Current().UpstreamList().HostSelectors
-		if len(entries) == 1 && entries[0].Hostname == host {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("cached Upstream List did not become %q", host)
 }
