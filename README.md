@@ -23,14 +23,14 @@ opt-in feature.
 A cross-origin `GET` that the browser sends directly to an API without CORS
 response headers.
 
-![Simple request demo](demo/cors-simple-requests/cors-simple-requests.gif)
+![Simple request demo](https://raw.githubusercontent.com/QzCurious/seamless-cors/HEAD/demo/cors-simple-requests/cors-simple-requests.gif)
 
 ### Preflighted request
 
 A JSON `POST` that first causes the browser to send an `OPTIONS` preflight
 request.
 
-![Preflighted request demo](demo/cors-preflighted-requests/cors-preflighted-requests.gif)
+![Preflighted request demo](https://raw.githubusercontent.com/QzCurious/seamless-cors/HEAD/demo/cors-preflighted-requests/cors-preflighted-requests.gif)
 
 ## Installation
 
