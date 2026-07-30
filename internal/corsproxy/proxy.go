@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/elazarl/goproxy"
@@ -24,13 +25,37 @@ import (
 )
 
 type Options struct {
-	CATrusted bool
-	Authority *userca.Authority
-	Transport *http.Transport
+	InterceptHTTPS bool
+	Authority      *userca.Authority
+	Transport      *http.Transport
+	OnHTTPSFailure func(HTTPSFailure)
+	GenerateLeaf   func(tls.Certificate, string) (*tls.Certificate, error)
+}
+
+type HTTPSFailureKind string
+
+const (
+	HTTPSFailureReadiness    HTTPSFailureKind = "readiness"
+	HTTPSFailureInterception HTTPSFailureKind = "interception"
+)
+
+type HTTPSFailure struct {
+	Kind HTTPSFailureKind
+	Err  error
 }
 
 type Core struct {
-	proxy *goproxy.ProxyHttpServer
+	proxy           *goproxy.ProxyHttpServer
+	httpsGeneration atomic.Pointer[httpsGeneration]
+	onHTTPSFailure  func(HTTPSFailure)
+	generateLeaf    func(tls.Certificate, string) (*tls.Certificate, error)
+}
+
+type httpsGeneration struct {
+	fingerprint string
+	certificate tls.Certificate
+	expiresAt   time.Time
+	leafCache   *memoryCertStore
 }
 
 func New(opts Options) (*Core, error) {
@@ -42,20 +67,16 @@ func New(opts Options) (*Core, error) {
 	}
 	proxy.CertStore = newMemoryCertStore()
 
-	if opts.CATrusted {
-		if opts.Authority == nil {
-			return nil, fmt.Errorf("trusted HTTPS interception requires an Installed User CA")
-		}
-		cert, err := opts.Authority.TLSCertificate()
-		if err != nil {
+	generateLeaf := opts.GenerateLeaf
+	if generateLeaf == nil {
+		generateLeaf = signHostCertificate
+	}
+	core := &Core{proxy: proxy, onHTTPSFailure: opts.OnHTTPSFailure, generateLeaf: generateLeaf}
+	proxy.OnRequest().HandleConnectFunc(core.handleConnect)
+	if opts.InterceptHTTPS {
+		if err := core.ActivateHTTPS(opts.Authority); err != nil {
 			return nil, err
 		}
-		proxy.OnRequest().HandleConnectFunc(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
-			return &goproxy.ConnectAction{
-				Action:    goproxy.ConnectMitm,
-				TLSConfig: tlsConfigFromCA(&cert),
-			}, host
-		})
 	}
 
 	proxy.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
@@ -78,11 +99,80 @@ func New(opts Options) (*Core, error) {
 		return resp
 	})
 
-	return &Core{proxy: proxy}, nil
+	return core, nil
 }
 
 func (c *Core) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	c.proxy.ServeHTTP(w, req)
+}
+
+// ActivateHTTPS atomically swaps signer, certificate, and generation-owned
+// leaf cache. A handshake that already loaded the previous generation keeps it.
+func (c *Core) ActivateHTTPS(authority *userca.Authority) error {
+	if authority == nil {
+		return fmt.Errorf("trusted HTTPS interception requires an Installed User CA")
+	}
+	cert, err := authority.TLSCertificate()
+	if err != nil {
+		return err
+	}
+	fingerprint, err := authority.Fingerprint()
+	if err != nil {
+		return err
+	}
+	generation := &httpsGeneration{
+		fingerprint: fingerprint,
+		certificate: cert,
+		expiresAt:   authority.ExpiresAt(),
+		leafCache:   newMemoryCertStore(),
+	}
+	c.httpsGeneration.Store(generation)
+	return nil
+}
+
+func (c *Core) DeactivateHTTPS() {
+	c.httpsGeneration.Store(nil)
+}
+
+func (c *Core) handleConnect(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+	generation := c.httpsGeneration.Load()
+	if generation == nil {
+		return goproxy.OkConnect, host
+	}
+	if !time.Now().Before(generation.expiresAt) {
+		c.failHTTPS(generation, HTTPSFailure{
+			Kind: HTTPSFailureReadiness,
+			Err:  fmt.Errorf("Installed User CA expired at %s", generation.expiresAt.Format(time.RFC3339)),
+		})
+		return goproxy.OkConnect, host
+	}
+	hostname := stripConnectPort(host)
+	cert, err := generation.leafCache.Fetch(hostname, func() (*tls.Certificate, error) {
+		return c.generateLeaf(generation.certificate, hostname)
+	})
+	if err != nil {
+		c.failHTTPS(generation, HTTPSFailure{Kind: HTTPSFailureInterception, Err: err})
+		return goproxy.OkConnect, host
+	}
+	config := &tls.Config{
+		InsecureSkipVerify: true,
+		Certificates:       []tls.Certificate{*cert},
+	}
+	return &goproxy.ConnectAction{
+		Action: goproxy.ConnectMitm,
+		TLSConfig: func(string, *goproxy.ProxyCtx) (*tls.Config, error) {
+			return config, nil
+		},
+	}, host
+}
+
+func (c *Core) failHTTPS(generation *httpsGeneration, failure HTTPSFailure) {
+	if !c.httpsGeneration.CompareAndSwap(generation, nil) {
+		return
+	}
+	if c.onHTTPSFailure != nil {
+		c.onHTTPSFailure(failure)
+	}
 }
 
 func configureProxyLogging(proxy *goproxy.ProxyHttpServer) {
@@ -111,31 +201,6 @@ func defaultTransport() *http.Transport {
 }
 
 type localPreflight struct{}
-
-func tlsConfigFromCA(caCert *tls.Certificate) func(host string, ctx *goproxy.ProxyCtx) (*tls.Config, error) {
-	return func(host string, ctx *goproxy.ProxyCtx) (*tls.Config, error) {
-		hostname := stripConnectPort(host)
-		genCert := func() (*tls.Certificate, error) {
-			return signHostCertificate(*caCert, hostname)
-		}
-		var (
-			cert *tls.Certificate
-			err  error
-		)
-		if ctx != nil && ctx.Proxy != nil && ctx.Proxy.CertStore != nil {
-			cert, err = ctx.Proxy.CertStore.Fetch(hostname, genCert)
-		} else {
-			cert, err = genCert()
-		}
-		if err != nil {
-			return nil, err
-		}
-		return &tls.Config{
-			InsecureSkipVerify: true,
-			Certificates:       []tls.Certificate{*cert},
-		}, nil
-	}
-}
 
 func signHostCertificate(caCert tls.Certificate, hostname string) (*tls.Certificate, error) {
 	caLeaf := caCert.Leaf

@@ -46,22 +46,22 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 	}
 }
 
-func TestStartFailureReturnsCompletedCAEnsure(t *testing.T) {
+func TestStartFailureReturnsDiagnostic(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"status":500,"detail":"PAC install failed","caEnsure":{"kind":"installed","expires":"0001-01-01T00:00:00Z"}}`))
+		_, _ = w.Write([]byte(`{"status":500,"detail":"PAC install failed"}`))
 	}))
 	defer server.Close()
 	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
 
-	result, err := client.Start(context.Background(), StartRequest{})
+	_, err := client.Start(context.Background(), StartRequest{})
 	var startErr *StartError
 	if !errors.As(err, &startErr) {
 		t.Fatalf("error = %v, want StartError", err)
 	}
-	if result.CAEnsure == nil || result.CAEnsure.Kind != CAEnsureResultInstalled {
-		t.Fatalf("CA result = %#v", result.CAEnsure)
+	if startErr.Diagnostic != "PAC install failed" {
+		t.Fatalf("diagnostic = %q", startErr.Diagnostic)
 	}
 }
 

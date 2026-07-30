@@ -5,11 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
@@ -24,17 +24,13 @@ const (
 	StartResultConsentRequired        StartResultKind = "consent-required"
 	StartResultPACReplacementDeclined StartResultKind = "pac-replacement-declined"
 	StartResultStartAlreadyMutating   StartResultKind = "start-already-mutating"
-	StartResultPlatformApprovalDenied StartResultKind = "platform-approval-denied"
 	StartResultStopCancelled          StartResultKind = "stop-cancelled"
 	StartResultCleanupFailed          StartResultKind = "cleanup-failed"
 )
 
-// StartError preserves a completed CA Ensure result when a later activation
-// step fails. Command transports must carry both pieces of information.
 type StartError struct {
-	Diagnostic string          `json:"diagnostic"`
-	CAEnsure   *CAEnsureResult `json:"caEnsure,omitempty"`
-	Cause      error           `json:"-"`
+	Diagnostic string `json:"diagnostic"`
+	Cause      error  `json:"-"`
 }
 
 func (e *StartError) Error() string { return e.Diagnostic }
@@ -47,21 +43,8 @@ type StartRequest struct {
 type StartResult struct {
 	Kind                  StartResultKind              `json:"kind"`
 	PACReplacementConsent *PACReplacementConsentDetail `json:"pacReplacementConsent,omitempty"`
-	CAEnsure              *CAEnsureResult              `json:"caEnsure,omitempty"`
 	Guidance              *StartGuidanceDetail         `json:"guidance,omitempty"`
 	CleanupFailures       []CleanupFailureDetail       `json:"cleanupFailures,omitempty"`
-}
-
-type CAEnsureResultKind string
-
-const (
-	CAEnsureResultInstalled     CAEnsureResultKind = "installed"
-	CAEnsureResultAlreadyUsable CAEnsureResultKind = "already-usable"
-)
-
-type CAEnsureResult struct {
-	Kind    CAEnsureResultKind `json:"kind"`
-	Expires time.Time          `json:"expires"`
 }
 
 type PACReplacementConsentDetail struct {
@@ -98,11 +81,13 @@ type PACReplacementConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidanceDetail struct {
-	ConfigPath           string                      `json:"configPath"`
 	UpstreamListPath     string                      `json:"upstreamListPath"`
 	ManagedPACActive     bool                        `json:"managedPacActive"`
 	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
-	CATrusted            bool                        `json:"caTrusted"`
+	HTTPSReadiness       HTTPSReadinessStatus        `json:"httpsReadiness"`
+	HTTPSInterception    HTTPSInterceptionState      `json:"httpsInterception"`
+	HTTPSIntent          bool                        `json:"httpsIntent"`
+	HTTPSWarnings        []HTTPSWarningDetail        `json:"httpsWarnings,omitempty"`
 	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
 }
 
@@ -146,14 +131,16 @@ type CommandWarning struct {
 
 type CommandWarningKind string
 
-const CommandWarningRuntimeCloseFailed CommandWarningKind = "runtime-close-failed"
+const (
+	CommandWarningRuntimeCloseFailed           CommandWarningKind = "runtime-close-failed"
+	CommandWarningNonActiveUserCACleanupFailed CommandWarningKind = "non-active-userca-cleanup-failed"
+)
 
 type InstallResultKind string
 
 const (
-	InstallResultInstalled            InstallResultKind = "installed"
-	InstallResultAlreadyUsable        InstallResultKind = "already-usable"
-	InstallResultBlockedRuntimeActive InstallResultKind = "blocked-runtime-active"
+	InstallResultInstalled     InstallResultKind = "installed"
+	InstallResultAlreadyUsable InstallResultKind = "already-usable"
 )
 
 type InstallResult struct {
@@ -164,13 +151,20 @@ type InstallResult struct {
 type UninstallResultKind string
 
 const (
-	UninstallResultUninstalled          UninstallResultKind = "uninstalled"
-	UninstallResultAlreadyAbsent        UninstallResultKind = "already-absent"
-	UninstallResultBlockedRuntimeActive UninstallResultKind = "blocked-runtime-active"
+	UninstallResultUninstalled      UninstallResultKind = "uninstalled"
+	UninstallResultAlreadyAbsent    UninstallResultKind = "already-absent"
+	UninstallResultConsentRequired  UninstallResultKind = "consent-required"
+	UninstallResultPACRefreshFailed UninstallResultKind = "uninstalled-pac-refresh-failed"
 )
 
 type UninstallResult struct {
-	Kind UninstallResultKind `json:"kind"`
+	Kind               UninstallResultKind  `json:"kind"`
+	ConsentFingerprint string               `json:"consentFingerprint,omitempty"`
+	Warnings           []HTTPSWarningDetail `json:"warnings,omitempty"`
+}
+
+type UninstallRequest struct {
+	ConsentFingerprint string `json:"consentFingerprint,omitempty"`
 }
 
 type GatewayStatusKind string
@@ -202,10 +196,44 @@ type RuntimeStatusDetail struct {
 	UpstreamListPath     string                      `json:"upstreamListPath"`
 	UpstreamCount        int                         `json:"upstreamCount"`
 	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
-	CATrusted            bool                        `json:"caTrusted"`
-	TrustedHTTPSActive   bool                        `json:"trustedHttpsActive"`
-	CATrustWarning       string                      `json:"caTrustWarning,omitempty"`
+	HTTPSReadiness       HTTPSReadinessStatus        `json:"httpsReadiness"`
+	HTTPSInterception    HTTPSInterceptionState      `json:"httpsInterception"`
+	HTTPSIntent          bool                        `json:"httpsIntent"`
+	HTTPSWarnings        []HTTPSWarningDetail        `json:"httpsWarnings,omitempty"`
 	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
+}
+
+type HTTPSReadinessStatus string
+
+const (
+	HTTPSReadinessReady    HTTPSReadinessStatus = "ready"
+	HTTPSReadinessNotReady HTTPSReadinessStatus = "not-ready"
+)
+
+type HTTPSInterceptionState string
+
+const (
+	HTTPSInterceptionInactive HTTPSInterceptionState = "inactive"
+	HTTPSInterceptionActive   HTTPSInterceptionState = "active"
+	HTTPSInterceptionFailed   HTTPSInterceptionState = "failed"
+)
+
+type HTTPSWarningKind string
+
+const (
+	HTTPSWarningUnmetIntent            HTTPSWarningKind = "unmet-https-intent"
+	HTTPSWarningReadinessUnavailable   HTTPSWarningKind = "https-readiness-unavailable"
+	HTTPSWarningRenewalRecommended     HTTPSWarningKind = "userca-renewal-recommended"
+	HTTPSWarningNonActiveCleanupFailed HTTPSWarningKind = "non-active-userca-cleanup-failed"
+	HTTPSWarningInterceptionFailed     HTTPSWarningKind = "https-interception-failed"
+	HTTPSWarningPACRefreshFailed       HTTPSWarningKind = "https-pac-refresh-failed"
+	HTTPSWarningUninstallIncomplete    HTTPSWarningKind = "userca-uninstall-incomplete"
+)
+
+type HTTPSWarningDetail struct {
+	Kind       HTTPSWarningKind `json:"kind"`
+	Diagnostic string           `json:"diagnostic"`
+	Action     string           `json:"action,omitempty"`
 }
 
 type CleanupStatusDetail struct {
@@ -242,12 +270,14 @@ const (
 	CAHealthInvalid            CAHealthStatus = "invalid"
 	CAHealthMultiple           CAHealthStatus = "multiple"
 	CAHealthMismatchedMaterial CAHealthStatus = "mismatched-material"
+	CAHealthMutating           CAHealthStatus = "mutating"
 	CAHealthUnknown            CAHealthStatus = "unknown"
 )
 
 type lifecycle struct {
 	mu                   sync.Mutex
 	caAdmissionMu        sync.Mutex
+	pacRefreshMu         sync.Mutex
 	managedPACSettings   managedpac.SystemSettings
 	userCATrustStore     userca.TrustStore
 	coord                *coordinator
@@ -260,16 +290,16 @@ type lifecycle struct {
 	startDone            chan struct{}
 	ownerEnding          bool
 	runtime              *activeRuntime
+	httpsWarningsChanged func([]HTTPSWarningDetail)
 	fatal                chan error
 }
 
 type activeRuntime struct {
-	engine   *trafficRuntime
-	snapshot liveconfig.Snapshot
-	pac      *managedpac.Session
-	cancel   context.CancelFunc
-	done     chan error
-	phase    runtimePhase
+	engine *trafficRuntime
+	pac    *managedpac.Session
+	cancel context.CancelFunc
+	done   chan error
+	phase  runtimePhase
 }
 
 type runtimePhase string
@@ -311,6 +341,16 @@ func (f *lifecycle) SetOwnerCache(cache stateCache) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ownerCache = cache
+}
+
+func (f *lifecycle) SetHTTPSWarningsChanged(publish func([]HTTPSWarningDetail)) {
+	f.mu.Lock()
+	f.httpsWarningsChanged = publish
+	active := f.runtime
+	f.mu.Unlock()
+	if publish != nil && active != nil {
+		publish(active.engine.snapshot().HTTPSWarnings)
+	}
 }
 
 // MarkStartCleanupComplete records direct-start cleanup performed before the
@@ -386,6 +426,18 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	if startDone != nil {
 		<-startDone
 	}
+	// CA work is independent from traffic lifetime. Stop closes traffic first,
+	// then waits for any already-admitted CA operation before owner exit.
+	f.caAdmissionMu.Lock()
+	f.caAdmissionMu.Unlock()
+	if caDir, err := userca.DefaultDir(); err == nil {
+		if cleanupErr := userca.CleanupNonActiveContext(context.Background(), caDir, f.userCATrustStore); cleanupErr != nil {
+			warnings = append(warnings, CommandWarning{
+				Kind:       CommandWarningNonActiveUserCACleanupFailed,
+				Diagnostic: cleanupErr.Error(),
+			})
+		}
+	}
 	var ownedCache *stateCache
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
 		ownedCache = &ownerCache
@@ -435,6 +487,15 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			result.Kind = GatewayStatusStarting
 		}
 		state := active.engine.snapshot()
+		if result.InstalledCA.Health == CAHealthExpired && state.HTTPSReadiness == HTTPSReadinessReady {
+			state.HTTPSReadiness = HTTPSReadinessNotReady
+			state.HTTPSInterception = HTTPSInterceptionInactive
+			state.HTTPSWarnings = []HTTPSWarningDetail{{
+				Kind:       HTTPSWarningReadinessUnavailable,
+				Diagnostic: "Installed User CA has expired.",
+				Action:     "Run `seamless-cors install`.",
+			}}
+		}
 		if phase == runtimePhaseRunning {
 			result.Kind = GatewayStatusRunning
 		}
@@ -445,9 +506,10 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			UpstreamListPath:     state.UpstreamList,
 			UpstreamCount:        state.UpstreamCount,
 			UpstreamListWarnings: state.UpstreamListWarnings,
-			CATrusted:            state.CATrusted,
-			TrustedHTTPSActive:   state.TrustedHTTPSActive,
-			CATrustWarning:       state.CATrustWarning,
+			HTTPSReadiness:       state.HTTPSReadiness,
+			HTTPSInterception:    state.HTTPSInterception,
+			HTTPSIntent:          state.HTTPSIntent,
+			HTTPSWarnings:        state.HTTPSWarnings,
 			ManagedPACServices:   managedPACServices(pac),
 		}
 		return result, nil
@@ -474,28 +536,59 @@ func upstreamListWarningDetails(warnings []upstreamlist.Warning) []UpstreamListW
 }
 
 func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
-	f.caAdmissionMu.Lock()
+	if !f.caAdmissionMu.TryLock() {
+		return InstallResult{}, userca.ErrCAOperationInProgress
+	}
 	defer f.caAdmissionMu.Unlock()
+	f.mu.Lock()
+	ownerEnding := f.ownerEnding
+	f.mu.Unlock()
+	if ownerEnding {
+		return InstallResult{}, fmt.Errorf("gateway owner is ending")
+	}
 	caDir, err := userca.DefaultDir()
 	if err != nil {
 		return InstallResult{}, err
 	}
-	if f.activeRuntimeUsesTrustedHTTPS() {
-		report, inspectErr := userca.InspectContext(ctx, caDir, f.userCATrustStore)
-		if inspectErr != nil {
-			return InstallResult{}, inspectErr
-		}
-		if report.Health == userca.HealthUsable {
-			return InstallResult{
-				Kind:               InstallResultAlreadyUsable,
-				InstalledCAExpires: report.Expires,
-			}, nil
-		}
-		return InstallResult{Kind: InstallResultBlockedRuntimeActive}, nil
+	f.mu.Lock()
+	active := f.runtime
+	var pac *managedpac.Session
+	if active != nil {
+		pac = active.pac
 	}
-	_, result, err := userca.EnsureContext(ctx, caDir, f.userCATrustStore)
-	if err != nil {
+	f.mu.Unlock()
+	_, result, err := userca.EnsureAndAdoptContext(ctx, caDir, f.userCATrustStore, func(authority *userca.Authority, report userca.Report) error {
+		f.mu.Lock()
+		stillLive := f.runtime == active && active != nil
+		f.mu.Unlock()
+		if !stillLive {
+			return nil
+		}
+		_, recoveryErr := active.engine.RecoverHTTPS(authority, report)
+		return recoveryErr
+	})
+	var cleanupErr *userca.NonActiveCleanupError
+	if err != nil && !errors.As(err, &cleanupErr) {
 		return InstallResult{}, err
+	}
+	operationErr := err
+	if active != nil {
+		if pac != nil {
+			if refreshErr := f.refreshPACToCurrent(ctx, active); refreshErr != nil {
+				active.engine.SetPACRefreshError(refreshErr)
+				return InstallResult{}, refreshErr
+			}
+			active.engine.SetPACRefreshError(nil)
+		}
+	}
+	if cleanupErr != nil {
+		if active != nil {
+			active.engine.SetUserCAOperationWarning(cleanupErr)
+		}
+		return InstallResult{}, operationErr
+	}
+	if active != nil {
+		active.engine.SetUserCAOperationWarning(nil)
 	}
 	kind := InstallResultAlreadyUsable
 	if result.Changed {
@@ -508,25 +601,82 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 }
 
 func (f *lifecycle) Uninstall(ctx context.Context) (UninstallResult, error) {
-	f.caAdmissionMu.Lock()
+	return f.UninstallWithConsent(ctx, "")
+}
+
+func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint string) (UninstallResult, error) {
+	if !f.caAdmissionMu.TryLock() {
+		return UninstallResult{}, userca.ErrCAOperationInProgress
+	}
 	defer f.caAdmissionMu.Unlock()
-	if f.activeRuntimeUsesTrustedHTTPS() {
-		return UninstallResult{Kind: UninstallResultBlockedRuntimeActive}, nil
+	f.mu.Lock()
+	ownerEnding := f.ownerEnding
+	active := f.runtime
+	f.mu.Unlock()
+	if ownerEnding {
+		return UninstallResult{}, fmt.Errorf("gateway owner is ending")
+	}
+	if active != nil && active.engine.snapshot().HTTPSInterception == HTTPSInterceptionActive {
+		expected := f.uninstallConsentFingerprint(active)
+		if consentFingerprint != expected {
+			return UninstallResult{
+				Kind:               UninstallResultConsentRequired,
+				ConsentFingerprint: expected,
+			}, nil
+		}
 	}
 	caDir, err := userca.DefaultDir()
 	if err != nil {
+		if active != nil {
+			active.engine.SetUninstallWarning(err)
+		}
 		return UninstallResult{}, err
 	}
 	before, _ := userca.InspectContext(ctx, caDir, f.userCATrustStore)
-	if err := userca.UninstallContext(ctx, caDir, f.userCATrustStore); err != nil {
+	var pacRefreshErr error
+	err = userca.UninstallWithCommitContext(ctx, caDir, f.userCATrustStore, func() {
+		if active != nil {
+			active.engine.DeactivateHTTPS(userca.Report{Health: userca.HealthMissing})
+		}
+	})
+	// Readiness deactivation is the linearization point. Trust and material
+	// removal must settle even if the requesting client disconnects.
+	if err != nil {
+		if active != nil {
+			active.engine.SetUninstallWarning(err)
+		}
 		return UninstallResult{}, err
 	}
-	after, err := userca.InspectContext(ctx, caDir, f.userCATrustStore)
+	if active != nil && active.pac != nil {
+		pacRefreshErr = f.refreshPACToCurrent(context.Background(), active)
+		active.engine.SetPACRefreshError(pacRefreshErr)
+	}
+	after, err := userca.InspectContext(context.Background(), caDir, f.userCATrustStore)
 	if err != nil {
+		if active != nil {
+			active.engine.SetUninstallWarning(err)
+		}
 		return UninstallResult{}, err
 	}
 	if after.Health != userca.HealthMissing {
-		return UninstallResult{}, fmt.Errorf("Installed User CA uninstall incomplete: installed-ca: %s", after.Health)
+		incompleteErr := fmt.Errorf("installed-ca: %s", after.Health)
+		if active != nil {
+			active.engine.SetUninstallWarning(incompleteErr)
+		}
+		return UninstallResult{}, fmt.Errorf("Installed User CA uninstall incomplete: %w", incompleteErr)
+	}
+	if active != nil {
+		active.engine.SetUserCAOperationWarning(nil)
+	}
+	if pacRefreshErr != nil {
+		return UninstallResult{
+			Kind: UninstallResultPACRefreshFailed,
+			Warnings: []HTTPSWarningDetail{{
+				Kind:       HTTPSWarningPACRefreshFailed,
+				Diagnostic: fmt.Sprintf("HTTPS routing refresh failed: %v.", pacRefreshErr),
+				Action:     "Run `seamless-cors uninstall` again to reconcile routing.",
+			}},
+		}, nil
 	}
 	if before.Health == userca.HealthMissing {
 		return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
@@ -534,11 +684,10 @@ func (f *lifecycle) Uninstall(ctx context.Context) (UninstallResult, error) {
 	return UninstallResult{Kind: UninstallResultUninstalled}, nil
 }
 
-func (f *lifecycle) activeRuntimeUsesTrustedHTTPS() bool {
-	f.mu.Lock()
-	active := f.runtime
-	f.mu.Unlock()
-	return active != nil && active.engine.snapshot().TrustedHTTPSActive
+func (f *lifecycle) uninstallConsentFingerprint(active *activeRuntime) string {
+	state := active.engine.snapshot()
+	sum := sha256.Sum256([]byte(state.ProxyListen + "\x00" + state.PACListen + "\x00uninstall-all-usercas"))
+	return hex.EncodeToString(sum[:])
 }
 
 func (f *lifecycle) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
@@ -546,13 +695,44 @@ func (f *lifecycle) watchPACRefreshes(ctx context.Context, active *activeRuntime
 		select {
 		case <-ctx.Done():
 			return
-		case nextURL := <-active.engine.PACURLUpdates():
-			if err := active.pac.Refresh(ctx, nextURL); err != nil {
-				f.reportFatalRuntimeError(active, err)
-				return
+		case <-active.engine.PACURLUpdates():
+			if err := f.refreshPACToCurrent(ctx, active); err != nil {
+				active.engine.SetPACRefreshError(err)
+				continue
+			}
+			active.engine.SetPACRefreshError(nil)
+		}
+	}
+}
+
+func (f *lifecycle) watchHTTPSWarningUpdates(ctx context.Context, active *activeRuntime) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case warnings := <-active.engine.HTTPSWarningUpdates():
+			f.mu.Lock()
+			publish := f.httpsWarningsChanged
+			stillActive := f.runtime == active
+			f.mu.Unlock()
+			if publish != nil && stillActive {
+				publish(append([]HTTPSWarningDetail(nil), warnings...))
 			}
 		}
 	}
+}
+
+func (f *lifecycle) refreshPACToCurrent(ctx context.Context, active *activeRuntime) error {
+	f.pacRefreshMu.Lock()
+	defer f.pacRefreshMu.Unlock()
+	if active.pac == nil {
+		return nil
+	}
+	nextURL := active.engine.PACURL()
+	if active.pac.CurrentURL() == nextURL {
+		return nil
+	}
+	return active.pac.Refresh(ctx, nextURL)
 }
 
 func (f *lifecycle) reportFatalRuntimeError(active *activeRuntime, err error) {
@@ -630,6 +810,9 @@ func (f *lifecycle) installedCAStatus(ctx context.Context) InstalledCAStatusDeta
 	}
 	report, err := userca.InspectContext(ctx, caDir, f.userCATrustStore)
 	if err != nil {
+		if errors.Is(err, userca.ErrCAOperationInProgress) {
+			return InstalledCAStatusDetail{Health: CAHealthMutating}
+		}
 		return InstalledCAStatusDetail{Health: CAHealthUnknown}
 	}
 	return InstalledCAStatusDetail{Health: caHealthStatus(report.Health), Expires: report.Expires}

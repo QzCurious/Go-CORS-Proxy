@@ -89,10 +89,6 @@ func (c *Config) observe(ctx context.Context, output chan watchEvent) {
 		confirmations: make(map[string]*confirmationState),
 	}
 	defer state.close()
-	if err := state.addTarget(c.configPath); err != nil {
-		publishLatest(output, watchEvent{err: err})
-		return
-	}
 	if err := state.addTarget(c.upstreamListPath); err != nil {
 		publishLatest(output, watchEvent{err: err})
 		return
@@ -266,10 +262,6 @@ func (w *watcherState) addTarget(path string) error {
 	}
 	w.targets[path] = &targetState{}
 	return nil
-}
-
-func invalidConfigError(path string, err error) error {
-	return &invalidSourceError{path: path, err: fmt.Errorf("Fatal Config Error: %w", err)}
 }
 
 func invalidUpstreamError(path string, err error) error {

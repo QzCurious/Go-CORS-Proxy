@@ -66,8 +66,7 @@ Or, if installed, invoke the command directly:
 seamless-cors start
 ```
 
-On first start, seamless-cors creates `~/.seamless-cors/config.yaml` and
-`~/.seamless-cors/upstreams.txt`.
+On first start, seamless-cors creates `~/.seamless-cors/upstreams.txt`.
 
 Add the upstream hostnames or origins for which you want to enable CORS, one per
 line, to `~/.seamless-cors/upstreams.txt`:
@@ -78,11 +77,21 @@ https://api.example.com:8443
 *.test.example.com
 ```
 
-The upstream list is watched for changes while the gateway is running.
+The upstream list is watched for changes while the gateway is running. An
+explicit `https://` Origin Selector expresses HTTPS Intent. A Host Selector
+does not express HTTPS Intent, but it serves both HTTP and HTTPS whenever HTTPS
+Readiness is ready.
 
-To enable HTTPS interception, set `ca-trusted: true` in `config.yaml` and
-restart the gateway. Your operating system will ask you to approve installing
-the seamless-cors development CA.
+To make HTTPS Readiness ready, run `seamless-cors install` and approve the
+operating-system prompt for the seamless-cors development CA. If the gateway is
+already running, HTTPS interception activates immediately. Without an
+Installed User CA, the gateway keeps serving HTTP and warns when the upstream
+list expresses HTTPS Intent.
+
+Running `seamless-cors install` again can renew the UserCA without interrupting
+HTTPS traffic. `seamless-cors uninstall` removes every seamless-cors UserCA;
+when HTTPS interception is active, the command asks for confirmation and then
+disables HTTPS immediately while the gateway continues serving HTTP.
 
 When you are finished, press `Ctrl+C` to stop the gateway and remove its PAC
 settings.

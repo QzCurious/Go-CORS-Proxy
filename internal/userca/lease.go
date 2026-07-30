@@ -3,18 +3,21 @@ package userca
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 )
 
-const caLeaseRetry = 25 * time.Millisecond
+var ErrCAOperationInProgress = errors.New("CA operation already in progress")
 
 type caMutationLease struct {
 	file *os.File
 }
 
 func acquireCAMutationLease(ctx context.Context, caDir string) (*caMutationLease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	leasePath := filepath.Clean(caDir) + ".mutation-lease"
 	if err := os.MkdirAll(filepath.Dir(leasePath), 0o700); err != nil {
 		return nil, err
@@ -23,26 +26,16 @@ func acquireCAMutationLease(ctx context.Context, caDir string) (*caMutationLease
 	if err != nil {
 		return nil, err
 	}
-	for {
-		acquired, err := tryLockCAFile(file)
-		if err != nil {
-			_ = file.Close()
-			return nil, err
-		}
-		if acquired {
-			return &caMutationLease{file: file}, nil
-		}
-		timer := time.NewTimer(caLeaseRetry)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			_ = file.Close()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
+	acquired, err := tryLockCAFile(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, err
 	}
+	if !acquired {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w", ErrCAOperationInProgress)
+	}
+	return &caMutationLease{file: file}, nil
 }
 
 func (l *caMutationLease) release() error {

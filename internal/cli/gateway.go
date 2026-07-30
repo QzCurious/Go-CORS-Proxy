@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/QzCurious/seamless-cors/internal/gateway"
@@ -37,13 +38,18 @@ func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 
 func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer, command startCommand) error {
 	stdout = writerOrDiscard(stdout)
+	liveWarnings := &liveHTTPSWarningRenderer{stdout: stdout}
 	hooks := gateway.StartHooks{
 		ConfirmPACReplacement: func(ctx context.Context, detail gateway.PACReplacementConsentDetail) (bool, error) {
 			return confirmPACReplacementConsent(ctx, stdin, stdout, &detail)
 		},
 		Started: func(result gateway.StartResult) {
-			renderStartResult(stdout, result)
+			renderStartResultWithoutHTTPSWarnings(stdout, result)
+			if result.Guidance != nil {
+				liveWarnings.RenderSnapshot(result.Guidance.HTTPSWarnings)
+			}
 		},
+		HTTPSWarningsChanged: liveWarnings.RenderSnapshot,
 	}
 	result, err := command(ctx, hooks)
 	if result.Kind == gateway.StartResultOwnerAlreadyRunning {
@@ -152,33 +158,50 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 		return err
 	}
 	renderInstallResult(stdout, result)
-	if result.Kind == gateway.InstallResultBlockedRuntimeActive {
-		return fmt.Errorf("Installed User CA replacement blocked while trusted gateway runtime is active")
-	}
 	return nil
 }
 
-type uninstallCACommand func(context.Context) (gateway.UninstallResult, error)
+type uninstallCACommand func(context.Context, gateway.UninstallRequest) (gateway.UninstallResult, error)
 
 func Uninstall(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return UninstallCA(ctx, stdout)
+	return UninstallCAWithInput(ctx, os.Stdin, stdout)
 }
 
 func UninstallCA(ctx context.Context, stdout io.Writer) error {
-	return uninstallCAWithCommand(ctx, stdout, gateway.UninstallCA)
+	return UninstallCAWithInput(ctx, os.Stdin, stdout)
 }
 
-func uninstallCAWithCommand(ctx context.Context, stdout io.Writer, command uninstallCACommand) error {
+func UninstallCAWithInput(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	return uninstallCAWithCommand(ctx, stdin, stdout, gateway.UninstallCA)
+}
+
+func uninstallCAWithCommand(ctx context.Context, stdin io.Reader, stdout io.Writer, command uninstallCACommand) error {
 	stdout = writerOrDiscard(stdout)
-	result, err := command(ctx)
+	result, err := command(ctx, gateway.UninstallRequest{})
 	if err != nil {
 		return err
 	}
+	if result.Kind == gateway.UninstallResultConsentRequired {
+		fmt.Fprintln(stdout, "HTTPS interception is active. Uninstalling will disable HTTPS interception and remove every seamless-cors UserCA.")
+		fmt.Fprint(stdout, "Proceed? [y/N] ")
+		confirmed, err := readYes(ctx, stdin)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(stdout, "Installed User CA uninstall canceled.")
+			return nil
+		}
+		result, err = command(ctx, gateway.UninstallRequest{ConsentFingerprint: result.ConsentFingerprint})
+		if err != nil {
+			return err
+		}
+	}
 	renderUninstallResult(stdout, result)
-	if result.Kind == gateway.UninstallResultBlockedRuntimeActive {
-		return fmt.Errorf("seamless-cors is running")
+	if result.Kind == gateway.UninstallResultPACRefreshFailed {
+		return fmt.Errorf("Installed User CA was removed, but Managed PAC refresh failed")
 	}
 	return nil
 }
@@ -303,15 +326,23 @@ func pacOwnershipForPrompt(raw string) gateway.PACOwnership {
 }
 
 func renderStartResult(stdout io.Writer, result gateway.StartResult) {
-	if result.CAEnsure != nil && result.CAEnsure.Kind == gateway.CAEnsureResultInstalled {
-		fmt.Fprintln(stdout, "Installed User CA added to the current user's SSL trust settings.")
-	}
+	renderStartResultWithHTTPSWarnings(stdout, result, true)
+}
+
+func renderStartResultWithoutHTTPSWarnings(stdout io.Writer, result gateway.StartResult) {
+	renderStartResultWithHTTPSWarnings(stdout, result, false)
+}
+
+func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartResult, includeHTTPSWarnings bool) {
 	switch result.Kind {
 	case gateway.StartResultStarted:
 		if result.Guidance != nil {
 			fmt.Fprintln(stdout, "seamless-cors running")
-			fmt.Fprintf(stdout, "config: %s\n", homeRelativePath(result.Guidance.ConfigPath))
 			fmt.Fprintf(stdout, "upstream-list: %s\n", homeRelativePath(result.Guidance.UpstreamListPath))
+			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Guidance.HTTPSInterception))
+			if includeHTTPSWarnings {
+				renderHTTPSWarnings(stdout, result.Guidance.HTTPSWarnings)
+			}
 			if result.Guidance.ManagedPACActive {
 				fmt.Fprintln(stdout, "managed-pac: active")
 				if len(result.Guidance.ManagedPACServices) > 0 {
@@ -322,12 +353,28 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
-	case gateway.StartResultPlatformApprovalDenied:
-		fmt.Fprintln(stdout, "Certificate trust was not approved.")
-		fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
 	case gateway.StartResultCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors start cleanup failed")
 	}
+}
+
+type liveHTTPSWarningRenderer struct {
+	mu      sync.Mutex
+	stdout  io.Writer
+	current map[gateway.HTTPSWarningKind]gateway.HTTPSWarningDetail
+}
+
+func (r *liveHTTPSWarningRenderer) RenderSnapshot(warnings []gateway.HTTPSWarningDetail) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := make(map[gateway.HTTPSWarningKind]gateway.HTTPSWarningDetail, len(warnings))
+	for _, warning := range warnings {
+		next[warning.Kind] = warning
+		if previous, ok := r.current[warning.Kind]; !ok || previous != warning {
+			renderHTTPSWarnings(r.stdout, []gateway.HTTPSWarningDetail{warning})
+		}
+	}
+	r.current = next
 }
 
 func homeRelativePath(path string) string {
@@ -365,10 +412,10 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	switch result.Kind {
 	case gateway.InstallResultInstalled:
 		fmt.Fprintln(stdout, "Installed User CA installed.")
+		fmt.Fprintln(stdout, "https-readiness: ready")
 	case gateway.InstallResultAlreadyUsable:
 		fmt.Fprintln(stdout, "Installed User CA is already usable.")
-	case gateway.InstallResultBlockedRuntimeActive:
-		fmt.Fprintln(stdout, "Installed User CA replacement requires stopping the trusted gateway runtime first.")
+		fmt.Fprintln(stdout, "https-readiness: ready")
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
@@ -381,8 +428,11 @@ func renderUninstallResult(stdout io.Writer, result gateway.UninstallResult) {
 		fmt.Fprintln(stdout, "Installed User CA uninstalled.")
 	case gateway.UninstallResultAlreadyAbsent:
 		fmt.Fprintln(stdout, "Installed User CA is already absent.")
-	case gateway.UninstallResultBlockedRuntimeActive:
-		fmt.Fprintln(stdout, "seamless-cors is running; stop it before uninstalling the Installed User CA.")
+	case gateway.UninstallResultConsentRequired:
+		fmt.Fprintln(stdout, "Installed User CA uninstall requires confirmation.")
+	case gateway.UninstallResultPACRefreshFailed:
+		fmt.Fprintln(stdout, "Installed User CA uninstalled, but Managed PAC refresh failed.")
+		renderHTTPSWarnings(stdout, result.Warnings)
 	}
 }
 
@@ -419,11 +469,8 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		if len(result.Runtime.ManagedPACServices) > 0 {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
 		}
-		fmt.Fprintf(stdout, "ca-trusted: %t\n", result.Runtime.CATrusted)
-		fmt.Fprintf(stdout, "trusted-https-active: %t\n", result.Runtime.TrustedHTTPSActive)
-		if result.Runtime.CATrustWarning != "" {
-			fmt.Fprintf(stdout, "warning: %s\n", result.Runtime.CATrustWarning)
-		}
+		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSInterception))
+		renderHTTPSWarnings(stdout, result.Runtime.HTTPSWarnings)
 	}
 	fmt.Fprintf(stdout, "installed-ca: %s\n", result.InstalledCA.Health)
 	if !result.InstalledCA.Expires.IsZero() {
@@ -437,6 +484,22 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 			if subject.State == gateway.CleanupStatusUnknown && subject.Diagnostic != "" {
 				fmt.Fprintf(stdout, "cleanup-%s: unknown: %s\n", subject.Subject, subject.Diagnostic)
 			}
+		}
+	}
+}
+
+func humanHTTPSState(state gateway.HTTPSInterceptionState) string {
+	if state == gateway.HTTPSInterceptionActive {
+		return "active"
+	}
+	return "inactive"
+}
+
+func renderHTTPSWarnings(stdout io.Writer, warnings []gateway.HTTPSWarningDetail) {
+	for _, warning := range warnings {
+		fmt.Fprintf(stdout, "warning: %s\n", warning.Diagnostic)
+		if warning.Action != "" {
+			fmt.Fprintf(stdout, "action: %s\n", warning.Action)
 		}
 	}
 }

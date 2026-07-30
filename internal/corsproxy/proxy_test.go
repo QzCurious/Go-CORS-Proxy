@@ -5,13 +5,16 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestHTTPProxyForwardsRequestsAndRepairsAllStatuses(t *testing.T) {
@@ -173,6 +176,99 @@ func TestTrustedHTTPSInterceptionAnswersPreflightLocally(t *testing.T) {
 	}
 }
 
+func TestHTTPSPreparationFailureDirectTunnelsDetectingRequest(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		_, _ = w.Write([]byte("direct"))
+	}))
+	defer upstream.Close()
+	store := &testTrustStore{}
+	authority, _, err := userca.Ensure(t.TempDir(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := make(chan HTTPSFailure, 1)
+	core := newTestCore(t, Options{
+		InterceptHTTPS: true,
+		Authority:      authority,
+		Transport:      testTransport(t, upstream.Client()),
+		OnHTTPSFailure: func(failure HTTPSFailure) { failures <- failure },
+		GenerateLeaf: func(tls.Certificate, string) (*tls.Certificate, error) {
+			return nil, errors.New("leaf generation failed")
+		},
+	})
+	proxyServer := httptest.NewServer(core)
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := testTransport(t, upstream.Client())
+	transport.Proxy = http.ProxyURL(proxyURL)
+	client := &http.Client{Transport: transport}
+	req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://app.local")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("direct-tunneled response was CORS-repaired: %q", got)
+	}
+	failure := <-failures
+	if failure.Kind != HTTPSFailureInterception || !strings.Contains(failure.Err.Error(), "leaf generation failed") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if core.httpsGeneration.Load() != nil {
+		t.Fatal("failed interception remained active")
+	}
+}
+
+func TestExpiredUserCADetectedAtRequestBoundaryDirectTunnels(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}))
+	defer upstream.Close()
+	store := &testTrustStore{}
+	authority, _, err := userca.Ensure(t.TempDir(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := make(chan HTTPSFailure, 1)
+	core := newTestCore(t, Options{
+		InterceptHTTPS: true,
+		Authority:      authority,
+		OnHTTPSFailure: func(failure HTTPSFailure) { failures <- failure },
+	})
+	core.httpsGeneration.Load().expiresAt = time.Now().Add(-time.Second)
+	proxyServer := httptest.NewServer(core)
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := testTransport(t, upstream.Client())
+	transport.Proxy = http.ProxyURL(proxyURL)
+	client := &http.Client{Transport: transport}
+
+	resp, err := client.Get(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("expired detecting request was intercepted: %q", got)
+	}
+	if failure := <-failures; failure.Kind != HTTPSFailureReadiness {
+		t.Fatalf("expiry failure = %#v", failure)
+	}
+}
+
 func TestProxyLoggingIsQuietByDefault(t *testing.T) {
 	t.Setenv("SEAMLESS_CORS_DEBUG_PROXY", "")
 	core := newTestCore(t, Options{})
@@ -199,9 +295,9 @@ func trustedProxyServer(t *testing.T, upstreamClient *http.Client) (*httptest.Se
 		t.Fatal(err)
 	}
 	core := newTestCore(t, Options{
-		CATrusted: true,
-		Authority: authority,
-		Transport: testTransport(t, upstreamClient),
+		InterceptHTTPS: true,
+		Authority:      authority,
+		Transport:      testTransport(t, upstreamClient),
 	})
 	proxyServer := httptest.NewServer(core)
 	proxyURL, err := url.Parse(proxyServer.URL)

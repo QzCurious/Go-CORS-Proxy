@@ -14,6 +14,7 @@ var errStartNotActivated = errors.New("gateway start did not activate runtime")
 type StartHooks struct {
 	ConfirmPACReplacement func(context.Context, PACReplacementConsentDetail) (bool, error)
 	Started               func(StartResult)
+	HTTPSWarningsChanged  func([]HTTPSWarningDetail)
 }
 
 func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
@@ -62,6 +63,7 @@ func start(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 		if start.Kind != StartResultStarted {
 			return fmt.Errorf("%w: %s", errStartNotActivated, start.Kind)
 		}
+		owner.lifecycle.SetHTTPSWarningsChanged(hooks.HTTPSWarningsChanged)
 		return nil
 	})
 	if errors.Is(err, errStartNotActivated) {
@@ -123,8 +125,6 @@ func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks
 		case StartResultStarted, StartResultAlreadyRunning:
 			result.Kind = StartResultStarted
 			return result, nil
-		case StartResultPlatformApprovalDenied:
-			return result, userca.ErrApprovalDenied
 		case StartResultStopCancelled, StartResultCleanupFailed:
 			return result, nil
 		case StartResultConsentRequired:

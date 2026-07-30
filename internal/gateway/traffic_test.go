@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/corsproxy"
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
-	config, initial, _, upstreamPath := createTrafficConfig(t, "api.example.test\n", false)
-	runtime, err := newRuntime(config, initial, trustedHTTPSAdmission{})
+	config, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
+	runtime, err := newRuntime(config, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,95 +50,215 @@ func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
 	}
 }
 
-func TestLiveCATrustUsesOnlyAnAlreadyUsableAuthority(t *testing.T) {
+func TestHTTPSIntentDoesNotReassessLatchedReadiness(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	config, initial, configPath, _ := createTrafficConfigAtCurrentHome(t, "api.example.test\n", false)
-	store := &trafficTestTrustStore{}
-	authority, _, err := userca.Ensure(filepath.Join(home, "ca"), store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := newRuntime(config, initial, trustedHTTPSAdmission{
-		loadUsable: func(context.Context) (*userca.Authority, userca.Report, error) {
-			return authority, userca.Report{Health: userca.HealthUsable}, nil
-		},
-	})
+	config, initial, upstreamPath := createTrafficConfigAtCurrentHome(t, "api.example.test\n")
+	runtime, err := newRuntime(config, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetAuthority(nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(nil, userca.Report{Health: userca.HealthMissing}, nil); err != nil {
 		t.Fatal(err)
 	}
-
-	initialPACURL := runtime.PACURL()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errs := make(chan serverError, 1)
 	go runtime.watchLiveConfig(ctx, errs)
 
-	writeTrafficTestFile(t, configPath, "ca-trusted: true\n")
+	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return state.CATrusted && state.TrustedHTTPSActive
+		return state.HTTPSIntent
 	})
 	state := runtime.snapshot()
-	if !state.CATrusted || !state.TrustedHTTPSActive || state.CATrustWarning != "" {
-		t.Fatalf("enabled CA trust state = %#v", state)
+	if state.HTTPSReadiness != HTTPSReadinessNotReady {
+		t.Fatalf("latched readiness state = %#v", state)
 	}
-	if runtime.PACURL() == initialPACURL {
-		t.Fatal("enabling trusted HTTPS did not advance the PAC URL")
-	}
-
-	writeTrafficTestFile(t, configPath, "ca-trusted: false\n")
-	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return !state.CATrusted
-	})
-	state = runtime.snapshot()
-	if state.CATrusted || state.TrustedHTTPSActive || state.CATrustWarning != "" {
-		t.Fatalf("disabled CA trust state = %#v", state)
+	if !hasHTTPSWarning(state.HTTPSWarnings, HTTPSWarningUnmetIntent) {
+		t.Fatalf("HTTPS warnings = %#v", state.HTTPSWarnings)
 	}
 }
 
-func TestLiveCATrustWarnsWhenUserCAIsNotUsable(t *testing.T) {
-	config, initial, configPath, _ := createTrafficConfig(t, "api.example.test\n", false)
-	runtime, err := newRuntime(config, initial, trustedHTTPSAdmission{
-		loadUsable: func(context.Context) (*userca.Authority, userca.Report, error) {
-			return nil, userca.Report{Health: userca.HealthMissing}, nil
-		},
-	})
+func TestRecoverHTTPSActivatesLatchedReadiness(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config, initial, _ := createTrafficConfigAtCurrentHome(t, "api.example.test\nhttps://secure.example.test\n")
+	runtime, err := newRuntime(config, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetAuthority(nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(nil, userca.Report{Health: userca.HealthMissing}, nil); err != nil {
+		t.Fatal(err)
+	}
+	store := &trafficTestTrustStore{}
+	authority, result, err := userca.Ensure(filepath.Join(home, "ca"), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialPACURL := runtime.PACURL()
+	nextPACURL, err := runtime.RecoverHTTPS(authority, result.Report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.snapshot()
+	if state.HTTPSReadiness != HTTPSReadinessReady {
+		t.Fatalf("recovered readiness state = %#v", state)
+	}
+	if len(state.HTTPSWarnings) != 0 {
+		t.Fatalf("HTTPS warnings = %#v", state.HTTPSWarnings)
+	}
+	if nextPACURL == "" || nextPACURL == initialPACURL || runtime.PACURL() != nextPACURL {
+		t.Fatalf("PAC recovery URL = %q, initial = %q, current = %q", nextPACURL, initialPACURL, runtime.PACURL())
+	}
+}
+
+func TestInterceptionFailurePreservesReadinessAndInstallRecovery(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config, initial, _ := createTrafficConfigAtCurrentHome(t, "https://secure.example.test\n")
+	runtime, err := newRuntime(config, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	store := &trafficTestTrustStore{}
+	authority, result, err := userca.Ensure(filepath.Join(home, "ca"), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetInitialHTTPSReadiness(authority, result.Report, nil); err != nil {
+		t.Fatal(err)
+	}
+	initialPAC := runtime.PACURL()
+
+	runtime.handleHTTPSFailure(corsproxy.HTTPSFailure{
+		Kind: corsproxy.HTTPSFailureInterception,
+		Err:  context.DeadlineExceeded,
+	})
+	failed := runtime.snapshot()
+	if failed.HTTPSReadiness != HTTPSReadinessReady || failed.HTTPSInterception != HTTPSInterceptionFailed {
+		t.Fatalf("failed state = %#v", failed)
+	}
+	if runtime.PACURL() == initialPAC || !hasHTTPSWarning(failed.HTTPSWarnings, HTTPSWarningInterceptionFailed) {
+		t.Fatalf("failure did not withdraw HTTPS routes: PAC %q warnings %#v", runtime.PACURL(), failed.HTTPSWarnings)
+	}
+
+	if _, err := runtime.RecoverHTTPS(authority, result.Report); err != nil {
+		t.Fatal(err)
+	}
+	recovered := runtime.snapshot()
+	if recovered.HTTPSInterception != HTTPSInterceptionActive || len(recovered.HTTPSWarnings) != 0 {
+		t.Fatalf("recovered state = %#v", recovered)
+	}
+}
+
+func TestReadinessLossWithdrawsHTTPSRoutesAndDirectsRecoveryToInstall(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config, initial, _ := createTrafficConfigAtCurrentHome(t, "https://secure.example.test\n")
+	runtime, err := newRuntime(config, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	store := &trafficTestTrustStore{}
+	authority, result, err := userca.Ensure(filepath.Join(home, "ca"), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetInitialHTTPSReadiness(authority, result.Report, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	initialPACURL := runtime.PACURL()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	errs := make(chan serverError, 1)
-	go runtime.watchLiveConfig(ctx, errs)
-
-	writeTrafficTestFile(t, configPath, "ca-trusted: true\n")
-	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return state.CATrusted
+	runtime.handleHTTPSFailure(corsproxy.HTTPSFailure{
+		Kind: corsproxy.HTTPSFailureReadiness,
+		Err:  context.DeadlineExceeded,
 	})
 	state := runtime.snapshot()
-	if !state.CATrusted || state.TrustedHTTPSActive {
-		t.Fatalf("unavailable CA trust state = %#v", state)
+	if state.HTTPSReadiness != HTTPSReadinessNotReady || state.HTTPSInterception != HTTPSInterceptionInactive {
+		t.Fatalf("readiness-loss state = %#v", state)
 	}
-	if !strings.Contains(state.CATrustWarning, "missing") {
-		t.Fatalf("CA trust warning = %q", state.CATrustWarning)
+	if !strings.Contains(httpsWarningDiagnostics(state.HTTPSWarnings), "expired") {
+		t.Fatalf("readiness-loss warnings = %#v", state.HTTPSWarnings)
 	}
-	if runtime.PACURL() != initialPACURL {
-		t.Fatalf("inactive trusted HTTPS advanced PAC URL from %q to %q", initialPACURL, runtime.PACURL())
+}
+
+func TestHTTPSReadinessWarningMatrix(t *testing.T) {
+	noIntent := upstreamListForTrafficTest(t, "api.example.test\n")
+	intent := upstreamListForTrafficTest(t, "https://api.example.test\n")
+	expiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		list      liveconfig.Snapshot
+		authority *userca.Authority
+		report    userca.Report
+		err       error
+		want      string
+	}{
+		{
+			name:   "absent without intent is silent",
+			list:   noIntent,
+			report: userca.Report{Health: userca.HealthMissing},
+		},
+		{
+			name:   "absent with intent is unmet",
+			list:   intent,
+			report: userca.Report{Health: userca.HealthMissing},
+			want:   "HTTPS was requested",
+		},
+		{
+			name:   "broken owned state warns without intent",
+			list:   noIntent,
+			report: userca.Report{Health: userca.HealthMismatchedMaterial},
+			want:   "mismatched-material",
+		},
+		{
+			name:      "near expiry stays ready with renewal warning",
+			list:      noIntent,
+			authority: &userca.Authority{},
+			report:    userca.Report{Health: userca.HealthExpiringSoon, Expires: expiry},
+			want:      "expires soon",
+		},
+		{
+			name:   "inspection failure warns",
+			list:   noIntent,
+			report: userca.Report{Health: userca.HealthUnknown},
+			err:    context.DeadlineExceeded,
+			want:   "could not be assessed",
+		},
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := httpsWarningDiagnostics(httpsReadinessWarnings(tt.list.UpstreamList(), tt.authority, tt.report, tt.err))
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("warning = %q, want substring %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func httpsWarningDiagnostics(warnings []HTTPSWarningDetail) string {
+	var diagnostics []string
+	for _, warning := range warnings {
+		diagnostics = append(diagnostics, warning.Diagnostic)
+	}
+	return strings.Join(diagnostics, "\n")
+}
+
+func upstreamListForTrafficTest(t *testing.T, contents string) liveconfig.Snapshot {
+	t.Helper()
+	_, snapshot, _ := createTrafficConfig(t, contents)
+	return snapshot
 }
 
 type trafficTestTrustStore struct {
-	records []userca.TrustedCertificate
+	records   []userca.TrustedCertificate
+	trustErr  error
+	removeErr error
 }
 
 func (s *trafficTestTrustStore) TrustedCertificates(context.Context) ([]userca.TrustedCertificate, error) {
@@ -154,16 +275,29 @@ func (s *trafficTestTrustStore) Trust(_ context.Context, certificatePEM []byte) 
 	if err != nil {
 		return err
 	}
-	s.records = []userca.TrustedCertificate{{
+	s.records = append(s.records, userca.TrustedCertificate{
 		Fingerprint:    fingerprint,
 		CertificatePEM: certificatePEM,
 		ExpiresAt:      certificate.NotAfter,
-	}}
-	return nil
+	})
+	return s.trustErr
 }
 
-func (s *trafficTestTrustStore) Remove(context.Context, []string) error {
-	s.records = nil
+func (s *trafficTestTrustStore) Remove(_ context.Context, fingerprints []string) error {
+	if s.removeErr != nil {
+		return s.removeErr
+	}
+	remove := map[string]bool{}
+	for _, fingerprint := range fingerprints {
+		remove[fingerprint] = true
+	}
+	var kept []userca.TrustedCertificate
+	for _, record := range s.records {
+		if !remove[record.Fingerprint] {
+			kept = append(kept, record)
+		}
+	}
+	s.records = kept
 	return nil
 }
 
@@ -180,13 +314,13 @@ func writeTrafficTestFile(t *testing.T, path, contents string) {
 	}
 }
 
-func createTrafficConfig(t *testing.T, upstreams string, caTrusted bool) (*liveconfig.Config, liveconfig.Snapshot, string, string) {
+func createTrafficConfig(t *testing.T, upstreams string) (*liveconfig.Config, liveconfig.Snapshot, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	return createTrafficConfigAtCurrentHome(t, upstreams, caTrusted)
+	return createTrafficConfigAtCurrentHome(t, upstreams)
 }
 
-func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string, caTrusted bool) (*liveconfig.Config, liveconfig.Snapshot, string, string) {
+func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*liveconfig.Config, liveconfig.Snapshot, string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -197,15 +331,13 @@ func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string, caTrusted 
 		t.Fatal(err)
 	}
 	dir := filepath.Join(home, ".seamless-cors")
-	configPath := filepath.Join(dir, "config.yaml")
 	upstreamPath := filepath.Join(dir, "upstreams.txt")
-	writeTrafficTestFile(t, configPath, "ca-trusted: "+map[bool]string{true: "true", false: "false"}[caTrusted]+"\n")
 	writeTrafficTestFile(t, upstreamPath, upstreams)
 	snapshot, err := config.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return config, snapshot, configPath, upstreamPath
+	return config, snapshot, upstreamPath
 }
 
 func waitForTrafficConfig(t *testing.T, runtime *trafficRuntime, errs <-chan serverError, ready func(runtimeState) bool) {

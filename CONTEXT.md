@@ -101,11 +101,11 @@ A stop behavior where Gateway Footprint Cleanup attempts every cleanup subject, 
 _Avoid_: failure-blocked cleanup, leaving owned runtime state behind, router-only stop
 
 **Owner Stop**:
-A stop behavior where `stop` and `/stop` tear down the Gateway Owner itself, including a router-only owner, and close Gateway Runtime before Gateway Footprint Cleanup so no new gateway traffic is accepted after runtime close completes.
+A stop behavior where `stop` and `/stop` tear down the Gateway Owner itself, including a router-only owner, and close Gateway Runtime before Gateway Footprint Cleanup so no new gateway traffic is accepted after runtime close completes. Runtime shutdown proceeds immediately while owner exit waits for any independent CA Lifecycle Command to settle without canceling it.
 _Avoid_: runtime-only stop, router-only survival, stop-as-status, start-survives-stop, accepted-before-cleanup, cleanup-before-runtime-close
 
 **Owner Ending**:
-A Gateway Owner lifecycle state that begins when Owner Stop takes precedence and lasts until stop succeeds or the process exits. A Retryable Stop Failure leaves the owner ending and teardown-only: stop retries and status remain available, while a Start Sequence is rejected as `stop-cancelled`.
+A Gateway Owner lifecycle state that begins when Owner Stop takes precedence and lasts until stop succeeds or the process exits. A CA Lifecycle Command admitted earlier may settle, but new start, install, and uninstall work is rejected; a Retryable Stop Failure leaves only stop retries and status available.
 _Avoid_: owner stopping, shutdown window, late start admission, start-after-stop
 
 **Retryable Stop Failure**:
@@ -137,39 +137,63 @@ A long-lived local development certificate authority trusted only in the current
 _Avoid_: per-start CA, system-wide CA, shared CA
 
 **Installed User CA Renewal**:
-A lifecycle behavior where an unavailable, invalid, expired, or near-expiry Installed User CA is replaced before trusted HTTPS interception starts.
-_Avoid_: expired trust reuse, surprise HTTPS breakage, silent CA replacement
+A maintenance operation that replaces an Installed User CA before expiry. A near-expiry authority remains valid for Trusted HTTPS Interception while producing a renewal warning.
+_Avoid_: activation-blocking renewal, silent CA replacement, treating near-expiry as expired
 
 **CA Replacement Rule**:
-A CA lifecycle rule where only fully usable Installed User CA state is reused, local permission issues are repaired in place, and every other unusable state is treated by removing owned CA state before installing fresh CA material.
-_Avoid_: partial CA reuse, trusting stale local material, special-case invalid states
+A CA lifecycle rule where a valid Active UserCA is reused, local permission issues are repaired in place, and renewal-due authority rotates through an overlapping Candidate without interrupting active HTTPS. Invalid, expired, mismatched, or missing-trust state becomes not-ready and is repaired or replaced explicitly by install.
+_Avoid_: proxy-failure-triggered replacement, destructive pre-candidate renewal, trusting invalid material, start-time repair
 
 **CA Ensure**:
-An independent lifecycle operation used by the Start Sequence and CA Lifecycle Commands to verify that usable Installed User CA trust exists, requesting platform approval only when trust must be added or replaced. Successful CA Ensure remains complete when later Gateway Activation is declined or fails.
-_Avoid_: activation-owned CA setup, repeated trust prompt, start without usable trust, install-only trust repair, rollback after PAC decline
+The trust-mutating operation behind the explicit UserCA install command, requesting platform approval only when trust must be added or replaced. Gateway start assesses HTTPS Readiness without invoking CA Ensure.
+_Avoid_: start-time CA installation, activation-owned CA setup, repeated trust prompt, implicit trust repair
 
-**Cancelled CA Ensure Reconciliation**:
-A cancellation behavior where interrupted CA Ensure reinspects trust and local material, preserves and reports a fully usable Installed User CA, accepts fully absent state, and removes seamless-cors-owned partial or mismatched state before cancellation completes.
-_Avoid_: assumed cancellation outcome, trusted CA without local key, orphaned key material, Gateway Footprint Cleanup of CA state
+**Cancelled CA Install Reconciliation**:
+A cancellation behavior where install interrupted before active-marker persistence preserves the old Active UserCA and attempts Non-Active UserCA Cleanup. Marker persistence through atomic HTTPS Generation swap is non-cancellable; once committed, the new Active generation is completed even if the caller can no longer receive its result.
+_Avoid_: cancellation inside rotation commit, marker/runtime divergence, guessed cancellation outcome, Gateway Footprint Cleanup of CA state
 
 **CA Mutation Lease**:
-A cross-process, cancellation-aware exclusivity rule covering CA Ensure, replacement, uninstall, and cancellation reconciliation for the single Installed User CA. It serializes only CA mutation, waits for an existing holder to settle before reinspecting state, and never gates cleanup, PAC work, or an entire Start Sequence.
-_Avoid_: global lifecycle mutex, start lock, duplicate CA approval, concurrent CA replacement, stale lock file
+A cross-process, non-queueing exclusivity rule covering install, UserCA Rotation, uninstall, and Non-Active UserCA Cleanup. A competing CA Lifecycle Command fails fast as `ca-operation-in-progress`; best-effort cleanup skips and retries at a later boundary rather than waiting or creating a backlog.
+_Avoid_: capacity channel, queued CA command, waiting contender, concurrent CA mutation, global lifecycle mutex
 
-**CA Ensure Result**:
-A surface-neutral outcome reporting whether required CA Ensure installed or reused the Installed User CA and when that trust identity expires. Trusted Runtime Admission refreshes this result when it adopts a different currently usable Installed User CA; a Start Sequence with CA trust disabled skips CA inspection and carries no CA Ensure Result.
-_Avoid_: Start Guidance, terminal acknowledgement, hidden partial start state, success-only CA detail
+**Settled-CA Start Admission**:
+A read-side startup boundary where `start` fails fast as `ca-operation-in-progress` when the CA Mutation Lease is held, so Gateway Runtime never loads an Active marker that an external CA operation is about to replace.
+_Avoid_: start waiting on trust prompt, runtime boot from mutating CA state, marker polling
 
-**Post-CA Start Failure**:
-A Start Sequence infrastructure failure that occurs after successful CA Ensure and therefore reports both the failure and the completed CA Ensure Result. The Installed User CA remains usable and is not rolled back.
-_Avoid_: total start rollback, hidden CA installation, CA success converted to failure, PAC consent result
+**Installed UserCA Set**:
+The seamless-cors-owned immutable fingerprint-named authority generations represented in current-user OS trust or local authority storage. Normal state contains one Active UserCA and at most one Candidate or Retired UserCA; another rotation cannot begin until non-active residue is reconciled.
+_Avoid_: permanent multiple UserCAs, ambiguous authority collection, unbounded trusted identities
 
-**Single Installed CA State**:
-A CA lifecycle invariant where multiple seamless-cors-owned CA trust identities are treated as repair-needed state and replaced by one usable Installed User CA.
-_Avoid_: multiple active development CAs, ambiguous signing identity
+**Active UserCA**:
+The one Installed User CA identified by the durable atomic active-fingerprint marker and used to sign new intercepted HTTPS connections.
+_Avoid_: unmarked authority, newest-certificate inference, arbitrary installed authority, multiple active signers
+
+**Candidate UserCA**:
+A fully prepared and OS-trusted immutable authority generation that may coexist with the Active UserCA but does not sign connections until its fingerprint is atomically persisted as active and the runtime adopts its HTTPS generation.
+_Avoid_: partially installed CA, active signer, untrusted staging certificate, required Candidate marker
+
+**HTTPS Generation**:
+An immutable runtime bundle containing one UserCA fingerprint, certificate, signer, and generation-owned leaf-certificate cache. Each new TLS handshake atomically loads the current generation pointer once, preventing certificate, signer, and cached leaves from crossing authority generations.
+_Avoid_: independent signer swap, shared cross-generation leaf cache, mutable authority bundle
+
+**Retired UserCA**:
+The previous Active UserCA after atomic HTTPS Generation swap. In-flight handshakes may continue using their loaded generation because its public root remains trusted; old private material is removed as soon as practical, while fallible OS trust removal is deferred to Non-Active UserCA Cleanup.
+_Avoid_: active signer, permanent secondary root, connection drain, retained private key
+
+**UserCA Rotation**:
+An uninterrupted HTTPS maintenance transition that creates and trusts an immutable Candidate generation, atomically persists its fingerprint as active, then atomically swaps the runtime HTTPS Generation pointer through a non-cancellable commit section when runtime remains live. If runtime closes during the independent operation, the durable marker is sufficient and the next start loads it. Install succeeds once the new authority is trusted and durably active, plus adopted when a live runtime exists; later Retired cleanup is not part of success. Failure or cancellation before marker persistence keeps old Active and attempts Non-Active UserCA Cleanup without guessing Candidate active.
+_Avoid_: TLS handshake barrier, handshake counter, connection registry, stop-required renewal, synchronous retired-root cleanup, rotation journal
+
+**Interrupted UserCA Rotation**:
+A recoverable state with a marked valid Active UserCA and non-active owned authority residue. Gateway restart serves the marked authority and warns without mutating OS trust; the next explicit CA Lifecycle Command reconciles every non-active authority before proceeding.
+_Avoid_: Candidate marker, startup trust mutation, multiple-authority readiness failure, newest-certificate guessing, rotation journal
+
+**Non-Active UserCA Cleanup**:
+A fallible removal of every owned authority other than the active-fingerprint generation from current-user OS trust and local storage, whether pre-marker Candidate residue or post-marker Retired residue. It runs before another rotation, during explicit install, always during uninstall, and best-effort during graceful termination; failure never blocks termination or disables active HTTPS, exposes `non-active-userca-cleanup-failed`, and is retried by explicit CA Lifecycle Commands.
+_Avoid_: administrator-assumed cleanup, shutdown-blocking failure, active HTTPS disablement, silent trusted-root accumulation
 
 **CA Material Integrity**:
-A CA lifecycle invariant where current-user CA trust and the local signing key must match; missing or mismatched CA material is treated as repair-needed state.
+A CA lifecycle invariant where current-user CA trust and local signing material match for each member of the Installed UserCA Set; missing or mismatched material is treated as repair-needed state.
 _Avoid_: trusted cert without signing key, orphaned signing key, mismatched CA pair
 
 **OS-Backed CA Installation**:
@@ -181,59 +205,87 @@ A CA lifecycle behavior where otherwise-valid Installed User CA material with lo
 _Avoid_: permission-triggered CA rotation, loose CA key permissions
 
 **Leaf Certificate Reuse**:
-A runtime behavior where generated per-host HTTPS certificates may be reused within a gateway process until their generation age exceeds the cache reuse limit, but are not persisted as trusted identity across gateway runs.
-_Avoid_: persistent leaf certificate inventory, per-request certificate churn, expiry-only cache policy
+A runtime behavior where generated per-host HTTPS certificates may be reused within one HTTPS Generation until their generation age exceeds the cache reuse limit. The cache is discarded with its authority generation and is never persisted as trusted identity across gateway runs.
+_Avoid_: cross-generation leaf cache, persistent leaf certificate inventory, per-request certificate churn, expiry-only cache policy
 
 **Per-Host Leaf Certificate**:
 A generated HTTPS server certificate for the specific upstream hostname being intercepted, signed by the Installed User CA on demand.
 _Avoid_: Upstream List-wide leaf certificate, wildcard-first certificate strategy, persisted leaf identity
 
-**Trusted HTTPS Interception**:
-A runtime behavior where HTTPS traffic that reaches the Proxy Listener is intercepted only when `ca-trusted` is enabled and a usable Installed User CA is available. A live enablement adopts an already-usable authority without installing or repairing UserCA; otherwise configuration remains enabled while interception stays inactive with a warning.
-_Avoid_: untrusted HTTPS interception, broken MITM, Upstream List gated interception, live CA Ensure
+**HTTPS Intent**:
+An Upstream List state containing at least one valid HTTPS Origin Selector. Host Selectors and HTTP Origin Selectors do not express this intent.
+_Avoid_: Config File HTTPS toggle, inferred Host Selector HTTPS intent, invalid-line HTTPS intent
 
-**Explicit Trusted HTTPS**:
-A lifecycle default where generated configuration starts with `ca-trusted: false` and an omitted setting also resolves to false. HTTPS interception is requested only by an explicit `ca-trusted: true`, while adding or replacing Installed User CA trust remains a start-time or explicit UserCA operation requiring platform approval.
-_Avoid_: default HTTPS interception, silent trust installation, config-only trust
+**Unmet HTTPS Intent**:
+An HTTPS state where HTTPS Intent exists while HTTPS Readiness is not ready. Trusted HTTPS Interception remains inactive, the gateway continues serving HTTP, and the user receives an actionable warning.
+_Avoid_: blocked gateway, failed gateway start, implicit UserCA installation
+
+**HTTPS Warning**:
+A typed, surface-neutral current diagnostic owned by the Gateway Module and exposed independently from HTTPS Intent and HTTPS Readiness so multiple conditions may coexist. Stable kinds cover unmet intent, unhealthy UserCA state, renewal due, non-active UserCA cleanup failure, interception failure, and PAC refresh failure; front ends render them for users and cleared warnings are not retained as history.
+_Avoid_: terminal warning text, warning history, single CA warning string, readiness encoded as prose, mutually exclusive diagnostics, silent degraded HTTPS
+
+**Live HTTPS Warning Delivery**:
+A foreground lifecycle callback that publishes a surface-neutral HTTPS Warning snapshot when the current set changes. The CLI renders added or materially changed warnings live, while HTTP clients read the same current set through status without requiring a streaming endpoint.
+_Avoid_: Gateway-owned terminal output, warning polling in the foreground CLI, warning event history, required HTTP event stream
+
+**HTTPS Readiness**:
+The runtime-assessed state of whether UserCA capability can support Trusted HTTPS Interception, expressed as `ready` or `not-ready` with a stable reason such as `userca-missing`, `active-marker-invalid`, `trust-missing`, `material-mismatched`, `certificate-invalid`, `certificate-expired`, or `inspection-failed`. Near-expiry and expected two-authority rotation remain ready with independent warnings; proxy operational failures belong to HTTPS Interception State instead.
+_Avoid_: proxy health, continuous trust-store polling, installed-file check, expiry warning as not-ready
+
+**HTTPS Readiness Loss**:
+A runtime transition from ready to not-ready HTTPS Readiness when UserCA capability becomes unavailable, including certificate expiry detected at an HTTPS request boundary or confirmed Live UserCA Uninstall. Read-only status may report expiry-derived effective readiness before this transition without mutating runtime state.
+_Avoid_: proxy operational failure, failed gateway, continuous trust-store revalidation, status mutation
+
+**HTTPS Interception State**:
+The runtime behavior state derived from HTTPS Readiness and gateway-owned proxy operation: `inactive` when readiness is not-ready, `active` when readiness is ready and interception works, or `failed` with a stable reason such as `signer-unavailable`, `leaf-certificate-failed`, `tls-configuration-failed`, or `active-signer-mismatch` when readiness remains ready but interception fails.
+_Avoid_: HTTPS Interception Health, separate active boolean, UserCA health, client connection health, upstream availability
+
+**Pre-MITM Interception Admission**:
+A CONNECT boundary that atomically loads one HTTPS Generation and successfully obtains its host leaf certificate and TLS configuration before the proxy commits the connection to MITM. Gateway-owned preparation failure changes HTTPS Interception State to failed and lets that same CONNECT use an ordinary direct tunnel.
+_Avoid_: post-200 leaf generation, failed TLS handshake as fallback, partial MITM commitment
+
+**HTTPS Interception Failure**:
+A failure in gateway-owned signer, leaf-certificate generation, internal TLS configuration, or active-marker/signer agreement that changes HTTPS Interception State from active to failed while leaving HTTPS Readiness ready. The detecting request and other stale-routed HTTPS requests direct-tunnel, subsequent PAC routing sends HTTPS directly, and a current actionable warning is exposed; client, browser, upstream TLS, and network failures do not cause this transition.
+_Avoid_: any TLS error, client failure as global state, upstream outage as readiness loss, UserCA rotation
+
+**HTTPS Readiness Recovery**:
+A runtime transition from not-ready to ready HTTPS Readiness immediately after successful UserCA installation or repair.
+_Avoid_: restart-required HTTPS activation, delayed readiness after successful install, Config File toggle
+
+**HTTPS Interception Reset**:
+A transition from failed to active HTTPS Interception State after explicit install verifies HTTPS Readiness remains ready, rebuilds in-memory signer and TLS interception state, and clears the leaf-certificate cache without unnecessary OS trust mutation.
+_Avoid_: unnecessary UserCA rotation, implicit retry loop, restart-required proxy repair
+
+**Trusted HTTPS Interception**:
+A runtime behavior present only while HTTPS Interception State is active. HTTPS Origin Selectors and Host Selectors then produce HTTPS routes; inactive or failed state removes those routes while the gateway continues serving HTTP and stale-routed HTTPS direct-tunnels.
+_Avoid_: readiness-only activation, separate active boolean, Config File HTTPS toggle, untrusted HTTPS interception, broken MITM
+
+**Installed-CA HTTPS Enablement**:
+A lifecycle rule where ready HTTPS Readiness allows HTTPS Interception State to become active without a separate configuration toggle. HTTPS Intent makes inactive interception caused by missing readiness warning-worthy, but does not install, repair, or substitute for UserCA capability.
+_Avoid_: Explicit Trusted HTTPS, Config File HTTPS toggle, intent-as-capability, silent trust installation
 
 **Live Configuration**:
-A gateway module and code boundary that exclusively owns observing and reading user-editable configuration sources, interpreting the Config File, passing raw Upstream List content to the Upstream List module, and exposing validated semantic configuration at startup and when it changes. Hot-applicable request settings use the newest valid Config File and the valid entries from the newest readable Upstream List without requiring the user to manually restart or reload the browser or gateway.
+A gateway module and code boundary that exclusively owns observing and reading the user-editable Upstream List and exposing its validated semantic meaning at startup and when it changes. Valid Upstream List changes apply without requiring the user to restart or reload the browser or gateway.
 _Avoid_: external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
 
 **Live Configuration Snapshot**:
-The validated immutable current-state configuration value exposed by Live Configuration, containing configured meaning and diagnostic source metadata without interpreting UserCA availability or other consumer capabilities. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
-_Avoid_: configuration event history, raw YAML config, file-change event, content fingerprint, watcher notification
+The validated immutable current Upstream List value exposed by Live Configuration, including diagnostic source metadata without interpreting HTTPS Readiness or other consumer capabilities. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
+_Avoid_: configuration event history, raw file content, file-change event, content fingerprint, watcher notification
 
 **Upstream List Entries Revision**:
 A run-local, non-persistent monotonic identity exposed with Live Configuration, beginning with the initial validated Upstream List Entries and advancing only when the normalized, deduplicated entry set changes. It allows consumers to apply the newest coalesced routing input without treating representation-only edits as routing changes.
 _Avoid_: persisted Upstream List revision, Upstream List file revision, PAC content comparison, source-content fingerprint
-
-**Config File**:
-The user-editable YAML source at `~/.seamless-cors/config.yaml`, read by Live Configuration for gateway settings such as Trusted HTTPS Interception intent. It is an ordinary file rather than a separate code boundary from Live Configuration, and its live change observation is supported only on a local filesystem.
-_Avoid_: configurable Config File path, symlinked config, network-filesystem observation guarantee, Explicit Configuration package, public raw config model, config subsystem
-
-**All-Or-Nothing Config**:
-A configuration behavior where a valid config file is applied as a whole and an invalid config file is rejected without partially changing gateway behavior.
-_Avoid_: partial config application, half-applied config
-
-**Lenient Configuration Shape**:
-A clean-break configuration behavior where only current settings affect gateway behavior and unknown settings are ignored without aliases, migration, or old-version-specific handling.
-_Avoid_: backward-compatible alias, migration, obsolete-setting special case
-
-**Fatal Config Error**:
-A configuration behavior where an invalid, missing, or unreadable config file causes the gateway to report the validation problem, perform Gateway Footprint Cleanup, and stop.
-_Avoid_: silent config fallback, stale config after invalid edit
 
 **Gateway Control Command**:
 A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, UserCA install, and UserCA uninstall.
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads valid configuration, completes required CA Ensure only when configuration enables CA trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject. The sequence composes independent CA and PAC lifecycle operations without merging their consent and is the only public route to Gateway Activation.
-_Avoid_: monolithic activation, public raw activation, combined consent, PAC-first start, cleanup-after-approval
+The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads the Upstream List, assesses HTTPS Readiness without mutating trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
+_Avoid_: start-time CA installation, public raw activation, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
-The internal post-CA-Ensure operation that assesses PAC Replacement Consent, admits and begins serving Gateway Runtime, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, configuration validation, CA readiness, or traffic-before-PAC ordering.
+The internal operation that assesses PAC Replacement Consent, begins serving Gateway Runtime with its assessed HTTPS Readiness, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, Upstream List validation, readiness assessment, or traffic-before-PAC ordering.
 _Avoid_: public activation command, CA installation, CA Trust Consent, lifecycle activation, runtime startup, command rendering, lifecycle orchestration package
 
 **Automatic Listeners**:
@@ -251,10 +303,6 @@ _Avoid_: manual proxy endpoint, browser setup address, generic listen, gatewayLi
 **CORS Proxy**:
 The gateway module behind the Proxy Listener that owns CORS repair, Local Preflight Answer, Response Repair, and Trusted HTTPS Interception behavior for traffic that reaches it.
 _Avoid_: Upstream List admission module, PAC Routing module, generic proxy
-
-**Explicit Configuration**:
-Deprecated term for Config File. Prefer Config File when referring to the user-editable YAML source and Live Configuration when referring to validated semantic configuration.
-_Avoid_: hidden user settings, flag-only configuration, listener address configuration
 
 **Home Config Directory**:
 The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Live Configuration owns configuration sources within it, while Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
@@ -337,20 +385,16 @@ A gateway ownership rule where only one Gateway Owner may run for a user at a ti
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
 **Configuration Bootstrap**:
-A start-only behavior where the fixed Config File and Upstream List are created automatically when missing before validation continues, including required parent directories. The same start command continues with an Empty Upstream List, while passive configuration reads remain non-mutating and an existing unsafe, non-file, or unreadable Upstream List remains an error.
+A start-only behavior where the fixed Upstream List is created automatically when missing before validation continues, including required parent directories. The same start command continues with an Empty Upstream List, while passive reads remain non-mutating and an existing unsafe, non-file, or unreadable Upstream List remains an error.
 _Avoid_: init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
-**Commented Default Config**:
-A Configuration Bootstrap behavior where generated configuration includes short comments only for meaningful user-editable settings.
-_Avoid_: opaque default config, verbose manual, runtime listener settings
-
 **Start Guidance**:
-A start-time user-facing output behavior shown only after required consent and approval have succeeded, Gateway Runtime is serving, and Managed PAC installation has reached at least one selected service. It points to editable configuration and managed state instead of runtime listener endpoints.
-_Avoid_: pre-approval running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
+A start-time user-facing output behavior shown only after PAC consent has succeeded, Gateway Runtime is serving, and Managed PAC installation has reached at least one selected service. It points to the Upstream List, HTTPS Readiness, warnings, and managed state instead of runtime listener endpoints.
+_Avoid_: pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
-A surface-neutral successful start result detail containing the user-relevant configuration and lifecycle state needed to render Start Guidance without exposing runtime listener endpoints.
-_Avoid_: CA Ensure Result, terminal start text, listener status detail, proxy setup instructions
+A surface-neutral successful start result detail containing the user-relevant Upstream List and lifecycle state needed to render Start Guidance without exposing runtime listener endpoints.
+_Avoid_: terminal start text, listener status detail, proxy setup instructions
 
 **Already-Running Start**:
 An idempotent start result where executing start against an active Gateway Runtime reports that the gateway is already running without treating the command as a failure.
@@ -361,32 +405,16 @@ A start execution rule where every `ExecuteStart` attempt computes current PAC R
 _Avoid_: start plan, prior-result authorization, mutation-before-assessment
 
 **Single-Flight Start**:
-A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through configuration, CA Ensure, PAC assessment, Gateway Activation, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
-_Avoid_: cross-command lifecycle lock, CA-command blocking, activation-only lock, queued start, duplicate CA approval, duplicate mutation, competing activation, start plan reservation
+A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through Upstream List loading, HTTPS Readiness assessment, PAC assessment, Gateway Activation, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
+_Avoid_: cross-command lifecycle lock, CA-command blocking, activation-only lock, queued start, duplicate mutation, competing activation, start plan reservation
 
 **Stop-Preempted Start**:
-A lifecycle precedence rule where `stop` cancels and supersedes an in-progress Start Sequence, waits for CA Ensure cancellation reconciliation and other safe boundaries, then performs final Gateway Footprint Cleanup and ends ownership. Completed CA Ensure remains durable, while cancelled activation cannot later publish runtime or install PAC state.
-_Avoid_: stop-busy result, start mutex wait, cleanup-before-cancellation, post-stop PAC install, CA rollback
+A lifecycle precedence rule where `stop` cancels and supersedes an in-progress Start Sequence, waits for safe boundaries, then performs final Gateway Footprint Cleanup and ends ownership. Cancelled activation cannot later publish runtime or install PAC state.
+_Avoid_: stop-busy result, start mutex wait, cleanup-before-cancellation, post-stop PAC install
 
 **Stop-Cancelled Start**:
-A surface-neutral expected start outcome returned to the original start caller after stop preemption reaches a safe boundary. It preserves any completed CA Ensure Result without treating the cancellation as an infrastructure failure.
-_Avoid_: context-canceled error, started result, hidden CA completion, stop failure
-
-**Trusted Runtime Admission**:
-A pre-traffic Gateway Runtime rule where a runtime using trusted HTTPS is published as active, then validates that active configuration still requires CA trust and loads the currently usable Installed User CA before serving. If that identity differs from the authority prepared earlier, admission adopts it and refreshes the CA Ensure Result without requesting platform approval; unusable state withdraws the runtime and fails Gateway Activation.
-_Avoid_: start mutex, identity-change failure, admission-time approval, pre-publication-only CA check, traffic-before-validation, continuous CA polling, untrusted degraded runtime
-
-**Admitting Gateway Runtime**:
-A published but not-yet-serving Gateway Runtime state used during Trusted Runtime Admission. Status reports it as starting, and the Active Trusted Runtime CA Guard applies, while failed admission withdraws it without ever accepting traffic.
-_Avoid_: running status, undiscoverable trust use, traffic-serving runtime, CA mutation window
-
-**Admission CA Adoption**:
-A Trusted Runtime Admission behavior that replaces the prepared authority with a different currently trusted Installed User CA and matching local key before traffic begins. It is validation and adoption of completed CA lifecycle work, not another CA Ensure or a hot runtime trust swap.
-_Avoid_: admission-time CA install, second trust prompt, stale CA Ensure Result, post-traffic authority rotation
-
-**Platform-Approval-Denied Start**:
-A start execution outcome where required platform-owned trust approval is denied during CA Ensure, so Gateway Activation is not attempted and managed PAC state is not activated.
-_Avoid_: consent-required start, infrastructure error, partial trusted start
+A surface-neutral expected start outcome returned to the original start caller after stop preemption reaches a safe boundary without treating cancellation as an infrastructure failure.
+_Avoid_: context-canceled error, started result, stop failure
 
 **PAC Replacement Consent Detail**:
 A surface-neutral description of every service in the proposed Managed PAC Service Set, explicitly identifying every foreign PAC entry covered by one collective agreement, together with the PAC Replacement Consent Fingerprint and no-restoration cleanup behavior.
@@ -409,12 +437,12 @@ A platform approval moment required before adding or replacing Installed User CA
 _Avoid_: implicit CA trust, repeated consent for unchanged trust, app-only trust prompt, PAC Replacement Consent Detail
 
 **Independent CA Lifecycle**:
-A lifecycle boundary where CA Trust Consent and Installed User CA availability follow `ca-trusted` independently of whether the Upstream List currently has active entries.
-_Avoid_: domain-gated CA trust, implicit CA delay, route-dependent trust setup
+A lifecycle boundary where CA Trust Consent and Installed User CA mutation occur only through explicit CA Lifecycle Commands, independently of Gateway Runtime, gateway start, and the Upstream List. Runtime stop does not cancel admitted CA work; owner exit waits for that independent operation to settle.
+_Avoid_: start-time CA trust, stop-cancelled CA command, intent-triggered installation, route-dependent trust setup
 
 **Start Sequence Order**:
-A startup lifecycle order where Gateway Footprint Cleanup and configuration validation precede required CA Ensure, or skip CA lifecycle work entirely when configured `ca-trusted` is false; PAC Replacement Consent assessment then precedes Trusted Runtime Admission; admitted Gateway Runtime begins serving before Managed PAC installation; and Start Guidance follows successful installation on at least one selected service.
-_Avoid_: PAC-before-runtime serving, PAC-first start, cleanup-after-approval, combined consent, traffic-before-trust validation, degraded trusted mode, CA rollback after PAC decline, start guidance before PAC installation
+A startup lifecycle order where Gateway Footprint Cleanup and Upstream List validation precede PAC Replacement Consent assessment; HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; Gateway Runtime begins serving before Managed PAC installation; and Start Guidance follows successful installation on at least one selected service.
+_Avoid_: start-time CA installation, PAC-before-runtime serving, PAC-first start, cleanup-after-approval, start guidance before PAC installation
 
 **All-Service PAC Management**:
 A Managed System Proxy behavior where Gateway Activation selects every network service the supported platform adapter manages at activation time, so PAC Routing is consistent across the Managed PAC Service Set for that Gateway Owner run.
@@ -425,31 +453,43 @@ The user-facing command model where normal operation is limited to starting, sto
 _Avoid_: command-heavy configuration, flag-driven operation
 
 **CA Lifecycle Commands**:
-Top-level user-facing commands that explicitly install, repair, or remove the Installed User CA outside the normal start/stop gateway loop. An active trusted runtime permits idempotent install but blocks CA replacement and uninstall; an absent or untrusted runtime permits both lifecycle changes.
-_Avoid_: nested CA command tree, hidden CA removal, per-start CA trust, config editing command, runtime CA rotation, active-trusted-runtime CA mutation, extra command confirmation
+Top-level user-facing commands that explicitly install, repair, or remove the Installed User CA outside the normal start/stop gateway loop. Install performs HTTPS Readiness Recovery when needed, while uninstall remains available during gateway operation and requires confirmation only when Trusted HTTPS Interception is active.
+_Avoid_: nested CA command tree, hidden CA removal, per-start CA trust, config editing command, separate readiness command
 
-**Config-Independent CA Install**:
-A CA lifecycle command boundary where installing or repairing the Installed User CA does not read, require, create, or modify Live Configuration.
-_Avoid_: install-time config bootstrap, config-dependent install guidance, install changing `ca-trusted`, config-required CA repair
+**Upstream-Independent CA Install**:
+A CA lifecycle command boundary where installing or repairing the Installed User CA does not read, require, create, or modify the Upstream List. When a gateway is running with not-ready HTTPS Readiness, successful install performs immediate HTTPS Readiness Recovery.
+_Avoid_: install-time configuration bootstrap, intent-dependent install, separate readiness endpoint, restart-required recovery
+
+**UserCA Install Reconciliation**:
+An install order that first attempts Non-Active UserCA Cleanup, then reuses a valid Active UserCA for HTTPS Interception Reset, repairs its missing OS trust when required, or installs/rotates authority state that is invalid, expired, mismatched, or renewal-due. Failed cleanup blocks only work that would add another trusted root: reset may still reactivate interception from valid Active, while required rotation stops before Candidate creation; discovering missing active trust immediately makes HTTPS Readiness not-ready until repair succeeds.
+_Avoid_: proxy failure-triggered CA rotation, trust repair before non-active reconciliation, arbitrary non-active adoption, unbounded trusted roots
 
 **Idempotent CA Install**:
-A CA lifecycle command behavior where installing reports existing usable CA trust as success without requesting platform approval or changing CA material, including while a trusted Gateway Runtime is active.
-_Avoid_: reinstalling usable CA, runtime CA rotation, noisy no-op install, repeated trust approval
+A CA lifecycle command behavior where installing reuses valid Active UserCA trust without requesting platform approval or changing CA material, including for HTTPS Interception Reset while a trusted Gateway Runtime is active.
+_Avoid_: reinstalling valid CA, proxy failure-triggered rotation, noisy no-op install, repeated trust approval
 
-**Active Trusted Runtime CA Guard**:
-A CA lifecycle rule where an admitting or serving runtime actively using Trusted HTTPS Interception permits idempotent UserCA install but blocks CA replacement and UserCA uninstall until that runtime stops. Configuration alone does not hold this guard when interception could not become active.
-_Avoid_: blanket active-runtime block, runtime CA rotation, cached-leaf re-signing, active trusted CA removal
+**Active HTTPS Uninstall Consent**:
+A confirmation required before UserCA uninstall disables active Trusted HTTPS Interception and removes the entire Installed UserCA Set. Consent authorizes that identity-independent consequence rather than one Active fingerprint; declining leaves HTTPS Readiness and all UserCA state unchanged, and no confirmation is required when interception is already inactive.
+_Avoid_: certificate-bound consent, active-runtime uninstall block, unconditional uninstall prompt, partial UserCA removal, implicit consent
 
-**Config-Independent CA Uninstall**:
-A CA lifecycle command boundary where removing the Installed User CA does not modify the Config File; future trusted starts may reinstall trust when configuration still requests it.
-_Avoid_: uninstall changing `ca-trusted`, disabling desired HTTPS interception, config-coupled removal
+**Live UserCA Uninstall**:
+A confirmed UserCA uninstall behavior whose linearization point atomically changes HTTPS Readiness to not-ready so no new handshake selects the Active UserCA. Before that point cancellation changes nothing; afterward uninstall is non-cancellable, runtime/PAC deactivation and removal of all current-user trust, marker, and local material proceed concurrently without draining handshakes, and incomplete removal remains not-ready with an actionable retry warning.
+_Avoid_: stop-required uninstall, gateway shutdown, handshake drain, new handshake after revocation begins, readiness rollback after partial removal, Upstream List mutation
+
+**CA Command PAC Refresh Failure**:
+A partial CA Lifecycle Command outcome where UserCA mutation and the resulting HTTPS Readiness transition remain complete, but Managed PAC refresh fails and leaves a routing warning for later reconciliation. Completed CA or readiness work is never rolled back to disguise the PAC failure.
+_Avoid_: total CA command rollback, false full success, hidden stale PAC, trust rollback
+
+**Upstream-Independent CA Uninstall**:
+A CA lifecycle command boundary where removing the Installed User CA does not modify the Upstream List.
+_Avoid_: uninstall editing HTTPS Intent, config-coupled removal
 
 **Idempotent CA Uninstall**:
 A CA lifecycle command behavior where uninstalling reports already-absent seamless-cors-owned CA trust and local CA material as success without changing configuration or requiring repair.
 _Avoid_: missing-CA uninstall failure, forced repair before removal, noisy no-op uninstall
 
 **Complete CA Uninstall**:
-A CA lifecycle invariant where uninstall reports success only after seamless-cors-owned current-user CA trust and local CA material are both absent.
+A CA lifecycle invariant where uninstall removes Active, Candidate, and non-active recovery state and reports success only after all seamless-cors-owned current-user CA trust, markers, and local material are absent.
 _Avoid_: false uninstall success, trusted CA without local material, leftover private key
 
 **Foreground Start**:
@@ -461,8 +501,8 @@ A command invocation that asks an existing Gateway Owner to perform user-facing 
 _Avoid_: detached owner, fake foreground control, remote Ctrl-C ownership
 
 **Owner-Routed CA Lifecycle Command**:
-A CA Lifecycle Command behavior where `install` and `uninstall` are sent to an existing Gateway Owner when one exists, including a router-only owner. Active runtime trust usage determines whether CA mutation is allowed, while idempotent install remains available.
-_Avoid_: bypassing owner command authority, router-only local mutation, runtime CA rotation, active-trusted-runtime CA mutation, blanket active-runtime rejection
+A CA Lifecycle Command behavior where `install` and `uninstall` are sent to an existing Gateway Owner when one exists, including a router-only owner, so the owner can coordinate HTTPS Readiness Recovery or confirmed Live UserCA Uninstall.
+_Avoid_: bypassing owner command authority, router-only local mutation, separate readiness endpoint, blanket active-runtime rejection
 
 **Gateway Footprint Cleanup**:
 An idempotent, ownership-aware lifecycle behavior that removes only stale or intentionally released seamless-cors-owned managed PAC and Gateway State Cache subjects while leaving Installed User CA state untouched. Direct start holds the Gateway Ownership Lease while removing stale cache and owned PAC, router-hosted start removes owned PAC while preserving its live owner cache, and stop removes both when ending ownership.
@@ -476,17 +516,21 @@ _Avoid_: previous-state rollback, proxy restoration, corporate PAC reconstructio
 A status output intended for interactive DEV/QA use rather than machine-readable automation.
 _Avoid_: JSON status, scripting API
 
+**Human HTTPS Status**:
+A compact Human Status rendering of `https: active` when HTTPS Interception State is active and `https: inactive` otherwise, followed by actionable current HTTPS Warnings. Internal HTTPS Readiness, Interception State reasons, and redundant active fields are not printed as separate normal-status fields.
+_Avoid_: `https-interception-health`, `trusted-https-active`, internal state dump, warning-free inactive status
+
 **Read-Only Status**:
-A status behavior that reports gateway, cleanup-needed, and Installed User CA state, including stale Gateway State Cache detection, without changing proxy settings, CA trust, local CA material, or runtime files.
+A status behavior that reports gateway, cleanup-needed, Installed User CA, Human HTTPS Status, and stale Gateway State Cache detection without latching HTTPS Readiness Loss or changing proxy settings, CA trust, local CA material, or runtime files. It may derive effective inactive HTTPS from known certificate expiry, and reports UserCA as `mutating` rather than inspecting intermediate trust state while the CA Mutation Lease is held.
 _Avoid_: status-triggered cleanup, mutating status command
 
 **Gateway Status State**:
-A read-only gateway status vocabulary that describes whether the Gateway Owner and Gateway Runtime are absent, stale, router-only, starting through Trusted Runtime Admission, or running without encoding cleanup or Installed User CA health.
+A read-only gateway status vocabulary that describes whether the Gateway Owner and Gateway Runtime are absent, stale, router-only, starting, or running without encoding cleanup, HTTPS Readiness, or Installed User CA health.
 _Avoid_: cleanup status, CA health status, start result, runtime state file truth
 
 **CA Health Status**:
-A read-only status vocabulary for Installed User CA state using stable values such as usable, missing, expired, expiring-soon, invalid, multiple, mismatched-material, and unknown.
-_Avoid_: prose-only CA state, status-triggered CA repair
+A read-only status vocabulary that assesses the marked Active UserCA using stable values such as usable, missing, expired, expiring-soon, invalid, mismatched-material, unknown, and `mutating`, while reporting non-active owned authority residue separately. During CA mutation status uses the latched runtime state and does not classify partial trust-store state; a valid marked Active remains HTTPS-ready when one Candidate or Retired authority also exists.
+_Avoid_: prose-only CA state, status-triggered CA repair, multiple-authorities-means-unready
 
 **Diagnostic Runtime Endpoint**:
 An automatically selected listener address shown by status for troubleshooting, not for user proxy setup or configuration.
@@ -658,9 +702,9 @@ Developer: "Will unrelated browser traffic go through the gateway?"
 
 QA engineer: "No, Selective Managed Proxy uses PAC Routing so only Upstream List matches go through the gateway."
 
-Developer: "Will HTTPS domains still route through the gateway when `ca-trusted` is false?"
+Developer: "When will HTTPS domains route through the gateway?"
 
-QA engineer: "No, Trust-Aware PAC Routing sends those HTTPS requests direct because they cannot be repaired."
+QA engineer: "Trust-Aware PAC Routing sends them through the gateway only while HTTPS Readiness is ready."
 
 Developer: "Do I need to maintain the PAC file?"
 
@@ -682,13 +726,13 @@ Developer: "Will the gateway configure Firefox or browser profile certificate st
 
 QA engineer: "No, OS Trust Only keeps certificate trust limited to the current user's operating-system trust store."
 
-Developer: "What happens when `ca-trusted` is false?"
+Developer: "What happens when HTTPS Readiness is not ready?"
 
-QA engineer: "Trust-Aware PAC Routing does not send matched HTTPS traffic to the Proxy Listener without Trusted HTTPS Interception."
+QA engineer: "HTTPS traffic stays direct, HTTP gateway service continues, and HTTPS Intent produces an actionable warning."
 
 Developer: "Will the first run automatically trust a CA?"
 
-QA engineer: "Explicit Trusted HTTPS keeps HTTPS interception disabled in generated configuration until the user enables it, and CA Ensure still requires platform approval before adding user trust."
+QA engineer: "No. Gateway start only assesses HTTPS Readiness; `seamless-cors install` is the explicit operation that requests platform approval."
 
 Developer: "Will the gateway keep reusing the same development CA?"
 
@@ -754,9 +798,9 @@ Developer: "What if status finds a stale Gateway State Cache?"
 
 QA engineer: "Read-Only Status reports that the gateway is not running and leaves cleanup to start or stop."
 
-Developer: "Can editing configuration unexpectedly trigger an OS permission prompt?"
+Developer: "Can editing the Upstream List unexpectedly trigger an OS permission prompt?"
 
-QA engineer: "No. Live `ca-trusted` enablement only adopts an already-usable Installed User CA and never performs CA Ensure."
+QA engineer: "No. HTTPS Intent can produce an Unmet HTTPS Intent warning, but only `seamless-cors install` mutates UserCA trust."
 
 Developer: "What happens if a default listener port is already in use?"
 
@@ -774,9 +818,9 @@ Developer: "Do I need to know which listener browsers use?"
 
 QA engineer: "No, PAC Routing connects browsers to the Proxy Listener through managed proxy settings."
 
-Developer: "What happens if I enable `ca-trusted` while the gateway is already running?"
+Developer: "What happens if I install UserCA while the gateway is already running?"
 
-QA engineer: "Live Configuration publishes the enabled setting immediately. Trusted HTTPS Interception activates only when an already-usable Installed User CA can be adopted; otherwise status reports a warning and HTTPS routing remains direct."
+QA engineer: "The existing install command performs HTTPS Readiness Recovery immediately and refreshes HTTPS PAC routing without a restart."
 
 Developer: "What happens if the gateway crashes after changing my proxy settings?"
 
@@ -788,7 +832,7 @@ QA engineer: "PAC Replacement Consent shows the current managed PAC state and as
 
 Developer: "What do I need to configure before starting?"
 
-QA engineer: "The Config File contains the meaningful user settings, while the Upstream List stays as the easy one-host-or-origin-per-line file."
+QA engineer: "Only the Upstream List: one Host Selector or Origin Selector per line."
 
 Developer: "Where do config files live by default?"
 
@@ -820,11 +864,7 @@ QA engineer: "Yes, Empty Upstream List is valid, so the gateway runs while PAC R
 
 Developer: "Do I need to run an init command first?"
 
-QA engineer: "No, Configuration Bootstrap creates the fixed Config File and Upstream List when missing, and Empty Upstream List lets that same start command keep running with no matched upstreams yet."
-
-Developer: "Will generated config explain the settings?"
-
-QA engineer: "Yes, Commented Default Config keeps the generated file short but understandable."
+QA engineer: "No, Configuration Bootstrap creates the fixed Upstream List when missing, and Empty Upstream List lets that same start command keep running with no matched upstreams yet."
 
 Developer: "Can I write just `api.dev.example.com`?"
 

@@ -101,23 +101,23 @@ func installCA(ctx context.Context, trustStore userca.TrustStore) (InstallResult
 
 // UninstallCA removes the Installed User CA through the live owner when one is
 // available, and locally otherwise.
-func UninstallCA(ctx context.Context) (UninstallResult, error) {
-	return uninstallCA(ctx, userca.NewTrustStore())
+func UninstallCA(ctx context.Context, request UninstallRequest) (UninstallResult, error) {
+	return uninstallCA(ctx, userca.NewTrustStore(), request)
 }
 
-func uninstallCA(ctx context.Context, trustStore userca.TrustStore) (UninstallResult, error) {
+func uninstallCA(ctx context.Context, trustStore userca.TrustStore, request UninstallRequest) (UninstallResult, error) {
 	target, err := discover()
 	if err != nil {
 		return UninstallResult{}, err
 	}
 	if target.kind == targetActive {
-		return target.client.Uninstall(ctx)
+		return target.client.Uninstall(ctx, request)
 	}
 	lifecycle, err := newLocalLifecycle(trustStore)
 	if err != nil {
 		return UninstallResult{}, err
 	}
-	return lifecycle.Uninstall(ctx)
+	return lifecycle.UninstallWithConsent(ctx, request.ConsentFingerprint)
 }
 
 func newLocalLifecycle(trustStore userca.TrustStore) (*lifecycle, error) {

@@ -11,7 +11,6 @@ import (
 
 	"github.com/QzCurious/seamless-cors/internal/gateway"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestPACReplacementConsentPromptReportsManagedPACOnly(t *testing.T) {
@@ -111,14 +110,12 @@ func TestStartCommandShortensHomePaths(t *testing.T) {
 	renderStartResult(&out, gateway.StartResult{
 		Kind: gateway.StartResultStarted,
 		Guidance: &gateway.StartGuidanceDetail{
-			ConfigPath:       filepath.Join(home, ".seamless-cors", "config.yaml"),
 			UpstreamListPath: filepath.Join(home, ".seamless-cors", "upstreams.txt"),
 		},
 	})
 
-	wantConfig := "config: " + filepath.Join("~", ".seamless-cors", "config.yaml")
 	wantUpstreams := "upstream-list: " + filepath.Join("~", ".seamless-cors", "upstreams.txt")
-	for _, want := range []string{wantConfig, wantUpstreams} {
+	for _, want := range []string{wantUpstreams} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
 		}
@@ -135,21 +132,6 @@ func TestHomeRelativePathLeavesPathsOutsideHomeUnchanged(t *testing.T) {
 
 	if got := homeRelativePath(outside); got != outside {
 		t.Fatalf("homeRelativePath(%q) = %q", outside, got)
-	}
-}
-
-func TestStartCommandRendersTrustApprovalDenial(t *testing.T) {
-	var out bytes.Buffer
-	err := startWithContextAndInput(context.Background(), nil, &out, func(ctx context.Context, hooks gateway.StartHooks) (gateway.StartResult, error) {
-		result := gateway.StartResult{Kind: gateway.StartResultPlatformApprovalDenied}
-		hooks.Started(result)
-		return result, userca.ErrApprovalDenied
-	})
-	if !errors.Is(err, userca.ErrApprovalDenied) {
-		t.Fatalf("start error = %v", err)
-	}
-	if !strings.Contains(out.String(), "Certificate trust was not approved.") {
-		t.Fatalf("start output = %q", out.String())
 	}
 }
 
@@ -216,21 +198,25 @@ func TestStatusRendersCurrentUpstreamListWarnings(t *testing.T) {
 	}
 }
 
-func TestStatusRendersInactiveConfiguredCATrust(t *testing.T) {
+func TestStatusRendersUnmetHTTPSIntent(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{
 		Kind: gateway.GatewayStatusRunning,
 		Runtime: &gateway.RuntimeStatusDetail{
-			CATrusted:          true,
-			TrustedHTTPSActive: false,
-			CATrustWarning:     "ca-trusted is configured, but the Installed User CA is missing",
+			HTTPSReadiness: gateway.HTTPSReadinessNotReady,
+			HTTPSIntent:    true,
+			HTTPSWarnings: []gateway.HTTPSWarningDetail{{
+				Kind:       gateway.HTTPSWarningUnmetIntent,
+				Diagnostic: "HTTPS was requested but the Installed User CA is missing.",
+				Action:     "Run `seamless-cors install`.",
+			}},
 		},
 	})
 	status := out.String()
 	for _, expected := range []string{
-		"ca-trusted: true",
-		"trusted-https-active: false",
-		"warning: ca-trusted is configured, but the Installed User CA is missing",
+		"https: inactive",
+		"warning: HTTPS was requested but the Installed User CA is missing.",
+		"action: Run `seamless-cors install`.",
 	} {
 		if !strings.Contains(status, expected) {
 			t.Fatalf("status output = %q, want %q", status, expected)
@@ -262,17 +248,93 @@ func TestInstallAndUninstallCommandsRenderResults(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "already usable") {
+	if !strings.Contains(out.String(), "already usable") || !strings.Contains(out.String(), "https-readiness: ready") {
 		t.Fatalf("install output = %q", out.String())
 	}
 	out.Reset()
-	if err := uninstallCAWithCommand(context.Background(), &out, func(context.Context) (gateway.UninstallResult, error) {
+	if err := uninstallCAWithCommand(context.Background(), strings.NewReader(""), &out, func(context.Context, gateway.UninstallRequest) (gateway.UninstallResult, error) {
 		return gateway.UninstallResult{Kind: gateway.UninstallResultAlreadyAbsent}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "already absent") {
 		t.Fatalf("uninstall output = %q", out.String())
+	}
+}
+
+func TestUninstallConfirmsOnlyWhenHTTPSIsActive(t *testing.T) {
+	var out bytes.Buffer
+	var calls []gateway.UninstallRequest
+	command := func(_ context.Context, request gateway.UninstallRequest) (gateway.UninstallResult, error) {
+		calls = append(calls, request)
+		if request.ConsentFingerprint == "" {
+			return gateway.UninstallResult{
+				Kind:               gateway.UninstallResultConsentRequired,
+				ConsentFingerprint: "current-state",
+			}, nil
+		}
+		return gateway.UninstallResult{Kind: gateway.UninstallResultUninstalled}, nil
+	}
+
+	if err := uninstallCAWithCommand(context.Background(), strings.NewReader("yes\n"), &out, command); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[1].ConsentFingerprint != "current-state" {
+		t.Fatalf("uninstall requests = %#v", calls)
+	}
+	if !strings.Contains(out.String(), "HTTPS interception is active") ||
+		!strings.Contains(out.String(), "Installed User CA uninstalled") {
+		t.Fatalf("uninstall output = %q", out.String())
+	}
+}
+
+func TestUninstallReportsPartialPACRefreshFailure(t *testing.T) {
+	var out bytes.Buffer
+	err := uninstallCAWithCommand(context.Background(), strings.NewReader(""), &out, func(context.Context, gateway.UninstallRequest) (gateway.UninstallResult, error) {
+		return gateway.UninstallResult{
+			Kind: gateway.UninstallResultPACRefreshFailed,
+			Warnings: []gateway.HTTPSWarningDetail{{
+				Kind:       gateway.HTTPSWarningPACRefreshFailed,
+				Diagnostic: "HTTPS routing refresh failed.",
+				Action:     "Retry uninstall.",
+			}},
+		}, nil
+	})
+	if err == nil {
+		t.Fatal("partial PAC refresh failure should return a command error")
+	}
+	for _, expected := range []string{
+		"Installed User CA uninstalled, but Managed PAC refresh failed.",
+		"warning: HTTPS routing refresh failed.",
+		"action: Retry uninstall.",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("uninstall output = %q, want %q", out.String(), expected)
+		}
+	}
+}
+
+func TestLiveHTTPSWarningRendererPrintsOnlyAddedOrChangedWarnings(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &liveHTTPSWarningRenderer{stdout: &out}
+	initial := gateway.HTTPSWarningDetail{
+		Kind:       gateway.HTTPSWarningRenewalRecommended,
+		Diagnostic: "UserCA expires soon.",
+		Action:     "Run install.",
+	}
+	renderer.RenderSnapshot([]gateway.HTTPSWarningDetail{initial})
+	renderer.RenderSnapshot([]gateway.HTTPSWarningDetail{initial})
+	changed := initial
+	changed.Diagnostic = "UserCA expires tomorrow."
+	renderer.RenderSnapshot([]gateway.HTTPSWarningDetail{changed})
+	renderer.RenderSnapshot(nil)
+
+	if got := strings.Count(out.String(), "warning:"); got != 2 {
+		t.Fatalf("rendered warning count = %d, output %q", got, out.String())
+	}
+	if !strings.Contains(out.String(), initial.Diagnostic) ||
+		!strings.Contains(out.String(), changed.Diagnostic) {
+		t.Fatalf("renderer output = %q", out.String())
 	}
 }
 

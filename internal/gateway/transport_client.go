@@ -66,12 +66,10 @@ func (c *client) Start(ctx context.Context, request StartRequest) (StartResult, 
 	var responseErr *responseError
 	if errors.As(err, &responseErr) {
 		var failure struct {
-			Detail   string          `json:"detail"`
-			CAEnsure *CAEnsureResult `json:"caEnsure"`
+			Detail string `json:"detail"`
 		}
 		if json.Unmarshal(responseErr.body, &failure) == nil && failure.Detail != "" {
-			result.CAEnsure = failure.CAEnsure
-			return result, &StartError{Diagnostic: failure.Detail, CAEnsure: failure.CAEnsure}
+			return result, &StartError{Diagnostic: failure.Detail}
 		}
 	}
 	return result, err
@@ -95,9 +93,9 @@ func (c *client) Install(ctx context.Context) (InstallResult, error) {
 	return result, err
 }
 
-func (c *client) Uninstall(ctx context.Context) (UninstallResult, error) {
+func (c *client) Uninstall(ctx context.Context, request UninstallRequest) (UninstallResult, error) {
 	var result UninstallResult
-	err := c.callJSON(ctx, http.MethodPost, "/uninstall", nil, &result)
+	err := c.callJSON(ctx, http.MethodPost, "/uninstall", request, &result)
 	return result, err
 }
 

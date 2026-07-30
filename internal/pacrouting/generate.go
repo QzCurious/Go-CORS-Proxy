@@ -10,7 +10,7 @@ import (
 
 type Options struct {
 	ProxyListen  string
-	CATrusted    bool
+	HTTPSActive  bool
 	UpstreamList upstreamlist.UpstreamList
 }
 
@@ -24,8 +24,8 @@ func Generate(opts Options) string {
 		OriginRoutes []string    `json:"OriginRoutes"`
 	}{
 		Proxy:        opts.ProxyListen,
-		HostRoutes:   deriveHostRoutes(opts.UpstreamList.HostSelectors, opts.CATrusted),
-		OriginRoutes: deriveOriginRoutes(opts.UpstreamList.OriginSelectors, opts.CATrusted),
+		HostRoutes:   deriveHostRoutes(opts.UpstreamList.HostSelectors, opts.HTTPSActive),
+		OriginRoutes: deriveOriginRoutes(opts.UpstreamList.OriginSelectors, opts.HTTPSActive),
 	}
 
 	data, err := json.Marshal(config)

@@ -119,9 +119,8 @@ func TestStartPropagatesRequestContext(t *testing.T) {
 	}
 }
 
-func TestStartFailureCarriesCompletedCAEnsure(t *testing.T) {
-	ca := &CAEnsureResult{Kind: CAEnsureResultInstalled}
-	handler := &fakeCommandHandler{startErr: &StartError{Diagnostic: "PAC install failed", CAEnsure: ca}}
+func TestStartFailureCarriesDiagnostic(t *testing.T) {
+	handler := &fakeCommandHandler{startErr: &StartError{Diagnostic: "PAC install failed"}}
 	server := newRouter("token", handler)
 	req := httptest.NewRequest(http.MethodPost, "/start", nil)
 	req.Header.Set(tokenHeader, "token")
@@ -133,13 +132,12 @@ func TestStartFailureCarriesCompletedCAEnsure(t *testing.T) {
 		t.Fatalf("start status = %d, want %d: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
 	}
 	var body struct {
-		Detail   string          `json:"detail"`
-		CAEnsure *CAEnsureResult `json:"caEnsure"`
+		Detail string `json:"detail"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Detail != "PAC install failed" || body.CAEnsure == nil || body.CAEnsure.Kind != CAEnsureResultInstalled {
+	if body.Detail != "PAC install failed" {
 		t.Fatalf("failure body = %#v", body)
 	}
 }
@@ -209,6 +207,6 @@ func (f *fakeCommandHandler) Install(context.Context) (InstallResult, error) {
 	return InstallResult{Kind: InstallResultAlreadyUsable}, nil
 }
 
-func (f *fakeCommandHandler) Uninstall(context.Context) (UninstallResult, error) {
+func (f *fakeCommandHandler) UninstallWithConsent(context.Context, string) (UninstallResult, error) {
 	return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
 }

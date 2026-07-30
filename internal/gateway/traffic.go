@@ -6,12 +6,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
@@ -19,11 +21,16 @@ type trafficRuntime struct {
 	mu                          sync.RWMutex
 	currentSnapshot             liveconfig.Snapshot
 	authority                   *userca.Authority
-	caAdmissionGuard            *sync.Mutex
-	loadUsableAuthority         usableAuthorityLoader
+	readinessReport             userca.Report
+	readinessError              error
+	interceptionState           HTTPSInterceptionState
+	interceptionError           error
+	pacRefreshError             error
+	userCAOperationWarning      *HTTPSWarningDetail
+	proxyCore                   *corsproxy.Core
 	proxyHandler                *dynamicHTTPHandler
 	proxyConfigured             bool
-	caTrustWarning              string
+	httpsWarnings               []HTTPSWarningDetail
 	proxy                       *http.Server
 	pacHandler                  *pacrouting.DynamicHandler
 	pac                         *http.Server
@@ -31,14 +38,8 @@ type trafficRuntime struct {
 	liveConfig                  *liveconfig.Config
 	pacVersion                  uint64
 	pacUpdates                  chan string
+	httpsWarningUpdates         chan []HTTPSWarningDetail
 	upstreamListEntriesRevision uint64
-}
-
-type usableAuthorityLoader func(context.Context) (*userca.Authority, userca.Report, error)
-
-type trustedHTTPSAdmission struct {
-	guard      *sync.Mutex
-	loadUsable usableAuthorityLoader
 }
 
 type dynamicHTTPHandler struct {
@@ -64,7 +65,7 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(config *liveconfig.Config, snapshot liveconfig.Snapshot, admission trustedHTTPSAdmission) (*trafficRuntime, error) {
+func newRuntime(config *liveconfig.Config, snapshot liveconfig.Snapshot) (*trafficRuntime, error) {
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -79,19 +80,14 @@ func newRuntime(config *liveconfig.Config, snapshot liveconfig.Snapshot, admissi
 
 	pacBody := pacrouting.Generate(pacrouting.Options{
 		ProxyListen:  proxyListen,
-		CATrusted:    snapshot.CATrusted(),
+		HTTPSActive:  false,
 		UpstreamList: snapshot.UpstreamList(),
 	})
 	pacHandler := pacrouting.NewDynamicHandler(pacBody)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
-	if admission.guard == nil {
-		admission.guard = &sync.Mutex{}
-	}
 	return &trafficRuntime{
 		currentSnapshot:             snapshot,
 		liveConfig:                  config,
-		caAdmissionGuard:            admission.guard,
-		loadUsableAuthority:         admission.loadUsable,
 		proxyHandler:                proxyHandler,
 		pacHandler:                  pacHandler,
 		proxy:                       &http.Server{Handler: proxyHandler},
@@ -99,17 +95,16 @@ func newRuntime(config *liveconfig.Config, snapshot liveconfig.Snapshot, admissi
 		listeners:                   []net.Listener{proxyListener, pacListener},
 		pacVersion:                  1,
 		pacUpdates:                  make(chan string, 1),
+		httpsWarningUpdates:         make(chan []HTTPSWarningDetail, 1),
 		upstreamListEntriesRevision: snapshot.UpstreamListEntriesRevision(),
 	}, nil
 }
 
-func (r *trafficRuntime) SetAuthority(authority *userca.Authority) error {
-	if !r.currentSnapshot.CATrusted() {
-		authority = nil
-	}
+func (r *trafficRuntime) SetInitialHTTPSReadiness(authority *userca.Authority, report userca.Report, assessmentErr error) error {
 	proxyHandler, err := corsproxy.New(corsproxy.Options{
-		CATrusted: r.currentSnapshot.CATrusted(),
-		Authority: authority,
+		InterceptHTTPS: authority != nil,
+		Authority:      authority,
+		OnHTTPSFailure: r.handleHTTPSFailure,
 	})
 	if err != nil {
 		return err
@@ -117,10 +112,128 @@ func (r *trafficRuntime) SetAuthority(authority *userca.Authority) error {
 	r.proxyHandler.Set(proxyHandler)
 	r.mu.Lock()
 	r.authority = authority
+	r.readinessReport = report
+	r.readinessError = assessmentErr
+	r.proxyCore = proxyHandler
+	r.interceptionState = HTTPSInterceptionInactive
+	if authority != nil {
+		r.interceptionState = HTTPSInterceptionActive
+	}
+	r.interceptionError = nil
 	r.proxyConfigured = true
-	r.caTrustWarning = ""
+	r.httpsWarnings = r.currentHTTPSWarningsLocked()
+	r.pacHandler.Set(r.generatedPACLocked())
 	r.mu.Unlock()
 	return nil
+}
+
+// RecoverHTTPS applies a successful UserCA install to a live runtime. It
+// returns a new PAC URL only when HTTPS routing changed from inactive to active.
+func (r *trafficRuntime) RecoverHTTPS(authority *userca.Authority, report userca.Report) (string, error) {
+	if authority == nil {
+		return "", fmt.Errorf("HTTPS Readiness Recovery requires an Installed User CA")
+	}
+	r.mu.Lock()
+	core := r.proxyCore
+	wasActive := r.interceptionState == HTTPSInterceptionActive
+	current := r.authority
+	r.mu.Unlock()
+	if core == nil {
+		return "", fmt.Errorf("HTTPS proxy is not configured")
+	}
+	if wasActive && sameAuthority(current, authority) {
+		r.mu.Lock()
+		r.readinessReport = report
+		r.readinessError = nil
+		r.interceptionError = nil
+		warnings, warningsChanged := r.updateHTTPSWarningsLocked()
+		r.mu.Unlock()
+		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+		return "", nil
+	}
+	if err := core.ActivateHTTPS(authority); err != nil {
+		return "", err
+	}
+	r.mu.Lock()
+	r.authority = authority
+	r.readinessReport = report
+	r.readinessError = nil
+	r.interceptionState = HTTPSInterceptionActive
+	r.interceptionError = nil
+	r.proxyConfigured = true
+	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
+	if wasActive {
+		r.mu.Unlock()
+		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+		return "", nil
+	}
+	r.pacVersion++
+	nextURL := r.pacURL(r.pacVersion)
+	r.pacHandler.Set(r.generatedPACLocked())
+	r.mu.Unlock()
+	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+	return nextURL, nil
+}
+
+func sameAuthority(left, right *userca.Authority) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	leftFingerprint, leftErr := left.Fingerprint()
+	rightFingerprint, rightErr := right.Fingerprint()
+	return leftErr == nil && rightErr == nil && leftFingerprint == rightFingerprint
+}
+
+// DeactivateHTTPS is the live-uninstall linearization companion: new CONNECT
+// requests tunnel directly and HTTPS PAC routes are withdrawn immediately.
+func (r *trafficRuntime) DeactivateHTTPS(report userca.Report) string {
+	r.mu.Lock()
+	wasActive := r.interceptionState == HTTPSInterceptionActive
+	if r.proxyCore != nil {
+		r.proxyCore.DeactivateHTTPS()
+	}
+	r.authority = nil
+	r.readinessReport = report
+	r.readinessError = nil
+	r.interceptionState = HTTPSInterceptionInactive
+	r.interceptionError = nil
+	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
+	if !wasActive {
+		r.mu.Unlock()
+		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+		return ""
+	}
+	r.pacVersion++
+	nextURL := r.pacURL(r.pacVersion)
+	r.pacHandler.Set(r.generatedPACLocked())
+	r.mu.Unlock()
+	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+	r.publishPACUpdate(nextURL)
+	return nextURL
+}
+
+func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
+	r.mu.Lock()
+	if r.interceptionState != HTTPSInterceptionActive {
+		r.mu.Unlock()
+		return
+	}
+	switch failure.Kind {
+	case corsproxy.HTTPSFailureReadiness:
+		r.authority = nil
+		r.readinessReport.Health = userca.HealthExpired
+		r.interceptionState = HTTPSInterceptionInactive
+	default:
+		r.interceptionState = HTTPSInterceptionFailed
+	}
+	r.interceptionError = failure.Err
+	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
+	r.pacVersion++
+	nextURL := r.pacURL(r.pacVersion)
+	r.pacHandler.Set(r.generatedPACLocked())
+	r.mu.Unlock()
+	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+	r.publishPACUpdate(nextURL)
 }
 
 func (r *trafficRuntime) Serve(ctx context.Context) error {
@@ -131,7 +244,7 @@ func (r *trafficRuntime) Serve(ctx context.Context) error {
 // serving goroutines. Callers may then safely publish the PAC URL.
 func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
 	if !r.proxyConfigured {
-		if err := r.SetAuthority(nil); err != nil {
+		if err := r.SetInitialHTTPSReadiness(nil, userca.Report{Health: userca.HealthUnknown}, nil); err != nil {
 			return err
 		}
 	}
@@ -208,6 +321,10 @@ func (r *trafficRuntime) PACURLUpdates() <-chan string {
 	return r.pacUpdates
 }
 
+func (r *trafficRuntime) HTTPSWarningUpdates() <-chan []HTTPSWarningDetail {
+	return r.httpsWarningUpdates
+}
+
 func (r *trafficRuntime) snapshot() runtimeState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -216,7 +333,7 @@ func (r *trafficRuntime) snapshot() runtimeState {
 
 func (r *trafficRuntime) watchLiveConfig(ctx context.Context, errs chan<- serverError) {
 	err := r.liveConfig.Observe(ctx, func(snapshot liveconfig.Snapshot) {
-		r.applyLiveConfig(ctx, snapshot)
+		r.applyLiveConfig(snapshot)
 	})
 	if err == nil {
 		return
@@ -227,52 +344,26 @@ func (r *trafficRuntime) watchLiveConfig(ctx context.Context, errs chan<- server
 	}
 }
 
-func (r *trafficRuntime) applyLiveConfig(ctx context.Context, snapshot liveconfig.Snapshot) {
-	r.mu.RLock()
-	previous := r.currentSnapshot
-	previousTrustWarning := r.caTrustWarning
-	previousAuthority := r.authority
-	r.mu.RUnlock()
-
-	caTrustWarning := previousTrustWarning
-	authority := previousAuthority
-	previousTrustActive := trustedHTTPSActive(previous, previousAuthority)
-	applyTrust := snapshot.CATrusted() != previous.CATrusted() ||
-		(snapshot.CATrusted() && !previousTrustActive)
-	if applyTrust {
-		r.caAdmissionGuard.Lock()
-		proxyHandler, nextAuthority, warning := r.liveProxyHandler(ctx, snapshot.CATrusted())
-		r.proxyHandler.Set(proxyHandler)
-		authority = nextAuthority
-		caTrustWarning = warning
-	}
-
-	nextTrustActive := trustedHTTPSActive(snapshot, authority)
+func (r *trafficRuntime) applyLiveConfig(snapshot liveconfig.Snapshot) {
 	r.mu.Lock()
-	routingInputsChanged := snapshot.UpstreamListEntriesRevision() != r.upstreamListEntriesRevision ||
-		nextTrustActive != previousTrustActive
+	routingInputsChanged := snapshot.UpstreamListEntriesRevision() != r.upstreamListEntriesRevision
 	r.currentSnapshot = snapshot
-	r.authority = authority
-	r.caTrustWarning = caTrustWarning
+	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
 	if !routingInputsChanged {
 		r.mu.Unlock()
-		if applyTrust {
-			r.caAdmissionGuard.Unlock()
-		}
+		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
 		return
 	}
 	r.upstreamListEntriesRevision = snapshot.UpstreamListEntriesRevision()
 	r.pacVersion++
 	nextURL := r.pacURL(r.pacVersion)
+	r.pacHandler.Set(r.generatedPACLocked())
 	r.mu.Unlock()
-	if applyTrust {
-		r.caAdmissionGuard.Unlock()
-	}
-	r.pacHandler.Set(pacrouting.Generate(pacrouting.Options{
-		ProxyListen:  r.listeners[0].Addr().String(),
-		CATrusted:    nextTrustActive,
-		UpstreamList: snapshot.UpstreamList(),
-	}))
+	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+	r.publishPACUpdate(nextURL)
+}
+
+func (r *trafficRuntime) publishPACUpdate(nextURL string) {
 	select {
 	case r.pacUpdates <- nextURL:
 	default:
@@ -284,37 +375,94 @@ func (r *trafficRuntime) applyLiveConfig(ctx context.Context, snapshot liveconfi
 	}
 }
 
-func trustedHTTPSActive(snapshot liveconfig.Snapshot, authority *userca.Authority) bool {
-	return snapshot.CATrusted() && authority != nil
+func (r *trafficRuntime) SetPACRefreshError(err error) {
+	r.mu.Lock()
+	r.pacRefreshError = err
+	warnings, changed := r.updateHTTPSWarningsLocked()
+	r.mu.Unlock()
+	r.publishHTTPSWarningUpdate(warnings, changed)
 }
 
-func (r *trafficRuntime) liveProxyHandler(ctx context.Context, configured bool) (http.Handler, *userca.Authority, string) {
-	if !configured {
-		handler, _ := corsproxy.New(corsproxy.Options{})
-		return handler, nil, ""
-	}
-	if r.loadUsableAuthority == nil {
-		handler, _ := corsproxy.New(corsproxy.Options{})
-		return handler, nil, "ca-trusted is configured, but no Installed User CA loader is available"
-	}
-	authority, report, err := r.loadUsableAuthority(ctx)
+func (r *trafficRuntime) SetUserCAOperationWarning(err error) {
+	r.mu.Lock()
+	r.userCAOperationWarning = nil
 	if err != nil {
-		handler, _ := corsproxy.New(corsproxy.Options{})
-		return handler, nil, fmt.Sprintf("ca-trusted is configured, but the Installed User CA could not be inspected: %v", err)
+		r.userCAOperationWarning = &HTTPSWarningDetail{
+			Kind:       HTTPSWarningNonActiveCleanupFailed,
+			Diagnostic: fmt.Sprintf("Previous UserCA cleanup is incomplete: %v.", err),
+			Action:     "Run `seamless-cors install` to reconcile UserCA state.",
+		}
 	}
-	if authority == nil {
-		handler, _ := corsproxy.New(corsproxy.Options{})
-		return handler, nil, fmt.Sprintf("ca-trusted is configured, but the Installed User CA is %s", report.Health)
+	warnings, changed := r.updateHTTPSWarningsLocked()
+	r.mu.Unlock()
+	r.publishHTTPSWarningUpdate(warnings, changed)
+}
+
+func (r *trafficRuntime) SetUninstallWarning(err error) {
+	r.mu.Lock()
+	r.userCAOperationWarning = &HTTPSWarningDetail{
+		Kind:       HTTPSWarningUninstallIncomplete,
+		Diagnostic: fmt.Sprintf("Installed User CA uninstall is incomplete: %v.", err),
+		Action:     "Run `seamless-cors uninstall` again.",
 	}
-	handler, err := corsproxy.New(corsproxy.Options{
-		CATrusted: true,
-		Authority: authority,
+	warnings, changed := r.updateHTTPSWarningsLocked()
+	r.mu.Unlock()
+	r.publishHTTPSWarningUpdate(warnings, changed)
+}
+
+func (r *trafficRuntime) updateHTTPSWarningsLocked() ([]HTTPSWarningDetail, bool) {
+	next := r.currentHTTPSWarningsLocked()
+	if slices.Equal(next, r.httpsWarnings) {
+		return nil, false
+	}
+	r.httpsWarnings = next
+	return append([]HTTPSWarningDetail(nil), next...), true
+}
+
+func (r *trafficRuntime) publishHTTPSWarningUpdate(warnings []HTTPSWarningDetail, changed bool) {
+	if !changed {
+		return
+	}
+	select {
+	case r.httpsWarningUpdates <- warnings:
+	default:
+		select {
+		case <-r.httpsWarningUpdates:
+		default:
+		}
+		r.httpsWarningUpdates <- warnings
+	}
+}
+
+func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
+	var warnings []HTTPSWarningDetail
+	warnings = append(warnings, httpsRuntimeWarnings(
+		r.currentSnapshot.UpstreamList(),
+		r.authority,
+		r.readinessReport,
+		r.readinessError,
+		r.interceptionState,
+		r.interceptionError,
+	)...)
+	if r.pacRefreshError != nil {
+		warnings = append(warnings, HTTPSWarningDetail{
+			Kind:       HTTPSWarningPACRefreshFailed,
+			Diagnostic: fmt.Sprintf("HTTPS routing refresh failed: %v.", r.pacRefreshError),
+			Action:     "Retry the lifecycle operation.",
+		})
+	}
+	if r.userCAOperationWarning != nil && !hasHTTPSWarning(warnings, r.userCAOperationWarning.Kind) {
+		warnings = append(warnings, *r.userCAOperationWarning)
+	}
+	return warnings
+}
+
+func (r *trafficRuntime) generatedPACLocked() string {
+	return pacrouting.Generate(pacrouting.Options{
+		ProxyListen:  r.listeners[0].Addr().String(),
+		HTTPSActive:  r.interceptionState == HTTPSInterceptionActive,
+		UpstreamList: r.currentSnapshot.UpstreamList(),
 	})
-	if err != nil {
-		fallback, _ := corsproxy.New(corsproxy.Options{})
-		return fallback, nil, fmt.Sprintf("ca-trusted is configured, but trusted HTTPS interception could not be activated: %v", err)
-	}
-	return handler, authority, ""
 }
 
 func (r *trafficRuntime) pacURL(version uint64) string {
@@ -331,9 +479,10 @@ type runtimeState struct {
 	ProxyListen          string
 	PACListen            string
 	UpstreamList         string
-	CATrusted            bool
-	TrustedHTTPSActive   bool
-	CATrustWarning       string
+	HTTPSReadiness       HTTPSReadinessStatus
+	HTTPSInterception    HTTPSInterceptionState
+	HTTPSIntent          bool
+	HTTPSWarnings        []HTTPSWarningDetail
 	UpstreamCount        int
 	UpstreamListWarnings []UpstreamListWarningDetail
 }
@@ -344,10 +493,97 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		ProxyListen:          r.listeners[0].Addr().String(),
 		PACListen:            r.listeners[1].Addr().String(),
 		UpstreamList:         r.currentSnapshot.UpstreamListPath(),
-		CATrusted:            r.currentSnapshot.CATrusted(),
-		TrustedHTTPSActive:   trustedHTTPSActive(r.currentSnapshot, r.authority),
-		CATrustWarning:       r.caTrustWarning,
+		HTTPSReadiness:       httpsReadinessStatus(r.authority),
+		HTTPSInterception:    r.interceptionState,
+		HTTPSIntent:          hasHTTPSIntent(upstreamList),
+		HTTPSWarnings:        append([]HTTPSWarningDetail(nil), r.httpsWarnings...),
 		UpstreamCount:        len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
 		UpstreamListWarnings: upstreamListWarningDetails(upstreamList.Warnings),
 	}
+}
+
+func hasHTTPSIntent(list upstreamlist.UpstreamList) bool {
+	for _, selector := range list.OriginSelectors {
+		if selector.Scheme == "https" {
+			return true
+		}
+	}
+	return false
+}
+
+func httpsReadinessStatus(authority *userca.Authority) HTTPSReadinessStatus {
+	if authority != nil {
+		return HTTPSReadinessReady
+	}
+	return HTTPSReadinessNotReady
+}
+
+func httpsReadinessWarnings(list upstreamlist.UpstreamList, authority *userca.Authority, report userca.Report, assessmentErr error) []HTTPSWarningDetail {
+	if assessmentErr != nil {
+		return []HTTPSWarningDetail{{
+			Kind:       HTTPSWarningReadinessUnavailable,
+			Diagnostic: fmt.Sprintf("HTTPS Readiness could not be assessed: %v.", assessmentErr),
+			Action:     "Run `seamless-cors install`.",
+		}}
+	}
+	if authority != nil {
+		var warnings []HTTPSWarningDetail
+		if report.Health == userca.HealthExpiringSoon {
+			warnings = append(warnings, HTTPSWarningDetail{
+				Kind:       HTTPSWarningRenewalRecommended,
+				Diagnostic: fmt.Sprintf("Installed User CA expires soon (%s).", report.Expires.Format("2006-01-02")),
+				Action:     "Run `seamless-cors install` to renew it.",
+			})
+		}
+		if report.NonActiveCount > 0 {
+			warnings = append(warnings, HTTPSWarningDetail{
+				Kind:       HTTPSWarningNonActiveCleanupFailed,
+				Diagnostic: "Previous UserCA cleanup is incomplete.",
+				Action:     "Run `seamless-cors install` to reconcile UserCA state.",
+			})
+		}
+		return warnings
+	}
+	if report.Health == userca.HealthMissing && !hasHTTPSIntent(list) {
+		return nil
+	}
+	if report.Health == userca.HealthMissing {
+		return []HTTPSWarningDetail{{
+			Kind:       HTTPSWarningUnmetIntent,
+			Diagnostic: "HTTPS was requested but the Installed User CA is missing.",
+			Action:     "Run `seamless-cors install`.",
+		}}
+	}
+	return []HTTPSWarningDetail{{
+		Kind:       HTTPSWarningReadinessUnavailable,
+		Diagnostic: fmt.Sprintf("HTTPS Readiness is not ready because the Installed User CA is %s.", report.Health),
+		Action:     "Run `seamless-cors install`.",
+	}}
+}
+
+func httpsRuntimeWarnings(
+	list upstreamlist.UpstreamList,
+	authority *userca.Authority,
+	report userca.Report,
+	assessmentErr error,
+	state HTTPSInterceptionState,
+	interceptionErr error,
+) []HTTPSWarningDetail {
+	if state == HTTPSInterceptionFailed {
+		return []HTTPSWarningDetail{{
+			Kind:       HTTPSWarningInterceptionFailed,
+			Diagnostic: fmt.Sprintf("HTTPS interception failed: %v.", interceptionErr),
+			Action:     "Run `seamless-cors install`.",
+		}}
+	}
+	return httpsReadinessWarnings(list, authority, report, assessmentErr)
+}
+
+func hasHTTPSWarning(warnings []HTTPSWarningDetail, kind HTTPSWarningKind) bool {
+	for _, warning := range warnings {
+		if warning.Kind == kind {
+			return true
+		}
+	}
+	return false
 }

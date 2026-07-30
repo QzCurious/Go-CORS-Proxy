@@ -18,7 +18,7 @@ type liveConfigEvent struct {
 	Err      error
 }
 
-func TestCreateBootstrapsFixedSourcesWithoutReadingThem(t *testing.T) {
+func TestCreateBootstrapsOnlyUpstreamListWithoutReadingIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -29,14 +29,10 @@ func TestCreateBootstrapsFixedSourcesWithoutReadingThem(t *testing.T) {
 	configPath := filepath.Join(home, ".seamless-cors", "config.yaml")
 	upstreamPath := filepath.Join(home, ".seamless-cors", "upstreams.txt")
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("Create produced config.yaml: %v", err)
 	}
-	if got, want := string(data), "# Enable trusted HTTPS interception through the Installed User CA.\nca-trusted: false\n"; got != want {
-		t.Fatalf("config.yaml = %q, want %q", got, want)
-	}
-	data, err = os.ReadFile(upstreamPath)
+	data, err := os.ReadFile(upstreamPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,34 +40,29 @@ func TestCreateBootstrapsFixedSourcesWithoutReadingThem(t *testing.T) {
 		t.Fatalf("upstreams.txt = %q", data)
 	}
 
-	writeFile(t, configPath, "ca-trusted: [")
+	writeFile(t, upstreamPath, "bad/path\n")
 	if _, err := liveconfig.Create(); err != nil {
 		t.Fatalf("Create validated existing source: %v", err)
 	}
-	if _, err := config.Snapshot(); err == nil {
-		t.Fatal("Snapshot accepted invalid config")
+	if _, err := config.Snapshot(); err != nil {
+		t.Fatalf("Snapshot rejected warning-only Upstream List: %v", err)
 	}
 }
 
 func TestSnapshotLoadsOnceAndReturnsCachedSemanticValue(t *testing.T) {
-	config, configPath, upstreamPath := createConfig(t)
-	writeFile(t, configPath, "ca-trusted: false\n")
+	config, _, upstreamPath := createConfig(t)
 	writeFile(t, upstreamPath, "first.example.test\n")
 
 	first, err := config.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, configPath, "ca-trusted: true\n")
 	writeFile(t, upstreamPath, "second.example.test\n")
 	second, err := config.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if second.CATrusted() {
-		t.Fatal("cached snapshot changed without observation")
-	}
 	entries := second.UpstreamList().HostSelectors
 	if len(entries) != 1 || entries[0].Hostname != "first.example.test" {
 		t.Fatalf("cached entries = %#v", entries)
@@ -144,22 +135,13 @@ func TestObserveReconcilesCachedSnapshotBeforeWaitingForEvents(t *testing.T) {
 }
 
 func TestObservePublishesSemanticChangesAndUpdatesCache(t *testing.T) {
-	config, configPath, upstreamPath := createConfig(t)
+	config, _, upstreamPath := createConfig(t)
 	writeFile(t, upstreamPath, "first.example.test\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := observeConfig(ctx, config)
 	initial := waitForEvent(t, events).Snapshot
-
-	writeFile(t, configPath, "ca-trusted: true\n")
-	enabled := waitForEvent(t, events).Snapshot
-	if !enabled.CATrusted() {
-		t.Fatal("ca-trusted change was not published")
-	}
-	if enabled.UpstreamListEntriesRevision() != initial.UpstreamListEntriesRevision() {
-		t.Fatal("CA change advanced Upstream List Entries Revision")
-	}
 
 	writeFile(t, upstreamPath, "second.example.test\n")
 	changed := waitForEvent(t, events).Snapshot
@@ -212,24 +194,27 @@ func TestObservePublishesWarningsWithoutAdvancingEntryRevision(t *testing.T) {
 	}
 }
 
-func TestObserveSurvivesTransientInvalidSource(t *testing.T) {
-	config, configPath, _ := createConfig(t)
+func TestObserveSurvivesTransientMissingUpstreamList(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := observeConfig(ctx, config)
 	_ = waitForEvent(t, events)
 
-	writeFile(t, configPath, "")
+	if err := os.Remove(upstreamPath); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(200 * time.Millisecond)
-	writeFile(t, configPath, "ca-trusted: true\n")
+	writeFile(t, upstreamPath, "recovered.example.test\n")
 
 	event := waitForEvent(t, events)
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	if !event.Snapshot.CATrusted() {
-		t.Fatal("recovered config was not published")
+	entries := event.Snapshot.UpstreamList().HostSelectors
+	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
+		t.Fatalf("recovered entries = %#v", entries)
 	}
 }
 
@@ -264,7 +249,7 @@ func TestObserveMayOnlyBeCalledOnce(t *testing.T) {
 	}
 }
 
-func TestRemovedUpstreamListSettingIsIgnored(t *testing.T) {
+func TestLegacyConfigFileIsIgnored(t *testing.T) {
 	config, configPath, upstreamPath := createConfig(t)
 	writeFile(t, configPath, "upstream-list: /tmp/ignored.txt\nca-trusted: true\n")
 	writeFile(t, upstreamPath, "fixed.example.test\n")
@@ -272,9 +257,6 @@ func TestRemovedUpstreamListSettingIsIgnored(t *testing.T) {
 	snapshot, err := config.Snapshot()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !snapshot.CATrusted() {
-		t.Fatal("ca-trusted was not decoded")
 	}
 	if snapshot.UpstreamListPath() != upstreamPath {
 		t.Fatalf("Upstream List path = %q, want %q", snapshot.UpstreamListPath(), upstreamPath)
@@ -285,14 +267,14 @@ func TestRemovedUpstreamListSettingIsIgnored(t *testing.T) {
 	}
 }
 
-func TestSnapshotRejectsSymlinkedConfigFile(t *testing.T) {
-	config, configPath, _ := createConfig(t)
-	target := filepath.Join(t.TempDir(), "target.yaml")
-	writeFile(t, target, "ca-trusted: true\n")
-	if err := os.Remove(configPath); err != nil {
+func TestSnapshotRejectsSymlinkedUpstreamList(t *testing.T) {
+	config, _, upstreamPath := createConfig(t)
+	target := filepath.Join(t.TempDir(), "upstreams.txt")
+	writeFile(t, target, "api.example.test\n")
+	if err := os.Remove(upstreamPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, configPath); err != nil {
+	if err := os.Symlink(target, upstreamPath); err != nil {
 		t.Fatal(err)
 	}
 

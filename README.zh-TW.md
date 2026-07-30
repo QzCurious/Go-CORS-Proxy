@@ -60,10 +60,7 @@ npx seamless-cors start
 seamless-cors start
 ```
 
-第一次啟動時，seamless-cors 會建立以下檔案：
-
-- `~/.seamless-cors/config.yaml`
-- `~/.seamless-cors/upstreams.txt`
+第一次啟動時，seamless-cors 會建立 `~/.seamless-cors/upstreams.txt`。
 
 把需要放行 CORS 的 API hostname 或 origin 逐行加進 `~/.seamless-cors/upstreams.txt`：
 
@@ -73,9 +70,16 @@ https://api.example.com:8443
 *.test.example.com
 ```
 
-服務執行期間會自動監看這份清單，修改後不需要重新啟動。
+服務執行期間會自動監看這份清單，修改後不需要重新啟動。明確的
+`https://` Origin Selector 代表 HTTPS Intent；Host Selector 本身不代表
+HTTPS Intent，但 HTTPS Readiness 為 ready 時會同時處理 HTTP 與 HTTPS。
 
-需要攔截 HTTPS 時，請在 `config.yaml` 將 `ca-trusted` 設為 `true`，再重新啟動服務。作業系統會要求你確認安裝 seamless-cors 的開發用 CA 憑證。
+要讓 HTTPS Readiness 成為 ready，請執行 `seamless-cors install`，並在作業系統提示中允許安裝 seamless-cors 的開發用 CA 憑證。若 gateway 已在執行，HTTPS 攔截會立即啟用。未安裝 UserCA 時，gateway 仍會繼續處理 HTTP；若 upstream list 表達 HTTPS Intent，則會顯示警告。
+
+再次執行 `seamless-cors install` 可在不中斷 HTTPS 流量的情況下更新
+UserCA。`seamless-cors uninstall` 會移除所有 seamless-cors UserCA；若
+HTTPS 攔截正在啟用，命令會先要求確認，確認後立即停用 HTTPS，而
+gateway 仍會繼續處理 HTTP。
 
 使用完畢後，按下 `Ctrl+C` 停止服務；seamless-cors 也會一併移除它設定的 PAC。
 

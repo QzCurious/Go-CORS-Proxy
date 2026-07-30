@@ -9,24 +9,15 @@ import (
 	"sync"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
-
-	"gopkg.in/yaml.v3"
 )
 
-const configFileName = "config.yaml"
 const upstreamListFileName = "upstreams.txt"
 const defaultUpstreamList = "# One upstream host or origin per line.\n# api.dev.example.com\n"
 
 type Snapshot struct {
-	caTrusted                   bool
-	configPath                  string
 	upstreamListPath            string
 	upstreamList                upstreamlist.UpstreamList
 	upstreamListEntriesRevision uint64
-}
-
-func (s Snapshot) CATrusted() bool {
-	return s.caTrusted
 }
 
 func (s Snapshot) UpstreamList() upstreamlist.UpstreamList {
@@ -37,50 +28,29 @@ func (s Snapshot) UpstreamListEntriesRevision() uint64 {
 	return s.upstreamListEntriesRevision
 }
 
-func (s Snapshot) ConfigPath() string {
-	return s.configPath
-}
-
 func (s Snapshot) UpstreamListPath() string {
 	return s.upstreamListPath
 }
 
-type fileConfig struct {
-	CATrusted bool `yaml:"ca-trusted"`
-}
-
-type loadResult struct {
-	Config       fileConfig
-	ConfigPath   string
-	UpstreamPath string
-}
-
 type Config struct {
 	mu                 sync.RWMutex
-	configPath         string
 	upstreamListPath   string
 	current            Snapshot
 	hasCurrent         bool
 	observationStarted bool
 }
 
-// Create bootstraps the fixed Live Configuration sources without reading or
-// validating them.
+// Create bootstraps the fixed Upstream List without reading or validating it.
 func Create() (*Config, error) {
 	dir, err := homeConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	configPath := filepath.Join(dir, configFileName)
 	upstreamListPath := filepath.Join(dir, upstreamListFileName)
-	if err := bootstrapFile(configPath, commentedDefaultConfig()); err != nil {
-		return nil, err
-	}
 	if err := bootstrapFile(upstreamListPath, defaultUpstreamList); err != nil {
 		return nil, err
 	}
 	return &Config{
-		configPath:       configPath,
 		upstreamListPath: upstreamListPath,
 	}, nil
 }
@@ -152,13 +122,6 @@ func (c *Config) refreshObserved() (refreshResult, error) {
 }
 
 func (c *Config) readFromSourceLocked(observed bool) (Snapshot, error) {
-	loaded, err := loadExisting(c.configPath, c.upstreamListPath)
-	if err != nil {
-		if observed {
-			return Snapshot{}, invalidConfigError(c.configPath, err)
-		}
-		return Snapshot{}, err
-	}
 	decoded, err := loadUpstreamList(c.upstreamListPath)
 	if err != nil {
 		if observed {
@@ -171,7 +134,7 @@ func (c *Config) readFromSourceLocked(observed bool) (Snapshot, error) {
 	if c.hasCurrent {
 		revision = c.current.upstreamListEntriesRevision
 	}
-	next := snapshotFromLoadResult(loaded, decoded, revision)
+	next := snapshotFromUpstreamList(c.upstreamListPath, decoded, revision)
 	if c.hasCurrent && !upstreamlist.SameEntries(c.current.upstreamList, next.upstreamList) {
 		next.upstreamListEntriesRevision++
 	}
@@ -179,9 +142,7 @@ func (c *Config) readFromSourceLocked(observed bool) (Snapshot, error) {
 }
 
 func sameSemanticSnapshot(left, right Snapshot) bool {
-	if left.caTrusted != right.caTrusted ||
-		left.configPath != right.configPath ||
-		left.upstreamListPath != right.upstreamListPath ||
+	if left.upstreamListPath != right.upstreamListPath ||
 		left.upstreamListEntriesRevision != right.upstreamListEntriesRevision ||
 		!slices.Equal(left.upstreamList.Warnings, right.upstreamList.Warnings) {
 		return false
@@ -189,11 +150,9 @@ func sameSemanticSnapshot(left, right Snapshot) bool {
 	return true
 }
 
-func snapshotFromLoadResult(loaded loadResult, decoded upstreamlist.UpstreamList, upstreamListEntriesRevision uint64) Snapshot {
+func snapshotFromUpstreamList(path string, decoded upstreamlist.UpstreamList, upstreamListEntriesRevision uint64) Snapshot {
 	return Snapshot{
-		caTrusted:                   loaded.Config.CATrusted,
-		configPath:                  loaded.ConfigPath,
-		upstreamListPath:            loaded.UpstreamPath,
+		upstreamListPath:            path,
 		upstreamList:                cloneUpstreamList(decoded),
 		upstreamListEntriesRevision: upstreamListEntriesRevision,
 	}
@@ -214,26 +173,6 @@ func homeConfigDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".seamless-cors"), nil
-}
-
-func loadExisting(configPath, upstreamListPath string) (loadResult, error) {
-	data, err := readRegularFile(configPath)
-	if err != nil {
-		return loadResult{}, err
-	}
-	return parseFileConfig(configPath, upstreamListPath, data)
-}
-
-func parseFileConfig(configPath, upstreamListPath string, data []byte) (loadResult, error) {
-	var cfg fileConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return loadResult{}, fmt.Errorf("invalid config.yaml: %w", err)
-	}
-	return loadResult{
-		Config:       cfg,
-		ConfigPath:   configPath,
-		UpstreamPath: upstreamListPath,
-	}, nil
 }
 
 func loadUpstreamList(path string) (upstreamlist.UpstreamList, error) {
@@ -280,10 +219,4 @@ func bootstrapFile(path, content string) error {
 		return err
 	}
 	return file.Close()
-}
-
-func commentedDefaultConfig() string {
-	return `# Enable trusted HTTPS interception through the Installed User CA.
-ca-trusted: false
-`
 }

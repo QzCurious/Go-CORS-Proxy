@@ -24,7 +24,7 @@ func TestRunPrintsVersion(t *testing.T) {
 	}
 }
 
-func TestStartRejectsConfigurationFlags(t *testing.T) {
+func TestStartRejectsFlags(t *testing.T) {
 	var stderr bytes.Buffer
 
 	err := run([]string{"start", "--ca-trusted"}, io.Discard, &stderr, commandHandlers{
@@ -34,13 +34,13 @@ func TestStartRejectsConfigurationFlags(t *testing.T) {
 		},
 	})
 	if err != nil {
-		if !strings.Contains(err.Error(), "does not accept configuration flags") {
+		if !strings.Contains(err.Error(), "does not accept flags") {
 			t.Fatalf("error = %v", err)
 		}
 	} else {
 		t.Fatal("expected start flag error")
 	}
-	if !strings.Contains(stderr.String(), "edit config.yaml") {
+	if !strings.Contains(stderr.String(), "edit upstreams.txt") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

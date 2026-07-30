@@ -17,7 +17,7 @@ type commandHandler interface {
 	Stop(context.Context) (StopResult, error)
 	Status(context.Context, bool) (StatusResult, error)
 	Install(context.Context) (InstallResult, error)
-	Uninstall(context.Context) (UninstallResult, error)
+	UninstallWithConsent(context.Context, string) (UninstallResult, error)
 }
 
 type routerServer struct {
@@ -110,10 +110,9 @@ func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutp
 		var startErr *StartError
 		if errors.As(err, &startErr) {
 			return nil, &startHTTPError{
-				Status:   http.StatusInternalServerError,
-				Title:    "gateway start failed",
-				Detail:   startErr.Diagnostic,
-				CAEnsure: startErr.CAEnsure,
+				Status: http.StatusInternalServerError,
+				Title:  "gateway start failed",
+				Detail: startErr.Diagnostic,
 			}
 		}
 		return nil, err
@@ -122,10 +121,9 @@ func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutp
 }
 
 type startHTTPError struct {
-	Status   int             `json:"status"`
-	Title    string          `json:"title"`
-	Detail   string          `json:"detail"`
-	CAEnsure *CAEnsureResult `json:"caEnsure,omitempty"`
+	Status int    `json:"status"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
 }
 
 func (e *startHTTPError) Error() string  { return e.Detail }
@@ -178,8 +176,12 @@ type uninstallOutput struct {
 	Body UninstallResult
 }
 
-func (s *routerServer) uninstall(ctx context.Context, _ *struct{}) (*uninstallOutput, error) {
-	result, err := s.handler.Uninstall(ctx)
+type uninstallInput struct {
+	Body UninstallRequest
+}
+
+func (s *routerServer) uninstall(ctx context.Context, input *uninstallInput) (*uninstallOutput, error) {
+	result, err := s.handler.UninstallWithConsent(ctx, input.Body.ConsentFingerprint)
 	if err != nil {
 		return nil, err
 	}

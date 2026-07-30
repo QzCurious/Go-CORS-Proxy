@@ -10,7 +10,7 @@ import (
 func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {
 	js := Generate(Options{
 		ProxyListen: "127.0.0.1:8080",
-		CATrusted:   true,
+		HTTPSActive: true,
 		UpstreamList: upstreamlist.UpstreamList{
 			HostSelectors: []upstreamlist.HostSelector{
 				{Hostname: "qa.example.test", HostnameMatch: upstreamlist.HostnameSingleLevel},
