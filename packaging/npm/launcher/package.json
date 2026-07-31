@@ -3,6 +3,13 @@
   "version": "0.0.0-PLACEHOLDER",
   "private": true,
   "description": "Install the seamless-cors local DEV/QA gateway",
+  "keywords": [
+    "cors",
+    "cors-proxy",
+    "proxy",
+    "pac",
+    "proxy-auto-config"
+  ],
   "type": "module",
   "license": "MIT",
   "repository": {
