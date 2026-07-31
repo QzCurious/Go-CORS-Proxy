@@ -29,11 +29,11 @@ func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte,
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-func newTrustStore() TrustStore {
+func newTrustStore() trustStore {
 	return &darwinTrustStore{runner: execRunner{}}
 }
 
-var _ TrustStore = (*darwinTrustStore)(nil)
+var _ trustStore = (*darwinTrustStore)(nil)
 
 func (s *darwinTrustStore) Trust(ctx context.Context, certificatePEM []byte) error {
 	block, _ := pem.Decode(certificatePEM)
@@ -56,8 +56,8 @@ func (s *darwinTrustStore) Trust(ctx context.Context, certificatePEM []byte) err
 	return err
 }
 
-func (s *darwinTrustStore) TrustedCertificates(ctx context.Context) ([]TrustedCertificate, error) {
-	out, err := s.security(ctx, "find-certificate", "-a", "-c", CommonName, "-p", "-Z", s.keychain())
+func (s *darwinTrustStore) TrustedCertificates(ctx context.Context) ([]trustedCertificate, error) {
+	out, err := s.security(ctx, "find-certificate", "-a", "-c", commonName, "-p", "-Z", s.keychain())
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "could not be found") ||
 			strings.Contains(strings.ToLower(string(out)), "could not be found") {
@@ -78,8 +78,8 @@ func (s *darwinTrustStore) Remove(ctx context.Context, fingerprints []string) er
 	return firstErr
 }
 
-func strictFootprintCertificates(out []byte) []TrustedCertificate {
-	var certificates []TrustedCertificate
+func strictFootprintCertificates(out []byte) []trustedCertificate {
+	var certificates []trustedCertificate
 	var fingerprint string
 	var pemLines []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -100,20 +100,20 @@ func strictFootprintCertificates(out []byte) []TrustedCertificate {
 	return certificates
 }
 
-func trustedCertificateFromPEM(fingerprint string, pemLines []string) (TrustedCertificate, bool) {
+func trustedCertificateFromPEM(fingerprint string, pemLines []string) (trustedCertificate, bool) {
 	if fingerprint == "" || len(pemLines) == 0 {
-		return TrustedCertificate{}, false
+		return trustedCertificate{}, false
 	}
 	certificatePEM := []byte(strings.Join(pemLines, "\n"))
 	block, _ := pem.Decode(certificatePEM)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return TrustedCertificate{}, false
+		return trustedCertificate{}, false
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil || !isStrictFootprint(cert) {
-		return TrustedCertificate{}, false
+		return trustedCertificate{}, false
 	}
-	return TrustedCertificate{
+	return trustedCertificate{
 		Fingerprint:    fingerprint,
 		CertificatePEM: certificatePEM,
 		ExpiresAt:      cert.NotAfter,

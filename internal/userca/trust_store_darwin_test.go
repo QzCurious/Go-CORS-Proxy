@@ -60,7 +60,7 @@ func TestDarwinCATrustMutationsObserveCancellation(t *testing.T) {
 		{
 			name: "trust",
 			run: func(ctx context.Context, adapter *darwinTrustStore) error {
-				return adapter.Trust(ctx, testCertificate(t, CommonName, true))
+				return adapter.Trust(ctx, testCertificate(t, commonName, true))
 			},
 		},
 		{
@@ -119,7 +119,7 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 }
 
 func TestDarwinTrustStoreTrustsAndRemovesInstalledCAInUserKeychain(t *testing.T) {
-	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, CommonName, true))}
+	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, commonName, true))}
 	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 	certPEM := []byte(`-----BEGIN CERTIFICATE-----
 MIIBhTCCASugAwIBAgIBATAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlkZXYtdGVz
@@ -159,7 +159,7 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 }
 
 func TestDarwinTrustStoreDoesNotRemoveSameNameNonCAFootprint(t *testing.T) {
-	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, CommonName, false))}
+	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, commonName, false))}
 	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 
 	certificates, err := adapter.TrustedCertificates(context.Background())

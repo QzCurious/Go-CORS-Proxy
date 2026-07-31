@@ -33,11 +33,11 @@ func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte,
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-func newTrustStore() TrustStore {
+func newTrustStore() trustStore {
 	return &windowsTrustStore{runner: execRunner{}}
 }
 
-var _ TrustStore = (*windowsTrustStore)(nil)
+var _ trustStore = (*windowsTrustStore)(nil)
 
 func (s *windowsTrustStore) Trust(ctx context.Context, certificatePEM []byte) error {
 	block, _ := pem.Decode(certificatePEM)
@@ -60,7 +60,7 @@ Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root | Out-
 	return err
 }
 
-func (s *windowsTrustStore) TrustedCertificates(ctx context.Context) ([]TrustedCertificate, error) {
+func (s *windowsTrustStore) TrustedCertificates(ctx context.Context) ([]trustedCertificate, error) {
 	script := fmt.Sprintf(`
 $records = @(
 	Get-ChildItem -Path Cert:\CurrentUser\Root |
@@ -74,7 +74,7 @@ $records = @(
 		}
 )
 ConvertTo-Json -Compress -InputObject $records
-`, psQuote("CN="+CommonName))
+`, psQuote("CN="+commonName))
 	out, err := s.powershell(ctx, script)
 	if err != nil {
 		return nil, err
@@ -103,7 +103,7 @@ func (s *windowsTrustStore) powershell(ctx context.Context, script string) ([]by
 	return out, nil
 }
 
-func windowsTrustedCertificatesFromJSON(out []byte) ([]TrustedCertificate, error) {
+func windowsTrustedCertificatesFromJSON(out []byte) ([]trustedCertificate, error) {
 	trimmed := bytes.TrimSpace(out)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, nil
@@ -123,7 +123,7 @@ func windowsTrustedCertificatesFromJSON(out []byte) ([]TrustedCertificate, error
 	} else if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return nil, fmt.Errorf("parse Windows trusted certificates: %w", err)
 	}
-	certificates := make([]TrustedCertificate, 0, len(raw))
+	certificates := make([]trustedCertificate, 0, len(raw))
 	for _, item := range raw {
 		der, err := base64.StdEncoding.DecodeString(item.DER)
 		if err != nil {
@@ -145,7 +145,7 @@ func windowsTrustedCertificatesFromJSON(out []byte) ([]TrustedCertificate, error
 			sum := sha1.Sum(der)
 			fingerprint = strings.ToUpper(hex.EncodeToString(sum[:]))
 		}
-		certificates = append(certificates, TrustedCertificate{
+		certificates = append(certificates, trustedCertificate{
 			Fingerprint:    fingerprint,
 			CertificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 			ExpiresAt:      expiresAt,

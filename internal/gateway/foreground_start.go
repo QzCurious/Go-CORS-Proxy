@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
@@ -18,10 +17,21 @@ type StartHooks struct {
 }
 
 func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
-	return start(ctx, managedpac.NewSystemSettings(), userca.NewTrustStore(), hooks)
+	target, err := discover()
+	if err != nil {
+		return StartResult{}, err
+	}
+	if target.kind == targetActive {
+		return executeAndStartClient(ctx, target.client, hooks)
+	}
+	ca, err := openSystemUserCA()
+	if err != nil {
+		return StartResult{}, err
+	}
+	return start(ctx, managedpac.NewSystemSettings(), ca, hooks)
 }
 
-func start(ctx context.Context, settings managedpac.SystemSettings, trustStore userca.TrustStore, hooks StartHooks) (StartResult, error) {
+func start(ctx context.Context, settings managedpac.SystemSettings, ca userCAModule, hooks StartHooks) (StartResult, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return StartResult{}, err
@@ -31,7 +41,14 @@ func start(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 		return StartResult{}, err
 	}
 	if !acquired {
-		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
+		target, discoverErr := discover()
+		if discoverErr != nil {
+			return StartResult{}, discoverErr
+		}
+		if target.kind == targetActive {
+			return executeAndStartClient(ctx, target.client, hooks)
+		}
+		return StartResult{Kind: StartResultOwnerTransition}, nil
 	}
 	releaseLease := true
 	defer func() {
@@ -46,7 +63,7 @@ func start(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 	if len(failures) > 0 {
 		return StartResult{Kind: StartResultCleanupFailed, CleanupFailures: failures}, nil
 	}
-	owner, err := newOwnerWithCoordinator(settings, trustStore, coord)
+	owner, err := newOwnerWithCoordinator(settings, ca, coord)
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -72,11 +89,19 @@ func start(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 	return result, err
 }
 
-func Serve(ctx context.Context, ready func()) error {
-	return serve(ctx, managedpac.NewSystemSettings(), userca.NewTrustStore(), ready)
+func executeAndStartClient(ctx context.Context, client *client, hooks StartHooks) (StartResult, error) {
+	return executeStartLoop(ctx, hooks, client.Start)
 }
 
-func serve(ctx context.Context, settings managedpac.SystemSettings, trustStore userca.TrustStore, ready func()) error {
+func Serve(ctx context.Context, ready func()) error {
+	ca, err := openSystemUserCA()
+	if err != nil {
+		return err
+	}
+	return serve(ctx, managedpac.NewSystemSettings(), ca, ready)
+}
+
+func serve(ctx context.Context, settings managedpac.SystemSettings, ca userCAModule, ready func()) error {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return err
@@ -97,7 +122,7 @@ func serve(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 	if coord.Verify().Status == stateActive {
 		return fmt.Errorf("gateway owner already running")
 	}
-	owner, err := newOwnerWithCoordinator(settings, trustStore, coord)
+	owner, err := newOwnerWithCoordinator(settings, ca, coord)
 	if err != nil {
 		return err
 	}
@@ -112,9 +137,17 @@ func serve(ctx context.Context, settings managedpac.SystemSettings, trustStore u
 }
 
 func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks) (StartResult, error) {
+	return executeStartLoop(ctx, hooks, lifecycle.ExecuteStart)
+}
+
+func executeStartLoop(
+	ctx context.Context,
+	hooks StartHooks,
+	start func(context.Context, StartRequest) (StartResult, error),
+) (StartResult, error) {
 	request := StartRequest{}
 	for {
-		result, err := lifecycle.ExecuteStart(ctx, request)
+		result, err := start(ctx, request)
 		if hooks.Started != nil {
 			hooks.Started(result)
 		}
@@ -125,7 +158,7 @@ func executeAndStart(ctx context.Context, lifecycle *lifecycle, hooks StartHooks
 		case StartResultStarted, StartResultAlreadyRunning:
 			result.Kind = StartResultStarted
 			return result, nil
-		case StartResultStopCancelled, StartResultCleanupFailed:
+		case StartResultStopCancelled, StartResultCleanupFailed, StartResultStartAlreadyMutating:
 			return result, nil
 		case StartResultConsentRequired:
 			if result.PACReplacementConsent == nil {

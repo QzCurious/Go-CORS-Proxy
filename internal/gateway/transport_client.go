@@ -127,6 +127,11 @@ func (c *client) callJSON(ctx context.Context, method, path string, body any, ou
 		if strings.Contains(text, managedpac.ErrManagedPACLeaseLost.Error()) {
 			return managedpac.ErrManagedPACLeaseLost
 		}
+		for _, coordinationErr := range []error{errCAOperationInProgress, errGatewayOwnerEnding, errOwnerTransition} {
+			if strings.Contains(text, coordinationErr.Error()) {
+				return coordinationErr
+			}
+		}
 		return &responseError{path: path, status: resp.Status, body: data, text: text}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)

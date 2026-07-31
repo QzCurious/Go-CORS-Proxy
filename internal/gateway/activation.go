@@ -2,12 +2,10 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type startSequence struct {
@@ -77,9 +75,9 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	if !s.lifecycle.caAdmissionMu.TryLock() {
 		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
 	}
-	caDir, dirErr := userca.DefaultDir()
-	publishRuntime := func(authority *userca.Authority, readinessReport userca.Report, readinessErr error) error {
-		if err := engine.SetInitialHTTPSReadiness(authority, readinessReport, readinessErr); err != nil {
+	publishRuntime := func() error {
+		userCASnapshot, readinessErr := s.lifecycle.userCA.Inspect(ctx)
+		if err := engine.SetInitialHTTPSReadiness(userCASnapshot, readinessErr); err != nil {
 			return err
 		}
 		s.lifecycle.mu.Lock()
@@ -87,19 +85,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		s.lifecycle.userCASnapshot = userCASnapshot
+		s.lifecycle.userCAAssessmentErr = readinessErr
 		s.lifecycle.runtime = active
 		return nil
 	}
-	var publishErr error
-	if dirErr != nil {
-		publishErr = publishRuntime(nil, userca.Report{Health: userca.HealthUnknown}, dirErr)
-	} else {
-		publishErr = userca.UseHTTPSReadinessContext(ctx, caDir, s.lifecycle.userCATrustStore, publishRuntime)
-	}
-	if errors.Is(publishErr, userca.ErrCAOperationInProgress) {
-		s.lifecycle.caAdmissionMu.Unlock()
-		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
-	}
+	publishErr := publishRuntime()
 	if publishErr != nil {
 		s.lifecycle.caAdmissionMu.Unlock()
 		if ctx.Err() != nil {

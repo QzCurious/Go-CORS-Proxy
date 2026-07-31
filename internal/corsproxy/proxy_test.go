@@ -1,13 +1,15 @@
 package corsproxy
 
 import (
-	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -182,17 +184,13 @@ func TestHTTPSPreparationFailureDirectTunnelsDetectingRequest(t *testing.T) {
 		_, _ = w.Write([]byte("direct"))
 	}))
 	defer upstream.Close()
-	store := &testTrustStore{}
-	authority, _, err := userca.Ensure(t.TempDir(), store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	generation, _ := testHTTPSGeneration(t)
 	failures := make(chan HTTPSFailure, 1)
 	core := newTestCore(t, Options{
-		InterceptHTTPS: true,
-		Authority:      authority,
-		Transport:      testTransport(t, upstream.Client()),
-		OnHTTPSFailure: func(failure HTTPSFailure) { failures <- failure },
+		InterceptHTTPS:  true,
+		HTTPSGeneration: &generation,
+		Transport:       testTransport(t, upstream.Client()),
+		OnHTTPSFailure:  func(failure HTTPSFailure) { failures <- failure },
 		GenerateLeaf: func(tls.Certificate, string) (*tls.Certificate, error) {
 			return nil, errors.New("leaf generation failed")
 		},
@@ -234,16 +232,12 @@ func TestExpiredUserCADetectedAtRequestBoundaryDirectTunnels(t *testing.T) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 	}))
 	defer upstream.Close()
-	store := &testTrustStore{}
-	authority, _, err := userca.Ensure(t.TempDir(), store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	generation, _ := testHTTPSGeneration(t)
 	failures := make(chan HTTPSFailure, 1)
 	core := newTestCore(t, Options{
-		InterceptHTTPS: true,
-		Authority:      authority,
-		OnHTTPSFailure: func(failure HTTPSFailure) { failures <- failure },
+		InterceptHTTPS:  true,
+		HTTPSGeneration: &generation,
+		OnHTTPSFailure:  func(failure HTTPSFailure) { failures <- failure },
 	})
 	core.httpsGeneration.Load().expiresAt = time.Now().Add(-time.Second)
 	proxyServer := httptest.NewServer(core)
@@ -269,6 +263,21 @@ func TestExpiredUserCADetectedAtRequestBoundaryDirectTunnels(t *testing.T) {
 	}
 }
 
+func TestPerHostLeafExpiryIsCappedByUserCA(t *testing.T) {
+	generation, _ := testHTTPSGeneration(t)
+	userCAExpiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	generation.Certificate.Leaf.NotAfter = userCAExpiry
+
+	leaf, err := signHostCertificate(generation.Certificate, "api.example.test")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaf.Leaf.NotAfter.After(userCAExpiry) {
+		t.Fatalf("leaf expiry %s exceeds UserCA expiry %s", leaf.Leaf.NotAfter, userCAExpiry)
+	}
+}
+
 func TestProxyLoggingIsQuietByDefault(t *testing.T) {
 	t.Setenv("SEAMLESS_CORS_DEBUG_PROXY", "")
 	core := newTestCore(t, Options{})
@@ -289,15 +298,11 @@ func TestProxyLoggingDebugEnvEnablesVerboseLogs(t *testing.T) {
 
 func trustedProxyServer(t *testing.T, upstreamClient *http.Client) (*httptest.Server, *url.URL, *tls.Config) {
 	t.Helper()
-	store := &testTrustStore{}
-	authority, _, err := userca.Ensure(t.TempDir(), store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	generation, certificatePEM := testHTTPSGeneration(t)
 	core := newTestCore(t, Options{
-		InterceptHTTPS: true,
-		Authority:      authority,
-		Transport:      testTransport(t, upstreamClient),
+		InterceptHTTPS:  true,
+		HTTPSGeneration: &generation,
+		Transport:       testTransport(t, upstreamClient),
 	})
 	proxyServer := httptest.NewServer(core)
 	proxyURL, err := url.Parse(proxyServer.URL)
@@ -306,38 +311,44 @@ func trustedProxyServer(t *testing.T, upstreamClient *http.Client) (*httptest.Se
 		t.Fatal(err)
 	}
 	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(authority.CertPEM) {
+	if !roots.AppendCertsFromPEM(certificatePEM) {
 		proxyServer.Close()
 		t.Fatal("failed to trust gateway CA")
 	}
 	return proxyServer, proxyURL, &tls.Config{RootCAs: roots}
 }
 
-type testTrustStore struct {
-	records []userca.TrustedCertificate
-}
-
-func (s *testTrustStore) TrustedCertificates(context.Context) ([]userca.TrustedCertificate, error) {
-	return append([]userca.TrustedCertificate(nil), s.records...), nil
-}
-
-func (s *testTrustStore) Trust(_ context.Context, certPEM []byte) error {
-	fingerprint, err := userca.SHA1Fingerprint(certPEM)
+func testHTTPSGeneration(t *testing.T) (HTTPSGeneration, []byte) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return err
+		t.Fatal(err)
 	}
-	block, _ := pem.Decode(certPEM)
-	cert, err := x509.ParseCertificate(block.Bytes)
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(now.UnixNano()),
+		Subject:               pkix.Name{CommonName: "proxy test root"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
-		return err
+		t.Fatal(err)
 	}
-	s.records = []userca.TrustedCertificate{{Fingerprint: fingerprint, CertificatePEM: certPEM, ExpiresAt: cert.NotAfter}}
-	return nil
-}
-
-func (s *testTrustStore) Remove(context.Context, []string) error {
-	s.records = nil
-	return nil
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certificate, err := tls.X509KeyPair(certificatePEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate.Leaf, err = x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return HTTPSGeneration{Certificate: certificate, ExpiresAt: template.NotAfter}, certificatePEM
 }
 
 func newTestCore(t *testing.T, opts Options) *Core {

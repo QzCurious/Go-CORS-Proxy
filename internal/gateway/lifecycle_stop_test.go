@@ -15,7 +15,7 @@ func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
 		cleanupEntered: cleanupEntered,
 		releaseCleanup: releaseCleanup,
 	}
-	lifecycle, err := newLifecycle(settings, emptyTestTrustStore{}, newCoordinator(t.TempDir()), "127.0.0.1:1")
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "127.0.0.1:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 		}},
 		clearErr: errors.New("cleanup denied"),
 	}
-	lifecycle, err := newLifecycle(settings, emptyTestTrustStore{}, newCoordinator(t.TempDir()), "127.0.0.1:1")
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "127.0.0.1:1")
 	if err != nil {
 		t.Fatal(err)
 	}

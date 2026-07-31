@@ -2,743 +2,429 @@ package userca
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"errors"
-	"math/big"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
-	"sync"
+	"runtime"
 	"testing"
 	"time"
 )
 
-type crashingTrustStore struct {
-	marker string
-}
+func TestInspectMissingIsNotUsable(t *testing.T) {
+	ca := openAt(t.TempDir(), &fakeTrustStore{}, time.Now)
 
-func (f crashingTrustStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
-	return nil, nil
-}
-func (f crashingTrustStore) Remove(context.Context, []string) error { return nil }
-func (f crashingTrustStore) Trust(context.Context, []byte) error {
-	if err := os.WriteFile(f.marker, []byte("holding"), 0o600); err != nil {
-		return err
-	}
-	select {}
-}
+	snapshot, err := ca.Inspect(context.Background())
 
-func TestCAMutationLeaseIsReleasedWhenHolderProcessExits(t *testing.T) {
-	if os.Getenv("SEAMLESS_CORS_CA_LEASE_HELPER") == "1" {
-		dir := os.Getenv("SEAMLESS_CORS_CA_LEASE_DIR")
-		marker := os.Getenv("SEAMLESS_CORS_CA_LEASE_MARKER")
-		_, _, _ = Ensure(dir, crashingTrustStore{marker: marker})
-		os.Exit(2)
-	}
-
-	base := t.TempDir()
-	dir := filepath.Join(base, "ca")
-	marker := filepath.Join(base, "holding")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCAMutationLeaseIsReleasedWhenHolderProcessExits$")
-	cmd.Env = append(os.Environ(),
-		"SEAMLESS_CORS_CA_LEASE_HELPER=1",
-		"SEAMLESS_CORS_CA_LEASE_DIR="+dir,
-		"SEAMLESS_CORS_CA_LEASE_MARKER="+marker,
-	)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			t.Fatal("helper did not acquire CA mutation lease")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
-	_ = cmd.Wait()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if _, _, err := EnsureContext(ctx, dir, &fakeTrustStore{}); err != nil {
-		t.Fatalf("CA mutation lease remained held after process exit: %v", err)
-	}
-}
-
-type blockingTrustStore struct {
-	mu                    sync.Mutex
-	records               []TrustedCertificate
-	trustCalls            int
-	trustEntered          chan struct{}
-	releaseTrust          chan struct{}
-	trustErr              error
-	completeTrustOnCancel bool
-}
-
-func (f *blockingTrustStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]TrustedCertificate(nil), f.records...), nil
-}
-
-func (f *blockingTrustStore) Trust(ctx context.Context, certPEM []byte) error {
-	f.mu.Lock()
-	f.trustCalls++
-	f.mu.Unlock()
-	select {
-	case f.trustEntered <- struct{}{}:
-	default:
-	}
-	select {
-	case <-f.releaseTrust:
-	case <-ctx.Done():
-		if !f.completeTrustOnCancel {
-			return ctx.Err()
-		}
-	}
-	fingerprint, err := SHA1Fingerprint(certPEM)
-	if err != nil {
-		return err
-	}
-	block, _ := pem.Decode(certPEM)
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return err
-	}
-	f.mu.Lock()
-	f.records = append(f.records, TrustedCertificate{Fingerprint: fingerprint, CertificatePEM: certPEM, ExpiresAt: cert.NotAfter})
-	err = f.trustErr
-	f.mu.Unlock()
-	return err
-}
-
-func (f *blockingTrustStore) Remove(_ context.Context, fingerprints []string) error {
-	f.mu.Lock()
-	f.records = withoutFingerprints(f.records, fingerprints)
-	f.mu.Unlock()
-	return nil
-}
-
-func TestCancelledEnsurePreservesCAWhenTrustInstallationCompleted(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
-	store := &blockingTrustStore{
-		trustEntered:          make(chan struct{}, 1),
-		releaseTrust:          make(chan struct{}),
-		completeTrustOnCancel: true,
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct {
-		authority *Authority
-		result    EnsureResult
-		err       error
-	}, 1)
-	go func() {
-		authority, result, err := EnsureContext(ctx, dir, store)
-		done <- struct {
-			authority *Authority
-			result    EnsureResult
-			err       error
-		}{authority: authority, result: result, err: err}
-	}()
-	select {
-	case <-store.trustEntered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("CA Ensure did not reach trust installation")
-	}
-	cancel()
-	got := <-done
-	if got.err != nil {
-		t.Fatalf("EnsureContext error = %v", got.err)
-	}
-	if got.authority == nil || got.result.Health != HealthUsable || !got.result.Changed {
-		t.Fatalf("completed cancellation result = authority %v, result %+v", got.authority != nil, got.result)
-	}
-	report, err := Inspect(dir, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Health != HealthUsable {
-		t.Fatalf("health after completed trust installation = %s", report.Health)
+	if snapshot.Usable() {
+		t.Fatal("missing UserCA reported usable")
+	}
+	if _, ok := snapshot.TLSCertificate(); ok {
+		t.Fatal("not-usable snapshot exposed TLS signing material")
 	}
 }
 
-func TestCancelledEnsureReconcilesPartialCAStateToAbsent(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
-	store := &blockingTrustStore{
-		trustEntered: make(chan struct{}, 1),
-		releaseTrust: make(chan struct{}),
-		trustErr:     errors.New("approval command interrupted"),
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, _, err := EnsureContext(ctx, dir, store)
-		done <- err
-	}()
-	select {
-	case <-store.trustEntered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("CA Ensure did not reach trust installation")
-	}
-	cancel()
-	close(store.releaseTrust)
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("EnsureContext error = %v", err)
-	}
-	report, err := Inspect(dir, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Health != HealthMissing {
-		t.Fatalf("health after cancelled Ensure = %s", report.Health)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ActiveFingerprintFileName)); !os.IsNotExist(err) {
-		t.Fatalf("partial Active marker remained: %v", err)
-	}
-}
-
-func TestFailedEnsureRemovesPartialTrustAndMaterial(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
-	store := &blockingTrustStore{
-		trustEntered: make(chan struct{}, 1),
-		releaseTrust: make(chan struct{}),
-		trustErr:     errors.New("trust command failed after changing state"),
-	}
-	close(store.releaseTrust)
-	if _, _, err := Ensure(dir, store); err == nil {
-		t.Fatal("Ensure should report failed trust command")
-	}
-	report, err := Inspect(dir, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Health != HealthMissing {
-		t.Fatalf("health after failed Ensure = %s", report.Health)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ActiveFingerprintFileName)); !os.IsNotExist(err) {
-		t.Fatalf("partial Active marker remained: %v", err)
-	}
-}
-
-func TestEnsureContextRejectsConcurrentCAMutation(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
-	store := &blockingTrustStore{
-		trustEntered: make(chan struct{}, 1),
-		releaseTrust: make(chan struct{}),
-	}
-	firstDone := make(chan error, 1)
-	go func() {
-		_, _, err := EnsureContext(context.Background(), dir, store)
-		firstDone <- err
-	}()
-	select {
-	case <-store.trustEntered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("first CA mutation did not reach trust installation")
-	}
-
-	secondDone := make(chan error, 1)
-	go func() {
-		_, _, err := EnsureContext(context.Background(), dir, store)
-		secondDone <- err
-	}()
-	select {
-	case err := <-secondDone:
-		if !errors.Is(err, ErrCAOperationInProgress) {
-			t.Fatalf("waiting EnsureContext error = %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("concurrent EnsureContext did not fail fast")
-	}
-	store.mu.Lock()
-	if got := store.trustCalls; got != 1 {
-		store.mu.Unlock()
-		t.Fatalf("trust calls while first mutation held lease = %d", got)
-	}
-	store.mu.Unlock()
-
-	close(store.releaseTrust)
-	if err := <-firstDone; err != nil {
-		t.Fatal(err)
-	}
-}
-
-type cancellationAwareRemoveStore struct {
-	mu      sync.Mutex
-	records []TrustedCertificate
-	entered chan struct{}
-}
-
-func (f *cancellationAwareRemoveStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]TrustedCertificate(nil), f.records...), nil
-}
-
-func (f *cancellationAwareRemoveStore) Trust(context.Context, []byte) error { return nil }
-
-func (f *cancellationAwareRemoveStore) Remove(ctx context.Context, _ []string) error {
-	select {
-	case f.entered <- struct{}{}:
-	default:
-	}
-	if ctx.Done() != nil {
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	f.mu.Lock()
-	f.records = nil
-	f.mu.Unlock()
-	return nil
-}
-
-func TestCancelledUninstallFinishesRemovingCAState(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
-	initial := &fakeTrustStore{}
-	if _, _, err := Ensure(dir, initial); err != nil {
-		t.Fatal(err)
-	}
-	store := &cancellationAwareRemoveStore{
-		records: append([]TrustedCertificate(nil), initial.records...),
-		entered: make(chan struct{}, 1),
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- UninstallContext(ctx, dir, store) }()
-	select {
-	case <-store.entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("UserCA uninstall did not reach trust removal")
-	}
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("UninstallContext error = %v", err)
-	}
-	report, err := Inspect(dir, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Health != HealthMissing {
-		t.Fatalf("health after cancelled uninstall = %s", report.Health)
-	}
-}
-
-type fakeTrustStore struct {
-	records   []TrustedCertificate
-	trusted   int
-	removed   int
-	onTrust   func()
-	removeErr error
-}
-
-func (f *fakeTrustStore) TrustedCertificates(context.Context) ([]TrustedCertificate, error) {
-	return append([]TrustedCertificate(nil), f.records...), nil
-}
-
-func (f *fakeTrustStore) Trust(_ context.Context, certPEM []byte) error {
-	f.trusted++
-	fingerprint, err := SHA1Fingerprint(certPEM)
-	if err != nil {
-		return err
-	}
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return nil
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return err
-	}
-	f.records = append(f.records, TrustedCertificate{
-		Fingerprint:    fingerprint,
-		CertificatePEM: certPEM,
-		ExpiresAt:      cert.NotAfter,
-	})
-	if f.onTrust != nil {
-		f.onTrust()
-	}
-	return nil
-}
-
-func (f *fakeTrustStore) Remove(_ context.Context, fingerprints []string) error {
-	f.removed++
-	if f.removeErr != nil {
-		return f.removeErr
-	}
-	f.records = withoutFingerprints(f.records, fingerprints)
-	return nil
-}
-
-func TestEnsureInstallsMissingCA(t *testing.T) {
-	dir := t.TempDir()
-	fake := &fakeTrustStore{}
-
-	authority, result, err := Ensure(dir, fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Changed {
-		t.Fatal("missing CA should install fresh material")
-	}
-	if fake.trusted != 1 {
-		t.Fatalf("trust lifecycle calls: trusted=%d removed=%d", fake.trusted, fake.removed)
-	}
-	for _, path := range []string{authority.CertPath, authority.KeyPath} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("expected %s to exist: %v", path, err)
-		}
-	}
-}
-
-func TestEnsureReusesUsableCAAndRepairsPermissions(t *testing.T) {
-	dir := t.TempDir()
-	fake := &fakeTrustStore{}
-	authority, _, err := Ensure(dir, fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(authority.KeyPath, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	reused, result, err := Ensure(dir, fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Changed {
-		t.Fatal("usable CA should not be replaced")
-	}
-	if reused.CertPath != authority.CertPath {
-		t.Fatalf("reused cert path = %q", reused.CertPath)
-	}
-	info, err := os.Stat(authority.KeyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("key mode = %#o", got)
-	}
-}
-
-func TestLoadHTTPSReadyAcceptsExpiringSoonAuthority(t *testing.T) {
-	dir := t.TempDir()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	template := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: CommonName},
-		NotBefore:             time.Now().Add(-time.Minute),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	fingerprint, err := SHA1Fingerprint(certPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
-	generationDir := filepath.Join(dir, AuthoritiesDirName, fingerprint)
-	if err := os.MkdirAll(generationDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(generationDir, CertFileName), certPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(generationDir, KeyFileName), keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writeActiveFingerprint(dir, fingerprint); err != nil {
-		t.Fatal(err)
-	}
-	store := &fakeTrustStore{records: []TrustedCertificate{{
-		Fingerprint:    fingerprint,
-		CertificatePEM: certPEM,
-		ExpiresAt:      template.NotAfter,
-	}}}
-
-	authority, report, err := LoadHTTPSReadyContext(context.Background(), dir, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if authority == nil || report.Health != HealthExpiringSoon {
-		t.Fatalf("HTTPS readiness = authority %v, report %+v", authority != nil, report)
-	}
-}
-
-func TestEnsureReplacesMismatchedMaterial(t *testing.T) {
-	dir := t.TempDir()
-	fake := &fakeTrustStore{}
-	if _, _, err := Ensure(dir, fake); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(authorityKeyPath(t, dir), []byte("bad key"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	_, result, err := Ensure(dir, fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Changed {
-		t.Fatal("mismatched material should be replaced")
-	}
-}
-
-func TestEnsureRotatesWithOverlapThenReconcilesRetiredAuthority(t *testing.T) {
-	dir := t.TempDir()
+func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	store := &fakeTrustStore{}
-	first, _, err := Ensure(dir, store)
+	ca := openAt(t.TempDir(), store, time.Now)
+
+	first, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstFingerprint, _ := first.Fingerprint()
-	if err := os.WriteFile(first.KeyPath, []byte("invalid"), 0o600); err != nil {
-		t.Fatal(err)
+	if !first.Changed() || !first.Current().Usable() {
+		t.Fatalf("first install = changed %t usable %t", first.Changed(), first.Current().Usable())
+	}
+	firstCertificate, ok := first.Current().TLSCertificate()
+	if !ok {
+		t.Fatal("installed snapshot omitted TLS material")
 	}
 
-	second, rotated, err := Ensure(dir, store)
+	second, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondFingerprint, _ := second.Fingerprint()
-	if !rotated.Changed || secondFingerprint == firstFingerprint {
-		t.Fatalf("rotation = changed %t, fingerprint %s", rotated.Changed, secondFingerprint)
+	if second.Changed() {
+		t.Fatal("idempotent install reported a user-visible change")
 	}
-	if rotated.NonActiveCount != 1 || len(store.records) != 2 {
-		t.Fatalf("overlap = report %+v, trusted roots %d", rotated.Report, len(store.records))
-	}
-	marker, err := readActiveFingerprint(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if marker != secondFingerprint {
-		t.Fatalf("Active marker = %s, want %s", marker, secondFingerprint)
-	}
-	if _, err := os.Stat(first.KeyPath); !os.IsNotExist(err) {
-		t.Fatalf("Retired private key remained: %v", err)
-	}
-
-	reused, reconciled, err := Ensure(dir, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reusedFingerprint, _ := reused.Fingerprint()
-	if reconciled.Changed || reusedFingerprint != secondFingerprint {
-		t.Fatalf("reconciled result = %+v, fingerprint %s", reconciled, reusedFingerprint)
-	}
-	if len(store.records) != 1 || store.records[0].Fingerprint != secondFingerprint {
-		t.Fatalf("trusted roots after reconciliation = %+v", store.records)
-	}
-	if _, err := os.Stat(filepath.Dir(first.CertPath)); !os.IsNotExist(err) {
-		t.Fatalf("Retired generation remained: %v", err)
+	secondCertificate, ok := second.Current().TLSCertificate()
+	if !ok || string(secondCertificate.Certificate[0]) != string(firstCertificate.Certificate[0]) {
+		t.Fatal("idempotent install replaced the authority")
 	}
 }
 
-func TestEnsureRepairsMissingTrustWithoutRotatingMaterial(t *testing.T) {
-	dir := t.TempDir()
+func TestInstallRepairsMarkerIdentifiedAuthorityWithoutReplacingIt(t *testing.T) {
 	store := &fakeTrustStore{}
-	first, _, err := Ensure(dir, store)
+	ca := openAt(t.TempDir(), store, time.Now)
+	first, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstFingerprint, _ := first.Fingerprint()
+	firstCertificate, _ := first.Current().TLSCertificate()
 	store.records = nil
 
-	repaired, result, err := Ensure(dir, store)
+	repaired, err := ca.Install(context.Background())
+
 	if err != nil {
 		t.Fatal(err)
 	}
-	repairedFingerprint, _ := repaired.Fingerprint()
-	if repairedFingerprint != firstFingerprint {
-		t.Fatalf("trust repair rotated %s to %s", firstFingerprint, repairedFingerprint)
+	if !repaired.Changed() || !repaired.Current().Usable() {
+		t.Fatalf("repair = changed %t usable %t", repaired.Changed(), repaired.Current().Usable())
 	}
-	if !result.Changed || len(store.records) != 1 {
-		t.Fatalf("trust repair result = %+v, records %d", result, len(store.records))
+	repairedCertificate, _ := repaired.Current().TLSCertificate()
+	if string(repairedCertificate.Certificate[0]) != string(firstCertificate.Certificate[0]) {
+		t.Fatal("repair replaced a valid marker-identified authority")
 	}
 }
 
-func TestInspectReportsUnmarkedCandidateResidue(t *testing.T) {
+func TestInstallReportsPermissionRepairAsChanged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows permission bits do not model the UserCA ACL")
+	}
 	dir := t.TempDir()
-	candidateDir := filepath.Join(dir, AuthoritiesDirName, strings.Repeat("A", 40))
-	if err := os.MkdirAll(candidateDir, 0o700); err != nil {
+	ca := openAt(dir, &fakeTrustStore{}, time.Now)
+	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	report, err := Inspect(dir, &fakeTrustStore{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Health != HealthInvalid || report.NonActiveCount != 1 {
-		t.Fatalf("candidate residue report = %+v", report)
-	}
-}
-
-func TestPostCommitMarkerSyncFailurePreservesActiveCandidate(t *testing.T) {
-	dir := t.TempDir()
-	store := &fakeTrustStore{}
-	originalSyncDirectory := syncDirectory
-	t.Cleanup(func() { syncDirectory = originalSyncDirectory })
-	syncErr := errors.New("directory sync failed")
-	store.onTrust = func() {
-		syncDirectory = func(path string) error {
-			if path == dir {
-				return syncErr
-			}
-			return originalSyncDirectory(path)
-		}
-	}
-
-	authority, result, err := Ensure(dir, store)
-	if !errors.Is(err, syncErr) {
-		t.Fatalf("Ensure error = %v, want %v", err, syncErr)
-	}
-	if authority == nil || !result.Changed {
-		t.Fatalf("post-commit result = authority %v, result %+v", authority != nil, result)
-	}
-	fingerprint, _ := authority.Fingerprint()
-	marker, markerErr := readActiveFingerprint(dir)
-	if markerErr != nil {
-		t.Fatal(markerErr)
-	}
-	if marker != fingerprint || len(store.records) != 1 {
-		t.Fatalf("committed Candidate was compensated: marker %s, records %+v", marker, store.records)
-	}
-	for _, path := range []string{authority.CertPath, authority.KeyPath} {
-		if _, statErr := os.Stat(path); statErr != nil {
-			t.Fatalf("committed Candidate material %s: %v", path, statErr)
-		}
-	}
-}
-
-func TestCandidateCleanupFailureIsTyped(t *testing.T) {
-	dir := t.TempDir()
-	cleanupErr := errors.New("cleanup denied")
-	store := &fakeTrustStore{removeErr: cleanupErr}
-	failing := &trustFailureAfterChangeStore{fakeTrustStore: store}
-
-	_, _, err := Ensure(dir, failing)
-	var typed *NonActiveCleanupError
-	if !errors.As(err, &typed) || !errors.Is(err, cleanupErr) {
-		t.Fatalf("Ensure error = %v, want typed cleanup failure", err)
-	}
-}
-
-type trustFailureAfterChangeStore struct {
-	*fakeTrustStore
-}
-
-func (s *trustFailureAfterChangeStore) Trust(ctx context.Context, certPEM []byte) error {
-	if err := s.fakeTrustStore.Trust(ctx, certPEM); err != nil {
-		return err
-	}
-	return errors.New("trust command failed after changing state")
-}
-
-func authorityKeyPath(t *testing.T, dir string) string {
-	t.Helper()
 	fingerprint, err := readActiveFingerprint(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(dir, AuthoritiesDirName, fingerprint, KeyFileName)
+	active, err := loadGeneration(dir, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(active.keyPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := ca.Install(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repaired.Changed() {
+		t.Fatal("permission repair was not reported as a user-visible change")
+	}
+	info, err := os.Stat(active.keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("repaired key mode = %o", info.Mode().Perm())
+	}
 }
 
-func withoutFingerprints(records []TrustedCertificate, fingerprints []string) []TrustedCertificate {
-	remove := map[string]bool{}
+func TestInstallExplicitlyRenewsWhenDue(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	store := &fakeTrustStore{}
+	ca := openAt(t.TempDir(), store, clock)
+	first, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCertificate, _ := first.Current().TLSCertificate()
+	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+
+	renewed, err := ca.Install(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !renewed.Changed() || !renewed.Current().Usable() {
+		t.Fatalf("renewal = changed %t usable %t", renewed.Changed(), renewed.Current().Usable())
+	}
+	renewedCertificate, _ := renewed.Current().TLSCertificate()
+	if string(renewedCertificate.Certificate[0]) == string(firstCertificate.Certificate[0]) {
+		t.Fatal("renewal reused the old authority")
+	}
+	if len(store.records) != 2 {
+		t.Fatalf("trusted roots = %d, want previous root retained until runtime adoption", len(store.records))
+	}
+}
+
+func TestInstallClearsAmbiguousResidueBeforeAddingCandidate(t *testing.T) {
+	dir := t.TempDir()
+	store := &fakeTrustStore{}
+	ca := openAt(dir, store, time.Now)
+	if _, err := ca.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, activeFingerprintFileName), []byte("invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ca.Install(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Current().Usable() || len(store.records) != 1 {
+		t.Fatalf("recovered install = usable %t trusted roots %d", result.Current().Usable(), len(store.records))
+	}
+}
+
+func TestPostCommitCleanupFailureDoesNotHideUsableInstall(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := &fakeTrustStore{}
+	ca := openAt(t.TempDir(), store, func() time.Time { return now })
+	first, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	store.removeErr = errors.New("remove denied")
+
+	renewed, err := ca.Install(context.Background())
+
+	if err != nil {
+		t.Fatalf("committed renewal exposed private cleanup failure: %v", err)
+	}
+	if !renewed.Current().Usable() {
+		t.Fatal("committed renewal did not return its usable postcondition")
+	}
+	if len(store.records) != 2 {
+		t.Fatalf("trusted roots = %d, want retained old root plus Active root", len(store.records))
+	}
+}
+
+func TestInstallWillNotAddAnotherCandidateUntilResidueCanBeCleared(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := &fakeTrustStore{}
+	ca := openAt(t.TempDir(), store, func() time.Time { return now })
+	first, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	store.removeErr = errors.New("remove denied")
+	if _, err := ca.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(validity)
+	trustedBefore := len(store.records)
+
+	if _, err := ca.Install(context.Background()); !errors.Is(err, store.removeErr) {
+		t.Fatalf("install error = %v, want cleanup precondition failure", err)
+	}
+	if len(store.records) != trustedBefore {
+		t.Fatal("install added a root before ambiguous residue was cleared")
+	}
+}
+
+func TestInstallVerifiesNonActiveCleanupBeforeAddingCandidate(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := &fakeTrustStore{}
+	ca := openAt(t.TempDir(), store, func() time.Time { return now })
+	first, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	second, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.records) != 2 {
+		t.Fatalf("renewal roots = %d, want Active and Retired", len(store.records))
+	}
+	now = second.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	store.ignoreRemove = true
+
+	if _, err := ca.Install(context.Background()); err == nil {
+		t.Fatal("install added a Candidate without verifying non-active cleanup")
+	}
+	if len(store.records) != 2 {
+		t.Fatalf("trusted roots = %d, Candidate was added before cleanup verification", len(store.records))
+	}
+}
+
+func TestInstallReturnsAssessmentErrorForUnreadableActiveMarker(t *testing.T) {
+	dir := t.TempDir()
+	store := &fakeTrustStore{}
+	ca := openAt(dir, store, time.Now)
+	if _, err := ca.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recordsBefore := len(store.records)
+	markerPath := filepath.Join(dir, activeFingerprintFileName)
+	originalReadFile := readFile
+	readFile = func(path string) ([]byte, error) {
+		if path == markerPath {
+			return nil, fs.ErrPermission
+		}
+		return originalReadFile(path)
+	}
+	t.Cleanup(func() { readFile = originalReadFile })
+
+	if _, err := ca.Install(context.Background()); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("install error = %v, want marker assessment error", err)
+	}
+	if len(store.records) != recordsBefore {
+		t.Fatal("assessment failure triggered destructive trust cleanup")
+	}
+}
+
+func TestUninstallRemovesEveryOwnedFactAndIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	store := &fakeTrustStore{}
+	ca := openAt(dir, store, time.Now)
+	if _, err := ca.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := ca.Uninstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Changed() || first.Current().Usable() {
+		t.Fatalf("first uninstall = changed %t usable %t", first.Changed(), first.Current().Usable())
+	}
+	if len(store.records) != 0 {
+		t.Fatalf("trusted roots remain: %d", len(store.records))
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("UserCA storage remains: %v", err)
+	}
+
+	second, err := ca.Uninstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Changed() {
+		t.Fatal("idempotent uninstall reported a user-visible change")
+	}
+}
+
+func TestUninstallReportsIncompleteTrustRemoval(t *testing.T) {
+	store := &fakeTrustStore{}
+	ca := openAt(t.TempDir(), store, time.Now)
+	if _, err := ca.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store.removeErr = errors.New("remove denied")
+
+	if _, err := ca.Uninstall(context.Background()); !errors.Is(err, store.removeErr) {
+		t.Fatalf("uninstall error = %v, want removal error", err)
+	}
+}
+
+func TestInstallPropagatesApprovalDenied(t *testing.T) {
+	store := &fakeTrustStore{trustErr: ErrApprovalDenied}
+	ca := openAt(t.TempDir(), store, time.Now)
+
+	if _, err := ca.Install(context.Background()); !errors.Is(err, ErrApprovalDenied) {
+		t.Fatalf("install error = %v, want ErrApprovalDenied", err)
+	}
+}
+
+func TestInstallReturnsErrorWhenFreshPostconditionCannotBeAssessed(t *testing.T) {
+	assessmentErr := errors.New("trust assessment unavailable")
+	store := &fakeTrustStore{trustedErrAt: 3, trustedErr: assessmentErr}
+	ca := openAt(t.TempDir(), store, time.Now)
+
+	if _, err := ca.Install(context.Background()); !errors.Is(err, assessmentErr) {
+		t.Fatalf("install error = %v, want final assessment error", err)
+	}
+}
+
+func TestSnapshotReturnsDefensiveCertificateBytes(t *testing.T) {
+	ca := openAt(t.TempDir(), &fakeTrustStore{}, time.Now)
+	result, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := result.Current().TLSCertificate()
+	first.Certificate[0][0] ^= 0xff
+
+	second, _ := result.Current().TLSCertificate()
+
+	if first.Certificate[0][0] == second.Certificate[0][0] {
+		t.Fatal("snapshot TLS material was mutated through a returned slice")
+	}
+}
+
+func TestSnapshotRecordsInspectionTimeWhileLaterInspectUsesCurrentFacts(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ca := openAt(t.TempDir(), &fakeTrustStore{}, func() time.Time { return now })
+	result, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := result.Current()
+	now = admitted.ExpiresAt().Add(time.Second)
+
+	if !admitted.Usable() {
+		t.Fatal("immutable admitted snapshot changed as time advanced")
+	}
+	current, err := ca.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Usable() {
+		t.Fatal("fresh inspection did not observe expiry")
+	}
+}
+
+type fakeTrustStore struct {
+	records      []trustedCertificate
+	trustErr     error
+	removeErr    error
+	trustedErrAt int
+	trustedErr   error
+	trustedCalls int
+	ignoreRemove bool
+}
+
+func (s *fakeTrustStore) TrustedCertificates(context.Context) ([]trustedCertificate, error) {
+	s.trustedCalls++
+	if s.trustedErrAt > 0 && s.trustedCalls >= s.trustedErrAt {
+		return nil, s.trustedErr
+	}
+	return append([]trustedCertificate(nil), s.records...), nil
+}
+
+func (s *fakeTrustStore) Trust(_ context.Context, certificatePEM []byte) error {
+	if s.trustErr != nil {
+		return s.trustErr
+	}
+	fingerprint, err := sha1Fingerprint(certificatePEM)
+	if err != nil {
+		return err
+	}
+	for _, record := range s.records {
+		if record.Fingerprint == fingerprint {
+			return nil
+		}
+	}
+	s.records = append(s.records, trustedCertificate{
+		Fingerprint:    fingerprint,
+		CertificatePEM: append([]byte(nil), certificatePEM...),
+	})
+	return nil
+}
+
+func (s *fakeTrustStore) Remove(_ context.Context, fingerprints []string) error {
+	if s.removeErr != nil {
+		return s.removeErr
+	}
+	if s.ignoreRemove {
+		return nil
+	}
+	remove := make(map[string]bool, len(fingerprints))
 	for _, fingerprint := range fingerprints {
 		remove[fingerprint] = true
 	}
-	var kept []TrustedCertificate
-	for _, record := range records {
+	kept := s.records[:0]
+	for _, record := range s.records {
 		if !remove[record.Fingerprint] {
 			kept = append(kept, record)
 		}
 	}
-	return kept
-}
-
-func TestUninstallRemovesTrustAndLocalMaterial(t *testing.T) {
-	dir := t.TempDir()
-	fake := &fakeTrustStore{}
-	if _, _, err := Ensure(dir, fake); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := Uninstall(dir, fake); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.records) != 0 {
-		t.Fatalf("trusted records remained: %d", len(fake.records))
-	}
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatalf("CA dir remained: %v", err)
-	}
-}
-
-func TestLoadHTTPSReadyAdoptsCurrentTrustedAuthorityWithoutPrompting(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
-	fake := &fakeTrustStore{}
-	first, _, err := Ensure(dir, fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstFingerprint, err := first.Fingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := Uninstall(dir, fake); err != nil {
-		t.Fatal(err)
-	}
-	second, _, err := Ensure(dir, fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondFingerprint, err := second.Fingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstFingerprint == secondFingerprint {
-		t.Fatal("replacement should have a different CA identity")
-	}
-	trustCalls := fake.trusted
-
-	loaded, report, err := LoadHTTPSReadyContext(context.Background(), dir, fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Health != HealthUsable {
-		t.Fatalf("loaded health = %s", report.Health)
-	}
-	loadedFingerprint, err := loaded.Fingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loadedFingerprint != secondFingerprint {
-		t.Fatalf("loaded identity = %s, want current %s", loadedFingerprint, secondFingerprint)
-	}
-	if fake.trusted != trustCalls {
-		t.Fatal("admission load must not prompt or install trust")
-	}
+	s.records = kept
+	return nil
 }

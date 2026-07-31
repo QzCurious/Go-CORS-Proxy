@@ -21,294 +21,274 @@ import (
 )
 
 const (
-	CommonName                = "seamless-cors Installed User CA"
-	AuthoritiesDirName        = "authorities"
-	ActiveFingerprintFileName = "active-fingerprint"
-	CertFileName              = "certificate.pem"
-	KeyFileName               = "private-key.pem"
-	Validity                  = 5 * 365 * 24 * time.Hour
-	RenewalWindow             = 30 * 24 * time.Hour
-	LeafValidity              = 30 * 24 * time.Hour
-	LeafCacheMaxAge           = 24 * time.Hour
+	commonName                = "seamless-cors Installed User CA"
+	authoritiesDirName        = "authorities"
+	activeFingerprintFileName = "active-fingerprint"
+	certFileName              = "certificate.pem"
+	keyFileName               = "private-key.pem"
+	validity                  = 5 * 365 * 24 * time.Hour
+	renewalWindow             = 30 * 24 * time.Hour
 )
 
-type Health string
-
-const (
-	HealthUsable             Health = "usable"
-	HealthMissing            Health = "missing"
-	HealthExpired            Health = "expired"
-	HealthExpiringSoon       Health = "expiring-soon"
-	HealthInvalid            Health = "invalid"
-	HealthMultiple           Health = "multiple"
-	HealthMismatchedMaterial Health = "mismatched-material"
-	HealthUnknown            Health = "unknown"
+var (
+	errInvalidActiveFingerprint = errors.New("active UserCA fingerprint is invalid")
+	errInvalidAuthority         = errors.New("UserCA authority material is invalid")
+	readFile                    = os.ReadFile
 )
 
-type Report struct {
-	Health         Health
-	Expires        time.Time
-	NonActiveCount int
+// UserCA owns Installed User CA material, its storage layout, and current-user
+// operating-system trust integration. It does not cache inspection results.
+type UserCA struct {
+	dir   string
+	store trustStore
+	now   func() time.Time
 }
 
-type EnsureResult struct {
-	Report
-	Changed     bool
-	Fingerprint string
+// Snapshot is an immutable semantic observation of UserCA facts.
+type Snapshot struct {
+	usable      bool
+	certificate tls.Certificate
+	expiresAt   time.Time
+	renewalDue  bool
 }
 
-type Authority struct {
-	CertPath string
-	KeyPath  string
-	CertPEM  []byte
-	KeyPEM   []byte
+func (s Snapshot) Usable() bool { return s.usable }
+
+func (s Snapshot) TLSCertificate() (tls.Certificate, bool) {
+	if !s.usable {
+		return tls.Certificate{}, false
+	}
+	return cloneTLSCertificate(s.certificate), true
+}
+
+func (s Snapshot) ExpiresAt() time.Time { return s.expiresAt }
+
+func (s Snapshot) RenewalDue() bool { return s.renewalDue }
+
+type InstallResult struct {
+	current Snapshot
+	changed bool
+}
+
+func (r InstallResult) Current() Snapshot { return r.current }
+
+func (r InstallResult) Changed() bool { return r.changed }
+
+type UninstallResult struct {
+	current Snapshot
+	changed bool
+}
+
+func (r UninstallResult) Current() Snapshot { return r.current }
+
+func (r UninstallResult) Changed() bool { return r.changed }
+
+type authority struct {
+	certPath string
+	keyPath  string
+	certPEM  []byte
+	keyPEM   []byte
 	cert     *x509.Certificate
-	key      *rsa.PrivateKey
 }
 
-func Inspect(dir string, store TrustStore) (Report, error) {
-	return InspectContext(context.Background(), dir, store)
+type assessment struct {
+	snapshot          Snapshot
+	authority         *authority
+	activeFingerprint string
+	activeTrusted     bool
+	ownedFacts        bool
+	needsRotation     bool
 }
 
-func InspectContext(ctx context.Context, dir string, store TrustStore) (Report, error) {
-	lease, err := acquireCAMutationLease(ctx, dir)
-	if err != nil {
-		return Report{Health: HealthUnknown}, err
-	}
-	defer func() { _ = lease.release() }()
-	report, _, err := inspectLocked(ctx, dir, store, false)
-	return report, err
-}
-
-func Ensure(dir string, store TrustStore) (*Authority, EnsureResult, error) {
-	return EnsureContext(context.Background(), dir, store)
-}
-
-// EnsureContext reuses a healthy Active authority and rotates every other
-// state through a trusted immutable generation. Candidate trust is installed
-// before the atomic Active marker is committed.
-func EnsureContext(ctx context.Context, dir string, store TrustStore) (*Authority, EnsureResult, error) {
-	return EnsureAndAdoptContext(ctx, dir, store, nil)
-}
-
-// EnsureAndAdoptContext keeps the CA mutation lease through the optional
-// runtime adoption callback. For a rotation, the durable Active marker is
-// committed before adoption and remains authoritative if adoption fails.
-func EnsureAndAdoptContext(
-	ctx context.Context,
-	dir string,
-	store TrustStore,
-	adopt func(*Authority, Report) error,
-) (*Authority, EnsureResult, error) {
-	lease, err := acquireCAMutationLease(ctx, dir)
-	if err != nil {
-		return nil, EnsureResult{}, err
-	}
-	defer func() { _ = lease.release() }()
-
-	report, active, inspectErr := inspectLocked(ctx, dir, store, true)
-	if inspectErr != nil && report.Health == HealthUnknown {
-		return nil, EnsureResult{Report: report}, inspectErr
-	}
-	if err := cleanupNonActiveLocked(ctx, dir, store); err != nil {
-		// A valid Active generation remains usable even when residue cleanup
-		// fails. Return it so a caller can still rebuild in-memory interception.
-		if active != nil && (report.Health == HealthUsable || report.Health == HealthExpiringSoon) {
-			adoptErr := adoptAuthority(adopt, active, report)
-			return active, ensureResult(active, report, false), errors.Join(&NonActiveCleanupError{Cause: err}, adoptErr)
-		}
-		return nil, EnsureResult{Report: report}, &NonActiveCleanupError{Cause: err}
-	}
-	report.NonActiveCount = 0
-	if active != nil && report.Health == HealthUsable {
-		return active, ensureResult(active, report, false), adoptAuthority(adopt, active, report)
-	}
-	if active != nil && report.Health == HealthMismatchedMaterial {
-		if err := store.Trust(ctx, active.CertPEM); err != nil {
-			return nil, EnsureResult{Report: report}, err
-		}
-		repaired := Report{Health: HealthUsable, Expires: active.cert.NotAfter}
-		if time.Now().Add(RenewalWindow).After(active.cert.NotAfter) {
-			repaired.Health = HealthExpiringSoon
-		}
-		if repaired.Health == HealthUsable {
-			return active, ensureResult(active, repaired, true), adoptAuthority(adopt, active, repaired)
-		}
-		report = repaired
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, EnsureResult{Report: report}, err
-	}
-
-	candidate, err := createCandidate(dir)
-	if err != nil {
-		return nil, EnsureResult{Report: report}, err
-	}
-	fingerprint, err := candidate.Fingerprint()
-	if err != nil {
-		_ = os.RemoveAll(filepath.Dir(candidate.CertPath))
-		return nil, EnsureResult{Report: report}, err
-	}
-	if err := store.Trust(ctx, candidate.CertPEM); err != nil {
-		cleanupErr := cleanupCandidate(context.Background(), dir, store, fingerprint)
-		return nil, EnsureResult{Report: report}, candidateOperationError(err, cleanupErr)
-	}
-
-	// Trust may be interactive and cancellable. Once it has succeeded, commit
-	// or compensate without observing caller cancellation.
-	markerCommitted, markerErr := writeActiveFingerprint(dir, fingerprint)
-	if markerErr != nil && !markerCommitted {
-		cleanupErr := cleanupCandidate(context.Background(), dir, store, fingerprint)
-		return nil, EnsureResult{Report: report}, candidateOperationError(markerErr, cleanupErr)
-	}
-	nonActive := 0
-	if records, recordsErr := store.TrustedCertificates(context.Background()); recordsErr == nil {
-		nonActive = nonActiveCount(records, fingerprint)
-	}
-	removeNonActivePrivateKeys(dir, fingerprint)
-	committedReport := Report{
-		Health:         HealthUsable,
-		Expires:        candidate.cert.NotAfter,
-		NonActiveCount: nonActive,
-	}
-	adoptErr := adoptAuthority(adopt, candidate, committedReport)
-	return candidate, ensureResult(candidate, committedReport, true), errors.Join(markerErr, adoptErr)
-}
-
-type NonActiveCleanupError struct {
-	Cause error
-}
-
-func (e *NonActiveCleanupError) Error() string {
-	return fmt.Sprintf("non-active UserCA cleanup failed: %v", e.Cause)
-}
-
-func (e *NonActiveCleanupError) Unwrap() error { return e.Cause }
-
-func candidateOperationError(operationErr, cleanupErr error) error {
-	if cleanupErr == nil {
-		return operationErr
-	}
-	return errors.Join(operationErr, &NonActiveCleanupError{Cause: cleanupErr})
-}
-
-func adoptAuthority(adopt func(*Authority, Report) error, authority *Authority, report Report) error {
-	if adopt == nil {
-		return nil
-	}
-	return adopt(authority, report)
-}
-
-func ensureResult(authority *Authority, report Report, changed bool) EnsureResult {
-	fingerprint, _ := authority.Fingerprint()
-	return EnsureResult{Report: report, Changed: changed, Fingerprint: fingerprint}
-}
-
-func CleanupNonActiveContext(ctx context.Context, dir string, store TrustStore) error {
-	lease, err := acquireCAMutationLease(ctx, dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lease.release() }()
-	return cleanupNonActiveLocked(ctx, dir, store)
-}
-
-func Uninstall(dir string, store TrustStore) error {
-	return UninstallContext(context.Background(), dir, store)
-}
-
-func UninstallContext(ctx context.Context, dir string, store TrustStore) error {
-	return UninstallWithCommitContext(ctx, dir, store, nil)
-}
-
-// UninstallWithCommitContext acquires the mutation lease before invoking the
-// non-cancellable readiness-loss commit and removing every owned authority.
-func UninstallWithCommitContext(ctx context.Context, dir string, store TrustStore, commit func()) error {
-	lease, err := acquireCAMutationLease(ctx, dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lease.release() }()
-	// Admission is cancellable; once admitted, complete removal even if the
-	// command transport disconnects.
-	if commit != nil {
-		commit()
-	}
-	return uninstallLocked(context.Background(), dir, store)
-}
-
-func uninstallLocked(ctx context.Context, dir string, store TrustStore) error {
-	records, trustErr := store.TrustedCertificates(ctx)
-	fingerprints := fingerprints(records)
-	var removeErr error
-	if len(fingerprints) > 0 {
-		removeErr = store.Remove(ctx, fingerprints)
-	}
-	fileErr := os.RemoveAll(dir)
-	return errors.Join(trustErr, removeErr, fileErr)
-}
-
-func Load(dir string) (*Authority, error) {
-	fingerprint, err := readActiveFingerprint(dir)
+// Open resolves the private default storage and trust integration without
+// inspecting or mutating either.
+func Open() (*UserCA, error) {
+	dir, err := defaultDir()
 	if err != nil {
 		return nil, err
 	}
-	return loadGeneration(dir, fingerprint)
+	return openAt(dir, newTrustStore(), time.Now), nil
 }
 
-// LoadHTTPSReadyContext assesses the marked Active authority without
-// installing, repairing, or guessing from non-active authority state.
-func LoadHTTPSReadyContext(ctx context.Context, dir string, store TrustStore) (*Authority, Report, error) {
-	var authority *Authority
-	var report Report
-	var assessmentErr error
-	err := UseHTTPSReadinessContext(ctx, dir, store, func(a *Authority, r Report, err error) error {
-		authority, report, assessmentErr = a, r, err
-		return nil
-	})
+func openAt(dir string, store trustStore, now func() time.Time) *UserCA {
+	if now == nil {
+		now = time.Now
+	}
+	return &UserCA{dir: dir, store: store, now: now}
+}
+
+// Inspect freshly derives a semantic snapshot from the Active marker, owned
+// immutable generations, and current-user OS trust.
+func (u *UserCA) Inspect(ctx context.Context) (Snapshot, error) {
+	state, err := u.assess(ctx, false)
+	return state.snapshot, err
+}
+
+// Install repairs a valid Active authority in place or installs a fresh
+// immutable generation. Renewal is explicit and occurs only through Install.
+func (u *UserCA) Install(ctx context.Context) (InstallResult, error) {
+	before, err := u.assess(ctx, false)
 	if err != nil {
-		return nil, Report{Health: HealthUnknown}, err
+		return InstallResult{}, err
 	}
-	return authority, report, assessmentErr
-}
+	if err := ctx.Err(); err != nil {
+		return InstallResult{}, err
+	}
 
-// UseHTTPSReadinessContext keeps the mutation lease while the caller admits
-// the assessed generation into a runtime. Assessment failures are supplied to
-// use so start can remain available in HTTP-only mode.
-func UseHTTPSReadinessContext(
-	ctx context.Context,
-	dir string,
-	store TrustStore,
-	use func(*Authority, Report, error) error,
-) error {
-	lease, err := acquireCAMutationLease(ctx, dir)
+	if before.authority != nil && !before.needsRotation {
+		changed := !before.snapshot.Usable() || authorityPermissionsNeedRepair(u.dir, before.authority)
+		if !before.activeTrusted {
+			if err := u.store.Trust(ctx, before.authority.certPEM); err != nil {
+				return InstallResult{}, err
+			}
+		}
+		if err := repairAuthorityPermissions(u.dir, before.authority); err != nil {
+			return InstallResult{}, err
+		}
+		// Residue cleanup is private best effort when the marked authority can
+		// remain Active; inability to remove it does not make that authority
+		// unusable or leak a cleanup condition through the seam.
+		_ = cleanupNonActive(ctx, u.dir, u.store, before.activeFingerprint)
+		current, err := u.Inspect(ctx)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		if !current.Usable() {
+			return InstallResult{}, fmt.Errorf("installed UserCA is not usable after repair")
+		}
+		return InstallResult{current: current, changed: changed}, nil
+	}
+
+	// Before adding another trusted root, establish that no ambiguous or
+	// retired owned authority remains. The marked authority may remain only
+	// while rotating a valid renewal-due generation.
+	if before.authority != nil {
+		if err := cleanupNonActive(ctx, u.dir, u.store, before.activeFingerprint); err != nil {
+			return InstallResult{}, err
+		}
+	} else {
+		if err := uninstallAll(ctx, u.dir, u.store); err != nil {
+			return InstallResult{}, err
+		}
+		clean, err := u.assess(ctx, false)
+		if err != nil {
+			return InstallResult{}, err
+		}
+		if clean.ownedFacts {
+			return InstallResult{}, fmt.Errorf("ambiguous UserCA state could not be cleared")
+		}
+	}
+
+	candidate, err := createCandidate(u.dir, u.now)
 	if err != nil {
-		return err
+		return InstallResult{}, err
 	}
-	defer func() { _ = lease.release() }()
-	report, authority, err := inspectLocked(ctx, dir, store, false)
+	fingerprint, err := candidate.fingerprint()
 	if err != nil {
-		return use(nil, report, err)
+		_ = os.RemoveAll(filepath.Dir(candidate.certPath))
+		return InstallResult{}, err
 	}
-	if report.Health != HealthUsable && report.Health != HealthExpiringSoon {
-		authority = nil
+	if err := u.store.Trust(ctx, candidate.certPEM); err != nil {
+		cleanupErr := cleanupCandidate(context.Background(), u.dir, u.store, fingerprint)
+		return InstallResult{}, errors.Join(err, cleanupErr)
 	}
-	return use(authority, report, nil)
+
+	markerCommitted, markerErr := writeActiveFingerprint(u.dir, fingerprint)
+	if markerErr != nil && !markerCommitted {
+		cleanupErr := cleanupCandidate(context.Background(), u.dir, u.store, fingerprint)
+		return InstallResult{}, errors.Join(markerErr, cleanupErr)
+	}
+	// The previous authority remains trusted until Gateway has adopted the
+	// returned generation. A later lifecycle event privately removes it.
+	current, inspectErr := u.Inspect(context.Background())
+	if inspectErr != nil {
+		return InstallResult{}, errors.Join(markerErr, inspectErr)
+	}
+	if !current.Usable() {
+		return InstallResult{}, errors.Join(markerErr, fmt.Errorf("installed UserCA is not usable after commit"))
+	}
+	return InstallResult{current: current, changed: true}, markerErr
 }
 
-func (a *Authority) Fingerprint() (string, error) {
-	return SHA1Fingerprint(a.CertPEM)
-}
-
-func (a *Authority) ExpiresAt() time.Time {
-	if a == nil || a.cert == nil {
-		return time.Time{}
+// Uninstall removes every owned authority from OS trust and local storage.
+func (u *UserCA) Uninstall(ctx context.Context) (UninstallResult, error) {
+	before, err := u.assess(ctx, false)
+	if err != nil {
+		return UninstallResult{}, err
 	}
-	return a.cert.NotAfter
+	if err := uninstallAll(ctx, u.dir, u.store); err != nil {
+		return UninstallResult{}, err
+	}
+	after, err := u.assess(ctx, false)
+	if err != nil {
+		return UninstallResult{}, err
+	}
+	if after.ownedFacts || after.snapshot.Usable() {
+		return UninstallResult{}, fmt.Errorf("UserCA uninstall is incomplete")
+	}
+	return UninstallResult{current: after.snapshot, changed: before.ownedFacts}, nil
 }
 
-func (a *Authority) TLSCertificate() (tls.Certificate, error) {
-	cert, err := tls.X509KeyPair(a.CertPEM, a.KeyPEM)
+func (u *UserCA) assess(ctx context.Context, repairPermissions bool) (assessment, error) {
+	records, err := u.store.TrustedCertificates(ctx)
+	if err != nil {
+		return assessment{}, err
+	}
+	localFacts, err := hasOwnedGenerations(u.dir)
+	if err != nil {
+		return assessment{}, err
+	}
+	state := assessment{ownedFacts: localFacts || len(records) > 0}
+	fingerprint, err := readActiveFingerprint(u.dir)
+	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, errInvalidActiveFingerprint) {
+			return state, nil
+		}
+		return assessment{}, err
+	}
+	state.activeFingerprint = fingerprint
+	state.ownedFacts = true
+	active, err := loadGeneration(u.dir, fingerprint)
+	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, errInvalidAuthority) {
+			return state, nil
+		}
+		return assessment{}, err
+	}
+	actualFingerprint, err := active.fingerprint()
+	if err != nil || actualFingerprint != fingerprint {
+		return state, nil
+	}
+	state.authority = active
+	state.activeTrusted = containsFingerprint(records, fingerprint)
+	state.needsRotation = u.now().Add(renewalWindow).After(active.cert.NotAfter)
+	if !state.activeTrusted || !u.now().Before(active.cert.NotAfter) {
+		return state, nil
+	}
+	if repairPermissions {
+		if err := repairAuthorityPermissions(u.dir, active); err != nil {
+			return assessment{}, err
+		}
+	}
+	certificate, err := active.tlsCertificate()
+	if err != nil {
+		return state, nil
+	}
+	state.snapshot = Snapshot{
+		usable:      true,
+		certificate: certificate,
+		expiresAt:   active.cert.NotAfter,
+		renewalDue:  state.needsRotation,
+	}
+	return state, nil
+}
+
+func (a *authority) fingerprint() (string, error) {
+	return sha1Fingerprint(a.certPEM)
+}
+
+func (a *authority) tlsCertificate() (tls.Certificate, error) {
+	cert, err := tls.X509KeyPair(a.certPEM, a.keyPEM)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -319,58 +299,60 @@ func (a *Authority) TLSCertificate() (tls.Certificate, error) {
 	return cert, nil
 }
 
-func inspectLocked(ctx context.Context, dir string, store TrustStore, repairPermissions bool) (Report, *Authority, error) {
-	records, err := store.TrustedCertificates(ctx)
-	if err != nil {
-		return Report{Health: HealthUnknown}, nil, err
+func cloneTLSCertificate(source tls.Certificate) tls.Certificate {
+	clone := source
+	clone.Certificate = make([][]byte, len(source.Certificate))
+	for index, der := range source.Certificate {
+		clone.Certificate[index] = append([]byte(nil), der...)
 	}
-	fingerprint, err := readActiveFingerprint(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			residue := nonActiveResidueCount(dir, "", records)
-			if residue == 0 {
-				return Report{Health: HealthMissing}, nil, nil
-			}
-			return Report{Health: HealthInvalid, NonActiveCount: residue}, nil, nil
-		}
-		return Report{Health: HealthInvalid, NonActiveCount: nonActiveResidueCount(dir, "", records)}, nil, err
+	clone.OCSPStaple = append([]byte(nil), source.OCSPStaple...)
+	clone.SupportedSignatureAlgorithms = append([]tls.SignatureScheme(nil), source.SupportedSignatureAlgorithms...)
+	clone.SignedCertificateTimestamps = make([][]byte, len(source.SignedCertificateTimestamps))
+	for index, timestamp := range source.SignedCertificateTimestamps {
+		clone.SignedCertificateTimestamps[index] = append([]byte(nil), timestamp...)
 	}
-	authority, err := loadGeneration(dir, fingerprint)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Report{Health: HealthMismatchedMaterial, NonActiveCount: nonActiveResidueCount(dir, fingerprint, records)}, nil, nil
-		}
-		return Report{Health: HealthInvalid, NonActiveCount: nonActiveResidueCount(dir, fingerprint, records)}, nil, nil
-	}
-	actualFingerprint, err := authority.Fingerprint()
-	if err != nil || actualFingerprint != fingerprint {
-		return Report{Health: HealthMismatchedMaterial, NonActiveCount: nonActiveResidueCount(dir, fingerprint, records)}, nil, nil
-	}
-	if !containsFingerprint(records, fingerprint) {
-		return Report{Health: HealthMismatchedMaterial, Expires: authority.cert.NotAfter, NonActiveCount: nonActiveResidueCount(dir, fingerprint, records)}, authority, nil
-	}
-	now := time.Now()
-	report := Report{Expires: authority.cert.NotAfter, NonActiveCount: nonActiveResidueCount(dir, fingerprint, records)}
-	if !now.Before(authority.cert.NotAfter) {
-		report.Health = HealthExpired
-		return report, nil, nil
-	}
-	if now.Add(RenewalWindow).After(authority.cert.NotAfter) {
-		report.Health = HealthExpiringSoon
-	} else {
-		report.Health = HealthUsable
-	}
-	if repairPermissions {
-		if err := repairAuthorityPermissions(dir, authority); err != nil {
-			report.Health = HealthInvalid
-			return report, nil, err
+	if key, ok := source.PrivateKey.(*rsa.PrivateKey); ok {
+		if clonedKey, err := x509.ParsePKCS1PrivateKey(x509.MarshalPKCS1PrivateKey(key)); err == nil {
+			clone.PrivateKey = clonedKey
 		}
 	}
-	return report, authority, nil
+	if len(clone.Certificate) > 0 {
+		if leaf, err := x509.ParseCertificate(clone.Certificate[0]); err == nil {
+			clone.Leaf = leaf
+		}
+	}
+	return clone
 }
 
-func createCandidate(dir string) (*Authority, error) {
-	authoritiesDir := filepath.Join(dir, AuthoritiesDirName)
+func uninstallAll(ctx context.Context, dir string, store trustStore) error {
+	records, trustErr := store.TrustedCertificates(ctx)
+	var removeErr error
+	if trustErr == nil {
+		if owned := fingerprints(records); len(owned) > 0 {
+			removeErr = store.Remove(ctx, owned)
+		}
+	}
+	return errors.Join(trustErr, removeErr, os.RemoveAll(dir))
+}
+
+func hasOwnedGenerations(dir string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(dir, activeFingerprintFileName)); err == nil {
+		return true, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, authoritiesDirName))
+	if err == nil {
+		return len(entries) > 0, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func createCandidate(dir string, now func() time.Time) (*authority, error) {
+	authoritiesDir := filepath.Join(dir, authoritiesDirName)
 	if err := os.MkdirAll(authoritiesDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -378,11 +360,12 @@ func createCandidate(dir string) (*Authority, error) {
 	if err != nil {
 		return nil, err
 	}
+	createdAt := now()
 	template := &x509.Certificate{
-		SerialNumber:          big.NewInt(time.Now().UnixNano()),
-		Subject:               pkix.Name{CommonName: CommonName},
-		NotBefore:             time.Now().Add(-time.Minute),
-		NotAfter:              time.Now().Add(Validity),
+		SerialNumber:          big.NewInt(createdAt.UnixNano()),
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             createdAt.Add(-time.Minute),
+		NotAfter:              createdAt.Add(validity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -393,7 +376,7 @@ func createCandidate(dir string) (*Authority, error) {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	fingerprint, err := SHA1Fingerprint(certPEM)
+	fingerprint, err := sha1Fingerprint(certPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -401,8 +384,8 @@ func createCandidate(dir string) (*Authority, error) {
 	if err := os.Mkdir(generationDir, 0o700); err != nil {
 		return nil, err
 	}
-	certPath := filepath.Join(generationDir, CertFileName)
-	keyPath := filepath.Join(generationDir, KeyFileName)
+	certPath := filepath.Join(generationDir, certFileName)
+	keyPath := filepath.Join(generationDir, keyFileName)
 	if err := writeDurableFile(certPath, certPEM, 0o600); err != nil {
 		_ = os.RemoveAll(generationDir)
 		return nil, err
@@ -420,42 +403,45 @@ func createCandidate(dir string) (*Authority, error) {
 		_ = os.RemoveAll(generationDir)
 		return nil, err
 	}
-	return &Authority{
-		CertPath: certPath,
-		KeyPath:  keyPath,
-		CertPEM:  certPEM,
-		KeyPEM:   keyPEM,
+	return &authority{
+		certPath: certPath,
+		keyPath:  keyPath,
+		certPEM:  certPEM,
+		keyPEM:   keyPEM,
 		cert:     template,
-		key:      key,
 	}, nil
 }
 
-func loadGeneration(dir, fingerprint string) (*Authority, error) {
+func loadGeneration(dir, fingerprint string) (*authority, error) {
 	if !validFingerprint(fingerprint) {
 		return nil, fmt.Errorf("active UserCA fingerprint is invalid")
 	}
-	generationDir := filepath.Join(dir, AuthoritiesDirName, fingerprint)
-	certPath := filepath.Join(generationDir, CertFileName)
-	keyPath := filepath.Join(generationDir, KeyFileName)
-	certPEM, err := os.ReadFile(certPath)
+	generationDir := filepath.Join(dir, authoritiesDirName, fingerprint)
+	certPath := filepath.Join(generationDir, certFileName)
+	keyPath := filepath.Join(generationDir, keyFileName)
+	certPEM, err := readFile(certPath)
 	if err != nil {
 		return nil, err
 	}
-	keyPEM, err := os.ReadFile(keyPath)
+	keyPEM, err := readFile(keyPath)
 	if err != nil {
 		return nil, err
 	}
-	return parseAuthority(certPath, keyPath, certPEM, keyPEM)
+	active, err := parseAuthority(certPath, keyPath, certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidAuthority, err)
+	}
+	return active, nil
 }
 
 func readActiveFingerprint(dir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, ActiveFingerprintFileName))
+	data, err := readFile(filepath.Join(dir, activeFingerprintFileName))
 	if err != nil {
 		return "", err
 	}
 	fingerprint := strings.TrimSpace(string(data))
 	if !validFingerprint(fingerprint) {
-		return "", fmt.Errorf("active UserCA fingerprint is invalid")
+		return "", errInvalidActiveFingerprint
 	}
 	return fingerprint, nil
 }
@@ -488,7 +474,7 @@ func writeActiveFingerprint(dir, fingerprint string) (bool, error) {
 	if err := temp.Close(); err != nil {
 		return false, err
 	}
-	if err := os.Rename(tempPath, filepath.Join(dir, ActiveFingerprintFileName)); err != nil {
+	if err := os.Rename(tempPath, filepath.Join(dir, activeFingerprintFileName)); err != nil {
 		return false, err
 	}
 	if err := syncDirectory(dir); err != nil {
@@ -522,13 +508,7 @@ func syncDirectoryPlatform(path string) error {
 	return errors.Join(dir.Sync(), dir.Close())
 }
 
-func cleanupNonActiveLocked(ctx context.Context, dir string, store TrustStore) error {
-	active, markerErr := readActiveFingerprint(dir)
-	if markerErr != nil {
-		// An invalid or absent marker names no Active generation. Explicit
-		// lifecycle reconciliation may therefore remove every owned residue.
-		active = ""
-	}
+func cleanupNonActive(ctx context.Context, dir string, store trustStore, active string) error {
 	records, err := store.TrustedCertificates(ctx)
 	if err != nil {
 		return err
@@ -544,7 +524,7 @@ func cleanupNonActiveLocked(ctx context.Context, dir string, store TrustStore) e
 			return err
 		}
 	}
-	authoritiesDir := filepath.Join(dir, AuthoritiesDirName)
+	authoritiesDir := filepath.Join(dir, authoritiesDirName)
 	entries, err := os.ReadDir(authoritiesDir)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -557,58 +537,42 @@ func cleanupNonActiveLocked(ctx context.Context, dir string, store TrustStore) e
 			return err
 		}
 	}
+	return verifyNonActiveCleared(ctx, dir, store, active)
+}
+
+func verifyNonActiveCleared(ctx context.Context, dir string, store trustStore, active string) error {
+	records, err := store.TrustedCertificates(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.Fingerprint != active {
+			return fmt.Errorf("non-active UserCA trust remains after cleanup")
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, authoritiesDirName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() != active {
+			return fmt.Errorf("non-active UserCA material remains after cleanup")
+		}
+	}
 	return nil
 }
 
-func cleanupCandidate(ctx context.Context, dir string, store TrustStore, fingerprint string) error {
+func cleanupCandidate(ctx context.Context, dir string, store trustStore, fingerprint string) error {
 	return errors.Join(
 		store.Remove(ctx, []string{fingerprint}),
-		os.RemoveAll(filepath.Join(dir, AuthoritiesDirName, fingerprint)),
+		os.RemoveAll(filepath.Join(dir, authoritiesDirName, fingerprint)),
 	)
 }
 
-func removeNonActivePrivateKeys(dir, active string) {
-	entries, err := os.ReadDir(filepath.Join(dir, AuthoritiesDirName))
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if entry.Name() == active {
-			continue
-		}
-		_ = os.Remove(filepath.Join(dir, AuthoritiesDirName, entry.Name(), KeyFileName))
-	}
-}
-
-func nonActiveCount(records []TrustedCertificate, active string) int {
-	count := 0
-	for _, record := range records {
-		if record.Fingerprint != active {
-			count++
-		}
-	}
-	return count
-}
-
-func nonActiveResidueCount(dir, active string, records []TrustedCertificate) int {
-	residue := map[string]bool{}
-	for _, record := range records {
-		if record.Fingerprint != active {
-			residue[record.Fingerprint] = true
-		}
-	}
-	entries, err := os.ReadDir(filepath.Join(dir, AuthoritiesDirName))
-	if err == nil {
-		for _, entry := range entries {
-			if entry.Name() != active {
-				residue[entry.Name()] = true
-			}
-		}
-	}
-	return len(residue)
-}
-
-func containsFingerprint(records []TrustedCertificate, fingerprint string) bool {
+func containsFingerprint(records []trustedCertificate, fingerprint string) bool {
 	for _, record := range records {
 		if record.Fingerprint == fingerprint {
 			return true
@@ -617,7 +581,7 @@ func containsFingerprint(records []TrustedCertificate, fingerprint string) bool 
 	return false
 }
 
-func fingerprints(records []TrustedCertificate) []string {
+func fingerprints(records []trustedCertificate) []string {
 	out := make([]string, 0, len(records))
 	for _, record := range records {
 		out = append(out, record.Fingerprint)
@@ -635,18 +599,36 @@ func validFingerprint(value string) bool {
 
 var chmod = os.Chmod
 
-func repairAuthorityPermissions(dir string, authority *Authority) error {
+func authorityPermissionsNeedRepair(dir string, authority *authority) bool {
+	expected := map[string]os.FileMode{
+		dir:                                    0o700,
+		filepath.Join(dir, authoritiesDirName): 0o700,
+		filepath.Dir(authority.certPath):       0o700,
+		filepath.Join(dir, activeFingerprintFileName): 0o600,
+		authority.certPath:                            0o600,
+		authority.keyPath:                             0o600,
+	}
+	for path, mode := range expected {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			return true
+		}
+	}
+	return false
+}
+
+func repairAuthorityPermissions(dir string, authority *authority) error {
 	return errors.Join(
 		chmod(dir, 0o700),
-		chmod(filepath.Join(dir, AuthoritiesDirName), 0o700),
-		chmod(filepath.Dir(authority.CertPath), 0o700),
-		chmod(filepath.Join(dir, ActiveFingerprintFileName), 0o600),
-		chmod(authority.CertPath, 0o600),
-		chmod(authority.KeyPath, 0o600),
+		chmod(filepath.Join(dir, authoritiesDirName), 0o700),
+		chmod(filepath.Dir(authority.certPath), 0o700),
+		chmod(filepath.Join(dir, activeFingerprintFileName), 0o600),
+		chmod(authority.certPath, 0o600),
+		chmod(authority.keyPath, 0o600),
 	)
 }
 
-func parseAuthority(certPath, keyPath string, certPEM, keyPEM []byte) (*Authority, error) {
+func parseAuthority(certPath, keyPath string, certPEM, keyPEM []byte) (*authority, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("CA certificate PEM is invalid")
@@ -663,7 +645,7 @@ func parseAuthority(certPath, keyPath string, certPEM, keyPEM []byte) (*Authorit
 	if err != nil {
 		return nil, err
 	}
-	if cert.Subject.CommonName != CommonName || !cert.IsCA || !cert.BasicConstraintsValid {
+	if cert.Subject.CommonName != commonName || !cert.IsCA || !cert.BasicConstraintsValid {
 		return nil, fmt.Errorf("CA certificate identity is invalid")
 	}
 	certKey, ok := cert.PublicKey.(*rsa.PublicKey)
@@ -673,17 +655,16 @@ func parseAuthority(certPath, keyPath string, certPEM, keyPEM []byte) (*Authorit
 	if certKey.N.Cmp(key.PublicKey.N) != 0 || certKey.E != key.PublicKey.E {
 		return nil, fmt.Errorf("CA certificate and key do not match")
 	}
-	return &Authority{
-		CertPath: certPath,
-		KeyPath:  keyPath,
-		CertPEM:  certPEM,
-		KeyPEM:   keyPEM,
+	return &authority{
+		certPath: certPath,
+		keyPath:  keyPath,
+		certPEM:  certPEM,
+		keyPEM:   keyPEM,
 		cert:     cert,
-		key:      key,
 	}, nil
 }
 
-func SHA1Fingerprint(certPEM []byte) (string, error) {
+func sha1Fingerprint(certPEM []byte) (string, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil || block.Type != "CERTIFICATE" {
 		return "", fmt.Errorf("CA certificate PEM is invalid")

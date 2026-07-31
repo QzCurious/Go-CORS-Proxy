@@ -262,6 +262,35 @@ func TestInstallAndUninstallCommandsRenderResults(t *testing.T) {
 	}
 }
 
+func TestStartReportsFailFastCAAdmission(t *testing.T) {
+	var out bytes.Buffer
+	err := startWithContextAndInput(context.Background(), nil, &out, func(context.Context, gateway.StartHooks) (gateway.StartResult, error) {
+		return gateway.StartResult{Kind: gateway.StartResultStartAlreadyMutating}, nil
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "CA operation in progress") {
+		t.Fatalf("start error = %v", err)
+	}
+}
+
+func TestInstallRendersGatewayPartialSuccess(t *testing.T) {
+	var out bytes.Buffer
+	err := installCAWithCommand(context.Background(), &out, func(context.Context) (gateway.InstallResult, error) {
+		return gateway.InstallResult{
+			Kind: gateway.InstallResultRuntimeAdoptionFailed,
+			Warnings: []gateway.HTTPSWarningDetail{{
+				Diagnostic: "runtime adoption failed",
+				Action:     "Run install again.",
+			}},
+		}, nil
+	})
+
+	if err == nil || !strings.Contains(out.String(), "could not adopt") ||
+		!strings.Contains(out.String(), "runtime adoption failed") {
+		t.Fatalf("partial install error = %v output = %q", err, out.String())
+	}
+}
+
 func TestUninstallConfirmsOnlyWhenHTTPSIsActive(t *testing.T) {
 	var out bytes.Buffer
 	var calls []gateway.UninstallRequest

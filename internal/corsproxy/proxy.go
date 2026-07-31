@@ -20,16 +20,24 @@ import (
 	"time"
 
 	"github.com/elazarl/goproxy"
-
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
+const (
+	leafValidity    = 30 * 24 * time.Hour
+	leafCacheMaxAge = 24 * time.Hour
+)
+
+type HTTPSGeneration struct {
+	Certificate tls.Certificate
+	ExpiresAt   time.Time
+}
+
 type Options struct {
-	InterceptHTTPS bool
-	Authority      *userca.Authority
-	Transport      *http.Transport
-	OnHTTPSFailure func(HTTPSFailure)
-	GenerateLeaf   func(tls.Certificate, string) (*tls.Certificate, error)
+	InterceptHTTPS  bool
+	HTTPSGeneration *HTTPSGeneration
+	Transport       *http.Transport
+	OnHTTPSFailure  func(HTTPSFailure)
+	GenerateLeaf    func(tls.Certificate, string) (*tls.Certificate, error)
 }
 
 type HTTPSFailureKind string
@@ -52,7 +60,6 @@ type Core struct {
 }
 
 type httpsGeneration struct {
-	fingerprint string
 	certificate tls.Certificate
 	expiresAt   time.Time
 	leafCache   *memoryCertStore
@@ -74,7 +81,10 @@ func New(opts Options) (*Core, error) {
 	core := &Core{proxy: proxy, onHTTPSFailure: opts.OnHTTPSFailure, generateLeaf: generateLeaf}
 	proxy.OnRequest().HandleConnectFunc(core.handleConnect)
 	if opts.InterceptHTTPS {
-		if err := core.ActivateHTTPS(opts.Authority); err != nil {
+		if opts.HTTPSGeneration == nil {
+			return nil, fmt.Errorf("trusted HTTPS interception requires a generation")
+		}
+		if err := core.ActivateHTTPS(*opts.HTTPSGeneration); err != nil {
 			return nil, err
 		}
 	}
@@ -108,22 +118,13 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // ActivateHTTPS atomically swaps signer, certificate, and generation-owned
 // leaf cache. A handshake that already loaded the previous generation keeps it.
-func (c *Core) ActivateHTTPS(authority *userca.Authority) error {
-	if authority == nil {
-		return fmt.Errorf("trusted HTTPS interception requires an Installed User CA")
-	}
-	cert, err := authority.TLSCertificate()
-	if err != nil {
-		return err
-	}
-	fingerprint, err := authority.Fingerprint()
-	if err != nil {
-		return err
+func (c *Core) ActivateHTTPS(input HTTPSGeneration) error {
+	if len(input.Certificate.Certificate) == 0 || input.Certificate.PrivateKey == nil || input.ExpiresAt.IsZero() {
+		return fmt.Errorf("trusted HTTPS interception requires complete TLS signing material")
 	}
 	generation := &httpsGeneration{
-		fingerprint: fingerprint,
-		certificate: cert,
-		expiresAt:   authority.ExpiresAt(),
+		certificate: input.Certificate,
+		expiresAt:   input.ExpiresAt,
 		leafCache:   newMemoryCertStore(),
 	}
 	c.httpsGeneration.Store(generation)
@@ -228,7 +229,7 @@ func signHostCertificate(caCert tls.Certificate, hostname string) (*tls.Certific
 			Organization: []string{"seamless-cors local MITM proxy"},
 		},
 		NotBefore:             notBefore,
-		NotAfter:              notBefore.Add(userca.LeafValidity),
+		NotAfter:              minTime(notBefore.Add(leafValidity), caLeaf.NotAfter),
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
@@ -287,7 +288,7 @@ func (s *memoryCertStore) Fetch(hostname string, gen func() (*tls.Certificate, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	if cached, ok := s.certs[hostname]; ok && now.Sub(cached.generatedAt) <= userca.LeafCacheMaxAge {
+	if cached, ok := s.certs[hostname]; ok && now.Sub(cached.generatedAt) <= leafCacheMaxAge {
 		return cached.cert, nil
 	}
 	cert, err := gen()
@@ -296,4 +297,11 @@ func (s *memoryCertStore) Fetch(hostname string, gen func() (*tls.Certificate, e
 	}
 	s.certs[hostname] = cachedCert{cert: cert, generatedAt: now}
 	return cert, nil
+}
+
+func minTime(left, right time.Time) time.Time {
+	if left.Before(right) {
+		return left
+	}
+	return right
 }

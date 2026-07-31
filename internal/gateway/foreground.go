@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type owner struct {
@@ -21,7 +20,15 @@ type owner struct {
 	lease     *ownershipLease
 }
 
-func newOwnerWithCoordinator(settings managedpac.SystemSettings, trustStore userca.TrustStore, coord *coordinator) (*owner, error) {
+func newOwnerWithCoordinator(settings managedpac.SystemSettings, ca userCAModule, coord *coordinator) (*owner, error) {
+	return newOwner(settings, ca, coord, true)
+}
+
+func newTransientOwnerWithCoordinator(settings managedpac.SystemSettings, ca userCAModule, coord *coordinator) (*owner, error) {
+	return newOwner(settings, ca, coord, false)
+}
+
+func newOwner(settings managedpac.SystemSettings, ca userCAModule, coord *coordinator, inspectUserCA bool) (*owner, error) {
 	token, err := randomToken()
 	if err != nil {
 		return nil, err
@@ -31,7 +38,12 @@ func newOwnerWithCoordinator(settings managedpac.SystemSettings, trustStore user
 		return nil, fmt.Errorf("router listener unavailable: %w", err)
 	}
 	routerListen := listener.Addr().String()
-	lifecycle, err := newLifecycle(settings, trustStore, coord, routerListen)
+	var lifecycle *lifecycle
+	if inspectUserCA {
+		lifecycle, err = newLifecycle(settings, ca, coord, routerListen)
+	} else {
+		lifecycle, err = newLifecycleUninspected(settings, ca, coord, routerListen)
+	}
 	if err != nil {
 		_ = listener.Close()
 		return nil, err

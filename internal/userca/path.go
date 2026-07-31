@@ -5,8 +5,7 @@ import (
 	"path/filepath"
 )
 
-// DefaultDir returns the default location for seamless-cors UserCA material.
-func DefaultDir() (string, error) {
+func defaultDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

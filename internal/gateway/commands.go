@@ -2,10 +2,11 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 // StartRouterHosted runs the Start Sequence through an existing router-only owner.
@@ -56,10 +57,10 @@ func stop(ctx context.Context, settings managedpac.SystemSettings) (StopResult, 
 // GatewayStatus returns live owner status when available and otherwise
 // inspects local durable state.
 func Status(ctx context.Context) (StatusResult, error) {
-	return status(ctx, managedpac.NewSystemSettings(), userca.NewTrustStore())
+	return status(ctx, managedpac.NewSystemSettings(), nil)
 }
 
-func status(ctx context.Context, settings managedpac.SystemSettings, trustStore userca.TrustStore) (StatusResult, error) {
+func status(ctx context.Context, settings managedpac.SystemSettings, ca userCAModule) (StatusResult, error) {
 	target, err := discover()
 	if err != nil {
 		return StatusResult{}, err
@@ -67,13 +68,37 @@ func status(ctx context.Context, settings managedpac.SystemSettings, trustStore 
 	if target.kind == targetActive {
 		return target.client.Status(ctx)
 	}
+	if ca == nil {
+		ca, err = openSystemUserCA()
+		if err != nil {
+			return StatusResult{}, err
+		}
+	}
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return StatusResult{}, err
 	}
-	lifecycle, err := newLifecycle(settings, trustStore, coord, "")
+	lease, acquired, err := coord.AcquireOwnershipLease()
 	if err != nil {
 		return StatusResult{}, err
+	}
+	if !acquired {
+		retry, rediscoverErr := discover()
+		if rediscoverErr != nil {
+			return StatusResult{}, rediscoverErr
+		}
+		if retry.kind == targetActive {
+			return retry.client.Status(ctx)
+		}
+		return StatusResult{}, fmt.Errorf("%w; retry status", errOwnerTransition)
+	}
+	defer lease.Release()
+	lifecycle, err := newLifecycle(settings, ca, coord, "")
+	if err != nil {
+		return StatusResult{}, err
+	}
+	if lifecycle.userCAAssessmentErr != nil {
+		return StatusResult{}, lifecycle.userCAAssessmentErr
 	}
 	return lifecycle.Status(ctx, target.kind == targetStale)
 }
@@ -81,10 +106,10 @@ func status(ctx context.Context, settings managedpac.SystemSettings, trustStore 
 // InstallCA ensures the Installed User CA through the live owner when one is
 // available, and locally otherwise.
 func InstallCA(ctx context.Context) (InstallResult, error) {
-	return installCA(ctx, userca.NewTrustStore())
+	return installCA(ctx, nil)
 }
 
-func installCA(ctx context.Context, trustStore userca.TrustStore) (InstallResult, error) {
+func installCA(ctx context.Context, ca userCAModule) (InstallResult, error) {
 	target, err := discover()
 	if err != nil {
 		return InstallResult{}, err
@@ -92,20 +117,28 @@ func installCA(ctx context.Context, trustStore userca.TrustStore) (InstallResult
 	if target.kind == targetActive {
 		return target.client.Install(ctx)
 	}
-	lifecycle, err := newLocalLifecycle(trustStore)
-	if err != nil {
-		return InstallResult{}, err
+	if ca == nil {
+		ca, err = openSystemUserCA()
+		if err != nil {
+			return InstallResult{}, err
+		}
 	}
-	return lifecycle.Install(ctx)
+	result, routed, err := runTransient(ctx, ca, func(lifecycle *lifecycle) (InstallResult, error) {
+		return lifecycle.Install(ctx)
+	})
+	if routed != nil {
+		return routed.Install(ctx)
+	}
+	return result, err
 }
 
 // UninstallCA removes the Installed User CA through the live owner when one is
 // available, and locally otherwise.
 func UninstallCA(ctx context.Context, request UninstallRequest) (UninstallResult, error) {
-	return uninstallCA(ctx, userca.NewTrustStore(), request)
+	return uninstallCA(ctx, nil, request)
 }
 
-func uninstallCA(ctx context.Context, trustStore userca.TrustStore, request UninstallRequest) (UninstallResult, error) {
+func uninstallCA(ctx context.Context, ca userCAModule, request UninstallRequest) (UninstallResult, error) {
 	target, err := discover()
 	if err != nil {
 		return UninstallResult{}, err
@@ -113,17 +146,85 @@ func uninstallCA(ctx context.Context, trustStore userca.TrustStore, request Unin
 	if target.kind == targetActive {
 		return target.client.Uninstall(ctx, request)
 	}
-	lifecycle, err := newLocalLifecycle(trustStore)
-	if err != nil {
-		return UninstallResult{}, err
+	if ca == nil {
+		ca, err = openSystemUserCA()
+		if err != nil {
+			return UninstallResult{}, err
+		}
 	}
-	return lifecycle.UninstallWithConsent(ctx, request.ConsentFingerprint)
+	result, routed, err := runTransient(ctx, ca, func(lifecycle *lifecycle) (UninstallResult, error) {
+		return lifecycle.UninstallWithConsent(ctx, request.ConsentFingerprint)
+	})
+	if routed != nil {
+		return routed.Uninstall(ctx, request)
+	}
+	return result, err
 }
 
-func newLocalLifecycle(trustStore userca.TrustStore) (*lifecycle, error) {
+// runTransient publishes a router-only owner before executing one owner-owned
+// CA command. Losing the ownership race causes one rediscovery; callers then
+// route to the winner rather than performing local CA work.
+func runTransient[T any](
+	ctx context.Context,
+	ca userCAModule,
+	operation func(*lifecycle) (T, error),
+) (result T, routed *client, err error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
-		return nil, err
+		return result, nil, err
 	}
-	return newLifecycle(nil, trustStore, coord, "")
+	lease, acquired, err := coord.AcquireOwnershipLease()
+	if err != nil {
+		return result, nil, err
+	}
+	if !acquired {
+		target, rediscoverErr := discover()
+		if rediscoverErr != nil {
+			return result, nil, rediscoverErr
+		}
+		if target.kind == targetActive {
+			return result, target.client, nil
+		}
+		return result, nil, fmt.Errorf("%w; retry command", errOwnerTransition)
+	}
+	releaseLease := true
+	defer func() {
+		if releaseLease {
+			err = errors.Join(err, lease.Release())
+		}
+	}()
+	owner, err := newTransientOwnerWithCoordinator(managedpac.NewSystemSettings(), ca, coord)
+	if err != nil {
+		return result, nil, err
+	}
+	owner.lease = lease
+	releaseLease = false
+	owner.lifecycle.mu.Lock()
+	owner.lifecycle.transientOwner = true
+	owner.lifecycle.caMutating = true
+	owner.lifecycle.mu.Unlock()
+
+	routerErr := make(chan error, 1)
+	go func() { routerErr <- owner.router.Serve(owner.listener) }()
+	if err := coord.Claim(owner.cache); err != nil {
+		_ = owner.router.Close(context.Background())
+		_ = lease.Release()
+		owner.lease = nil
+		return result, nil, err
+	}
+
+	result, operationErr := operation(owner.lifecycle)
+	owner.lifecycle.mu.Lock()
+	owner.lifecycle.ownerEnding = true
+	owner.lifecycle.caMutating = false
+	owner.lifecycle.mu.Unlock()
+	closeErr := owner.router.Close(context.Background())
+	removeErr := coord.RemoveOwned(owner.cache)
+	leaseErr := lease.Release()
+	owner.lease = nil
+	serveErr := <-routerErr
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		closeErr = errors.Join(closeErr, serveErr)
+	}
+	return result, nil, errors.Join(operationErr, closeErr, removeErr, leaseErr)
 }

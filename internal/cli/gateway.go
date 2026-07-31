@@ -56,11 +56,17 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 		fmt.Fprintln(stdout, "gateway owner already running")
 		return fmt.Errorf("gateway owner already running")
 	}
+	if result.Kind == gateway.StartResultOwnerTransition {
+		return fmt.Errorf("Gateway Ownership is transitioning; retry start")
+	}
 	if result.Kind == gateway.StartResultPACReplacementDeclined {
 		return ErrPACReplacementConsentDeclined
 	}
 	if result.Kind == gateway.StartResultCleanupFailed {
 		return fmt.Errorf("gateway start cleanup failed: %s", cleanupFailureText(result.CleanupFailures))
+	}
+	if result.Kind == gateway.StartResultStartAlreadyMutating {
+		return fmt.Errorf("CA operation in progress; retry start")
 	}
 	return err
 }
@@ -158,6 +164,10 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 		return err
 	}
 	renderInstallResult(stdout, result)
+	if result.Kind == gateway.InstallResultRuntimeAdoptionFailed ||
+		result.Kind == gateway.InstallResultPACRefreshFailed {
+		return fmt.Errorf("Installed User CA is usable, but Gateway recovery is incomplete")
+	}
 	return nil
 }
 
@@ -416,6 +426,12 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	case gateway.InstallResultAlreadyUsable:
 		fmt.Fprintln(stdout, "Installed User CA is already usable.")
 		fmt.Fprintln(stdout, "https-readiness: ready")
+	case gateway.InstallResultRuntimeAdoptionFailed:
+		fmt.Fprintln(stdout, "Installed User CA installed, but the running Gateway could not adopt it.")
+		renderHTTPSWarnings(stdout, result.Warnings)
+	case gateway.InstallResultPACRefreshFailed:
+		fmt.Fprintln(stdout, "Installed User CA installed, but Managed PAC refresh failed.")
+		renderHTTPSWarnings(stdout, result.Warnings)
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
