@@ -79,7 +79,7 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if start.Kind != StartResultStartAlreadyMutating {
+	if start.Kind() != StartResultStartAlreadyMutating {
 		t.Fatalf("start during transient mutation = %#v", start)
 	}
 	competing, err := target.client.Install(context.Background())

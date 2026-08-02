@@ -17,27 +17,24 @@ type startSequence struct {
 func (s startSequence) Execute(ctx context.Context, request StartRequest) (StartResult, error) {
 	if !s.lifecycle.takeStartCleanupComplete() {
 		if failure := cleanManagedPAC(ctx, s.lifecycle.managedPAC); failure != nil {
-			return StartResult{
-				Kind:            StartResultCleanupFailed,
-				CleanupFailures: []CleanupFailureDetail{*failure},
-			}, nil
+			return StartCleanupFailed{Failures: []CleanupFailure{*failure}}, nil
 		}
 	}
 
 	config, err := liveconfig.Create()
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 	snapshot, err := config.Snapshot()
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 
 	postStartFailure := func(err error) (StartResult, error) {
 		if ctx.Err() != nil {
-			return StartResult{Kind: StartResultStopCancelled}, nil
+			return StartStopCancelled{}, nil
 		}
-		return StartResult{}, fmt.Errorf("start runtime: %w", err)
+		return nil, fmt.Errorf("start runtime: %w", err)
 	}
 
 	acceptedServices, assessmentResult, err := s.acceptedManagedPACServices(ctx, request)
@@ -45,7 +42,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		if err != nil {
 			return postStartFailure(err)
 		}
-		return *assessmentResult, nil
+		return assessmentResult, nil
 	}
 
 	engine, err := newRuntime(config, snapshot)
@@ -70,7 +67,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	// UserCA inspection and publication share the CA admission gate so runtime
 	// never admits a snapshot from the middle of a UserCA mutation.
 	if !s.lifecycle.caAdmissionMu.TryLock() {
-		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
+		return StartAlreadyMutating{}, nil
 	}
 	publishRuntime := func() error {
 		userCASnapshot, readinessErr := s.lifecycle.userCA.Inspect(ctx)
@@ -91,7 +88,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	s.lifecycle.caAdmissionMu.Unlock()
 	if publishErr != nil {
 		if ctx.Err() != nil {
-			return StartResult{Kind: StartResultStopCancelled}, nil
+			return StartStopCancelled{}, nil
 		}
 		return postStartFailure(publishErr)
 	}
@@ -123,7 +120,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return postStartFailure(fmt.Errorf("gateway runtime failed before readiness: %w", err))
 	case <-ctx.Done():
 		withdraw()
-		return StartResult{Kind: StartResultStopCancelled}, nil
+		return StartStopCancelled{}, nil
 	}
 	select {
 	case err := <-done:
@@ -132,25 +129,25 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	default:
 	}
 
-	pacInstall, err := s.lifecycle.managedPAC.Install(ctx, acceptedServices, engine.PACURL())
+	// Capture the runtime revision at the PAC installation boundary. Runtime
+	// changes may occur while the feature-owned installation is in progress;
+	// the unified watcher uses this baseline to reconcile any newer snapshot
+	// once activation has installed its fixed service set.
+	pacInstallBaseline := engine.snapshot()
+	pacInstall, err := s.lifecycle.managedPAC.Install(ctx, acceptedServices, pacInstallBaseline.PACURL)
 	if err != nil {
 		withdraw()
 		warnings := managedPACWarningDetails(pacInstall.Warnings())
 		if failure := s.cleanupFailedPACInstall(); failure != nil {
-			return StartResult{
-				Kind:               StartResultCleanupFailed,
-				ManagedPACWarnings: warnings,
-				CleanupFailures:    []CleanupFailureDetail{*failure},
+			return StartCleanupFailed{
+				Warnings: warnings,
+				Failures: []CleanupFailure{*failure},
 			}, nil
 		}
 		if ctx.Err() != nil {
-			return StartResult{Kind: StartResultStopCancelled}, nil
+			return StartStopCancelled{}, nil
 		}
-		return StartResult{
-			Kind:               StartResultManagedPACInstallationFailed,
-			ManagedPACWarnings: warnings,
-			Diagnostic:         err.Error(),
-		}, nil
+		return StartManagedPACInstallationFailed{Warnings: warnings, Diagnostic: err.Error()}, nil
 	}
 
 	s.lifecycle.mu.Lock()
@@ -158,7 +155,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		s.lifecycle.mu.Unlock()
 		withdraw()
 		_ = s.lifecycle.managedPAC.Uninstall(context.Background())
-		return StartResult{Kind: StartResultStopCancelled}, nil
+		return StartStopCancelled{}, nil
 	}
 	active.managedPAC = &managedPACRuntime{
 		state:    pacInstall.State(),
@@ -168,27 +165,23 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	s.lifecycle.mu.Unlock()
 	cleanupEngine = false
 
-	go s.lifecycle.watchPACReconciliationRequests(runCtx, active)
-	go s.lifecycle.watchHTTPSWarningUpdates(runCtx, active)
+	go s.lifecycle.watchRuntimeChanges(runCtx, active, pacInstallBaseline)
 
 	state := engine.snapshot()
-	return StartResult{
-		Kind: StartResultStarted,
-		Guidance: &StartGuidanceDetail{
-			UpstreamListPath:     snapshot.UpstreamListPath(),
-			ManagedPACActive:     true,
-			ManagedPACServices:   pacInstall.State().ServiceNames(),
-			ManagedPACWarnings:   managedPACWarningDetails(pacInstall.Warnings()),
-			HTTPSReadiness:       state.HTTPSReadiness,
-			HTTPSInterception:    state.HTTPSInterception,
-			HTTPSIntent:          state.HTTPSIntent,
-			HTTPSWarnings:        state.HTTPSWarnings,
-			UpstreamListWarnings: upstreamListWarningDetails(snapshot.UpstreamList().Warnings),
-		},
-	}, nil
+	return Started{Guidance: StartGuidance{
+		UpstreamListPath:     snapshot.UpstreamListPath(),
+		ManagedPACActive:     true,
+		ManagedPACServices:   pacInstall.State().ServiceNames(),
+		ManagedPACWarnings:   managedPACWarningDetails(pacInstall.Warnings()),
+		HTTPSReadiness:       state.HTTPSReadiness,
+		HTTPSInterception:    state.HTTPSInterception,
+		HTTPSIntent:          state.HTTPSIntent,
+		HTTPSWarnings:        state.HTTPSWarnings,
+		UpstreamListWarnings: upstreamListWarningDetails(snapshot.UpstreamList().Warnings()),
+	}}, nil
 }
 
-func (s startSequence) acceptedManagedPACServices(ctx context.Context, request StartRequest) ([]string, *StartResult, error) {
+func (s startSequence) acceptedManagedPACServices(ctx context.Context, request StartRequest) ([]string, StartResult, error) {
 	if request.ManagedPACConsent != nil {
 		services := sortedUniqueServiceNames(request.ManagedPACConsent.ServiceNames)
 		if len(services) == 0 || request.ManagedPACConsent.Fingerprint != pacConsentFingerprint(services) {
@@ -203,15 +196,9 @@ func (s startSequence) acceptedManagedPACServices(ctx context.Context, request S
 	}
 	detail := s.lifecycle.managedPACConsentDetail(snapshot)
 	if len(detail.ProposedServices) == 0 {
-		return nil, &StartResult{
-			Kind:              StartResultNoManageablePACServices,
-			ManagedPACConsent: detail,
-		}, nil
+		return nil, StartNoManageablePACServices{Consent: *detail}, nil
 	}
-	return nil, &StartResult{
-		Kind:              StartResultConsentRequired,
-		ManagedPACConsent: detail,
-	}, nil
+	return nil, StartConsentRequired{Consent: *detail}, nil
 }
 
 func sortedUniqueServiceNames(values []string) []string {

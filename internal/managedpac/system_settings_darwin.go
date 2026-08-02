@@ -74,7 +74,7 @@ func (s *darwinSystemSettings) ClearOwned(ctx context.Context, serviceNames []st
 			}
 			continue
 		}
-		if !isOwnedURL(current.PACURL) {
+		if !IsOwnedURL(current.PACURL) {
 			continue
 		}
 		if _, err := s.networksetup(ctx, "-setautoproxyurl", serviceName, ""); err != nil {

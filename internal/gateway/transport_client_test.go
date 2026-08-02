@@ -26,7 +26,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if request.ManagedPACConsent == nil || request.ManagedPACConsent.Fingerprint != "services-v1" || len(request.ManagedPACConsent.ServiceNames) != 1 || request.ManagedPACConsent.ServiceNames[0] != "Wi-Fi" {
 			t.Fatalf("request = %#v", request)
 		}
-		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true})
+		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true, Guidance: &StartGuidanceDetail{}})
 	}))
 	defer server.Close()
 
@@ -40,8 +40,8 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultStarted {
-		t.Fatalf("result = %s", result.Kind)
+	if result.Kind() != StartResultStarted {
+		t.Fatalf("result = %s", result.Kind())
 	}
 }
 
@@ -58,7 +58,8 @@ func TestStartFailureReturnsSemanticResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultManagedPACInstallationFailed || result.Diagnostic != "PAC install failed" {
+	failed, ok := result.(StartManagedPACInstallationFailed)
+	if !ok || failed.Diagnostic != "PAC install failed" {
 		t.Fatalf("result = %#v", result)
 	}
 }

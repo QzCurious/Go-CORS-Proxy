@@ -117,9 +117,12 @@ func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutp
 	if err != nil {
 		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce a Start result.", err)
 	}
+	if result == nil {
+		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce a Start result.")
+	}
 	if result.Fulfillment() == CommandUnfulfilled {
-		failure := startFailureRepresentation(result.Kind)
-		return nil, newGatewayError(failure.status, string(result.Kind), failure.message, startFailureDetailsFrom(result))
+		failure := startFailureRepresentation(result.Kind())
+		return nil, newGatewayError(failure.status, string(result.Kind()), failure.message, startFailureDetailsFrom(result))
 	}
 	return &startOutput{Body: startSuccessBodyFrom(result)}, nil
 }
@@ -232,7 +235,7 @@ type failureRepresentation struct {
 	message string
 }
 
-func startFailureRepresentation(kind StartResultKind) failureRepresentation {
+func startFailureRepresentation(kind StartKind) failureRepresentation {
 	switch kind {
 	case StartResultOwnerTransition:
 		return failureRepresentation{http.StatusServiceUnavailable, "Gateway ownership is transitioning; retry Start."}

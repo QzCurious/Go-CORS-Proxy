@@ -43,8 +43,8 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 		},
 		Started: func(result gateway.StartResult) {
 			renderStartResultWithoutHTTPSWarnings(stdout, result)
-			if result.Guidance != nil {
-				liveWarnings.RenderSnapshot(result.Guidance.HTTPSWarnings)
+			if started, ok := result.(gateway.Started); ok {
+				liveWarnings.RenderSnapshot(started.Guidance.HTTPSWarnings)
 			}
 		},
 		HTTPSWarningsChanged: liveWarnings.RenderSnapshot,
@@ -53,28 +53,31 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	if err != nil {
 		return err
 	}
+	if result == nil {
+		return errors.New("gateway start returned no result")
+	}
 	if result.Fulfillment() == gateway.CommandFulfilled {
 		return nil
 	}
-	if result.Kind == gateway.StartResultOwnerTransition {
+	if result.Kind() == gateway.StartResultOwnerTransition {
 		return fmt.Errorf("Gateway Ownership is transitioning; retry start")
 	}
-	if result.Kind == gateway.StartResultConsentDeclined {
+	if result.Kind() == gateway.StartResultConsentDeclined {
 		return ErrManagedPACConsentDeclined
 	}
-	if result.Kind == gateway.StartResultCleanupFailed {
-		return fmt.Errorf("gateway start cleanup failed: %s", cleanupFailureText(result.CleanupFailures))
+	if cleanup, ok := result.(gateway.StartCleanupFailed); ok {
+		return fmt.Errorf("gateway start cleanup failed: %s", cleanupFailureText(cleanup.Failures))
 	}
-	if result.Kind == gateway.StartResultStartAlreadyMutating {
+	if result.Kind() == gateway.StartResultStartAlreadyMutating {
 		return fmt.Errorf("CA operation in progress; retry start")
 	}
-	if result.Kind == gateway.StartResultNoManageablePACServices {
+	if result.Kind() == gateway.StartResultNoManageablePACServices {
 		return fmt.Errorf("gateway start failed: no manageable PAC services")
 	}
-	if result.Kind == gateway.StartResultManagedPACInstallationFailed {
-		return fmt.Errorf("gateway start failed: %s", result.Diagnostic)
+	if failed, ok := result.(gateway.StartManagedPACInstallationFailed); ok {
+		return fmt.Errorf("gateway start failed: %s", failed.Diagnostic)
 	}
-	return fmt.Errorf("gateway start was not fulfilled: %s", result.Kind)
+	return fmt.Errorf("gateway start was not fulfilled: %s", result.Kind())
 }
 
 type serveCommand func(context.Context, func()) error
@@ -323,39 +326,47 @@ func renderStartResultWithoutHTTPSWarnings(stdout io.Writer, result gateway.Star
 }
 
 func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartResult, includeHTTPSWarnings bool) {
-	switch result.Kind {
+	if result == nil {
+		return
+	}
+	switch result.Kind() {
 	case gateway.StartResultStarted:
-		if result.Guidance != nil {
+		if started, ok := result.(gateway.Started); ok {
+			guidance := started.Guidance
 			fmt.Fprintln(stdout, "seamless-cors running")
-			fmt.Fprintf(stdout, "upstream-list: %s\n", homeRelativePath(result.Guidance.UpstreamListPath))
-			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Guidance.HTTPSInterception))
+			fmt.Fprintf(stdout, "upstream-list: %s\n", homeRelativePath(guidance.UpstreamListPath))
+			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(guidance.HTTPSInterception))
 			if includeHTTPSWarnings {
-				renderHTTPSWarnings(stdout, result.Guidance.HTTPSWarnings)
+				renderHTTPSWarnings(stdout, guidance.HTTPSWarnings)
 			}
-			if result.Guidance.ManagedPACActive {
+			if guidance.ManagedPACActive {
 				fmt.Fprintln(stdout, "managed-pac: active")
-				if len(result.Guidance.ManagedPACServices) > 0 {
-					fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Guidance.ManagedPACServices, ", "))
+				if len(guidance.ManagedPACServices) > 0 {
+					fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(guidance.ManagedPACServices, ", "))
 				}
 			}
-			renderManagedPACWarnings(stdout, result.Guidance.ManagedPACWarnings)
-			renderUpstreamListWarnings(stdout, result.Guidance.UpstreamListWarnings)
+			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
+			renderUpstreamListWarnings(stdout, guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
 	case gateway.StartResultCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors start cleanup failed")
-		renderManagedPACWarnings(stdout, result.ManagedPACWarnings)
+		if cleanup, ok := result.(gateway.StartCleanupFailed); ok {
+			renderManagedPACWarnings(stdout, cleanup.Warnings)
+		}
 	case gateway.StartResultNoManageablePACServices:
 		fmt.Fprintln(stdout, "seamless-cors could not start: no manageable PAC services")
-		if result.ManagedPACConsent != nil {
-			for _, state := range result.ManagedPACConsent.CurrentPACState {
+		if noServices, ok := result.(gateway.StartNoManageablePACServices); ok {
+			for _, state := range noServices.Consent.CurrentPACState {
 				fmt.Fprintf(stdout, "managed-pac-service: %s (%s)\n", state.ServiceName, state.Ownership)
 			}
 		}
 	case gateway.StartResultManagedPACInstallationFailed:
 		fmt.Fprintln(stdout, "seamless-cors could not start: Managed PAC installation failed")
-		renderManagedPACWarnings(stdout, result.ManagedPACWarnings)
+		if failed, ok := result.(gateway.StartManagedPACInstallationFailed); ok {
+			renderManagedPACWarnings(stdout, failed.Warnings)
+		}
 	}
 }
 

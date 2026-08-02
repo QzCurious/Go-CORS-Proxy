@@ -8,9 +8,9 @@ func TestCommandFulfillmentIsOwnedByGatewayResultKinds(t *testing.T) {
 		got  CommandFulfillment
 		want CommandFulfillment
 	}{
-		{"start started", StartResult{Kind: StartResultStarted}.Fulfillment(), CommandFulfilled},
-		{"start already running", StartResult{Kind: StartResultAlreadyRunning}.Fulfillment(), CommandFulfilled},
-		{"start transition", StartResult{Kind: StartResultOwnerTransition}.Fulfillment(), CommandUnfulfilled},
+		{"start started", Started{}.Fulfillment(), CommandFulfilled},
+		{"start already running", AlreadyRunning{}.Fulfillment(), CommandFulfilled},
+		{"start transition", StartOwnerTransition{}.Fulfillment(), CommandUnfulfilled},
 		{"stop stopped", StopResult{Kind: StopResultStopped}.Fulfillment(), CommandFulfilled},
 		{"stop not running", StopResult{Kind: StopResultNotRunning}.Fulfillment(), CommandFulfilled},
 		{"stop cleanup failed", StopResult{Kind: StopResultCleanupFailed}.Fulfillment(), CommandUnfulfilled},

@@ -73,18 +73,15 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 		if got.Value(testContextKey{}) != "start" {
 			t.Fatal("start context was not forwarded")
 		}
-		result := gateway.StartResult{
-			Kind: gateway.StartResultStarted,
-			Guidance: &gateway.StartGuidanceDetail{
-				ManagedPACActive:   true,
-				ManagedPACServices: []string{"Wi-Fi"},
-				UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
-					Line:       2,
-					Text:       "https://*.bad.example.test",
-					Diagnostic: "wildcards require a Host Selector",
-				}},
-			},
-		}
+		result := gateway.Started{Guidance: gateway.StartGuidance{
+			ManagedPACActive:   true,
+			ManagedPACServices: []string{"Wi-Fi"},
+			UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
+				Line:       2,
+				Text:       "https://*.bad.example.test",
+				Diagnostic: "wildcards require a Host Selector",
+			}},
+		}}
 		hooks.Started(result)
 		return result, nil
 	})
@@ -105,7 +102,7 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 
 func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
 	var out bytes.Buffer
-	result := gateway.StartResult{Kind: gateway.StartResultNoManageablePACServices}
+	result := gateway.StartNoManageablePACServices{}
 	err := startWithContextAndInput(context.Background(), nil, &out, func(_ context.Context, hooks gateway.StartHooks) (gateway.StartResult, error) {
 		hooks.Started(result)
 		return result, nil
@@ -121,10 +118,9 @@ func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
 
 func TestStartCommandReportsManagedPACInstallationWarnings(t *testing.T) {
 	var out bytes.Buffer
-	result := gateway.StartResult{
-		Kind:       gateway.StartResultManagedPACInstallationFailed,
+	result := gateway.StartManagedPACInstallationFailed{
 		Diagnostic: "managed PAC install updated no services",
-		ManagedPACWarnings: []gateway.ManagedPACWarningDetail{{
+		Warnings: []gateway.ManagedPACWarningDetail{{
 			Kind:        gateway.ManagedPACWarningUpdateFailed,
 			ServiceName: "Wi-Fi",
 			Diagnostic:  "PAC write denied",
@@ -163,12 +159,9 @@ func TestStartCommandShortensHomePaths(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	var out bytes.Buffer
-	renderStartResult(&out, gateway.StartResult{
-		Kind: gateway.StartResultStarted,
-		Guidance: &gateway.StartGuidanceDetail{
-			UpstreamListPath: filepath.Join(home, ".seamless-cors", "upstreams.txt"),
-		},
-	})
+	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
+		UpstreamListPath: filepath.Join(home, ".seamless-cors", "upstreams.txt"),
+	}})
 
 	wantUpstreams := "upstream-list: " + filepath.Join("~", ".seamless-cors", "upstreams.txt")
 	for _, want := range []string{wantUpstreams} {
@@ -333,7 +326,7 @@ func TestInstallAndUninstallCommandsRenderResults(t *testing.T) {
 func TestStartReportsFailFastCAAdmission(t *testing.T) {
 	var out bytes.Buffer
 	err := startWithContextAndInput(context.Background(), nil, &out, func(context.Context, gateway.StartHooks) (gateway.StartResult, error) {
-		return gateway.StartResult{Kind: gateway.StartResultStartAlreadyMutating}, nil
+		return gateway.StartAlreadyMutating{}, nil
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "CA operation in progress") {
@@ -387,17 +380,14 @@ func TestUninstallConfirmsOnlyWhenHTTPSIsActive(t *testing.T) {
 
 func TestStartRendersManagedPACWarningsSeparately(t *testing.T) {
 	var out bytes.Buffer
-	renderStartResult(&out, gateway.StartResult{
-		Kind: gateway.StartResultStarted,
-		Guidance: &gateway.StartGuidanceDetail{
-			ManagedPACActive: true,
-			ManagedPACWarnings: []gateway.ManagedPACWarningDetail{{
-				Kind:        gateway.ManagedPACWarningDrift,
-				ServiceName: "Wi-Fi",
-				Diagnostic:  "foreign PAC state is active",
-			}},
-		},
-	})
+	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
+		ManagedPACActive: true,
+		ManagedPACWarnings: []gateway.ManagedPACWarningDetail{{
+			Kind:        gateway.ManagedPACWarningDrift,
+			ServiceName: "Wi-Fi",
+			Diagnostic:  "foreign PAC state is active",
+		}},
+	}})
 	if !strings.Contains(out.String(), "managed-pac-warning: Wi-Fi: foreign PAC state is active") {
 		t.Fatalf("start output = %q", out.String())
 	}

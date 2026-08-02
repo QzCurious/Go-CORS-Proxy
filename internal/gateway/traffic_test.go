@@ -83,7 +83,7 @@ func TestRecoverHTTPSPublishesNewGenerationAndPAC(t *testing.T) {
 	}
 	initialPACURL := runtime.PACURL()
 
-	nextPACURL, err := runtime.RecoverHTTPS(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
+	err = runtime.RecoverHTTPS(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
 
 	if err != nil {
 		t.Fatal(err)
@@ -92,8 +92,8 @@ func TestRecoverHTTPSPublishesNewGenerationAndPAC(t *testing.T) {
 	if state.HTTPSReadiness != HTTPSReadinessReady || state.HTTPSInterception != HTTPSInterceptionActive {
 		t.Fatalf("recovered state = %#v", state)
 	}
-	if nextPACURL == "" || nextPACURL == initialPACURL || runtime.PACURL() != nextPACURL {
-		t.Fatalf("PAC recovery URL = %q, initial = %q, current = %q", nextPACURL, initialPACURL, runtime.PACURL())
+	if runtime.PACURL() == "" || runtime.PACURL() == initialPACURL {
+		t.Fatalf("PAC recovery URL = %q, initial = %q", runtime.PACURL(), initialPACURL)
 	}
 }
 
@@ -121,7 +121,7 @@ func TestInterceptionFailurePreservesLatchedUserCAAndInstallCanRecover(t *testin
 		t.Fatalf("failure warnings = %#v", failed.HTTPSWarnings)
 	}
 
-	if _, err := runtime.RecoverHTTPS(snapshot); err != nil {
+	if err := runtime.RecoverHTTPS(snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if recovered := runtime.snapshot(); recovered.HTTPSInterception != HTTPSInterceptionActive {
@@ -206,7 +206,7 @@ func TestHTTPSReadinessWarningsUseOnlySemanticUserCAState(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := httpsWarningDiagnostics(httpsReadinessWarnings(test.list.UpstreamList(), test.snapshot, test.err))
+			got := httpsWarningDiagnostics(httpsReadinessWarnings(test.list.UpstreamList().HTTPSIntent(), test.snapshot, test.err))
 			if !strings.Contains(got, test.want) {
 				t.Fatalf("warning = %q, want substring %q", got, test.want)
 			}

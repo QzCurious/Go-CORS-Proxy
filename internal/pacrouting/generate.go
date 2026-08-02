@@ -3,29 +3,160 @@ package pacrouting
 import (
 	_ "embed"
 	"encoding/json"
+	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-type Options struct {
-	ProxyListen  string
-	HTTPSActive  bool
-	UpstreamList upstreamlist.UpstreamList
+// Routing owns the generated PAC artifact and the handler that serves it.
+// Gateway Runtime supplies only semantic routing entries and whether Trusted
+// HTTPS Interception is currently active; selector interpretation and PAC
+// rendering remain inside this module.
+type Routing struct {
+	mu           sync.RWMutex
+	proxyListen  string
+	entries      upstreamlist.Entries
+	trustedHTTPS bool
+	routes       routeSet
+	handler      *dynamicHandler
+}
+
+// NewRouting creates PAC Routing with an empty route set. The returned handler
+// is ready to serve immediately; the first Apply call replaces its body when
+// the supplied semantic route set differs from the empty set.
+func NewRouting(proxyListen string) *Routing {
+	empty := upstreamlist.NewEntries(nil, nil)
+	routes := deriveRouteSet(empty, false)
+	return &Routing{
+		proxyListen: proxyListen,
+		entries:     empty,
+		routes:      routes,
+		handler:     newDynamicHandler(render(proxyListen, routes)),
+	}
+}
+
+// Apply adopts the newest semantic routing input. It returns true only when
+// the generated PAC route set changed; equivalent input or trust changes that
+// do not affect any route are coalesced without publishing a new body.
+func (r *Routing) Apply(entries upstreamlist.Entries, trustedHTTPS bool) bool {
+	nextEntries := upstreamlist.NewEntries(entries.HostSelectors(), entries.OriginSelectors())
+	nextRoutes := deriveRouteSet(nextEntries, trustedHTTPS)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sameRouteSet(r.routes, nextRoutes) {
+		// Keep the semantic input current even when it produces the same route
+		// set. This matters when a later caller reads Routing state for status.
+		r.entries = nextEntries
+		r.trustedHTTPS = trustedHTTPS
+		return false
+	}
+	r.entries = nextEntries
+	r.trustedHTTPS = trustedHTTPS
+	r.routes = nextRoutes
+	r.handler.Set(render(r.proxyListen, nextRoutes))
+	return true
+}
+
+// Handler returns the dynamic HTTP handler owned by PAC Routing.
+func (r *Routing) Handler() http.Handler {
+	r.mu.RLock()
+	handler := r.handler
+	r.mu.RUnlock()
+	return handler
+}
+
+// Body returns the current generated PAC text. Gateway Runtime normally only
+// needs Handler; this accessor is useful for focused diagnostics and tests.
+func (r *Routing) Body() string {
+	r.mu.RLock()
+	routes := r.routes
+	proxyListen := r.proxyListen
+	r.mu.RUnlock()
+	return render(proxyListen, routes)
+}
+
+// Entries returns the latest semantic entries adopted by Apply.
+func (r *Routing) Entries() upstreamlist.Entries {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return upstreamlist.NewEntries(r.entries.HostSelectors(), r.entries.OriginSelectors())
+}
+
+// TrustedHTTPS reports the latest Trusted HTTPS Interception state adopted by
+// Apply.
+func (r *Routing) TrustedHTTPS() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.trustedHTTPS
 }
 
 //go:embed proxy.pac.js
 var pacProgram string
 
-func Generate(opts Options) string {
+type routeSet struct {
+	hostRoutes   []hostRoute
+	originRoutes []string
+}
+
+func deriveRouteSet(entries upstreamlist.Entries, trustedHTTPS bool) routeSet {
+	return routeSet{
+		hostRoutes:   deriveHostRoutes(entries.HostSelectors(), trustedHTTPS),
+		originRoutes: deriveOriginRoutes(entries.OriginSelectors(), trustedHTTPS),
+	}
+}
+
+func sameRouteSet(left, right routeSet) bool {
+	return sameHostRouteSet(left.hostRoutes, right.hostRoutes) &&
+		sameStringSet(left.originRoutes, right.originRoutes)
+}
+
+func sameHostRouteSet(left, right []hostRoute) bool {
+	leftSet := make(map[hostRoute]struct{}, len(left))
+	for _, route := range left {
+		leftSet[route] = struct{}{}
+	}
+	rightSet := make(map[hostRoute]struct{}, len(right))
+	for _, route := range right {
+		rightSet[route] = struct{}{}
+	}
+	return sameMapKeys(leftSet, rightSet)
+}
+
+func sameStringSet(left, right []string) bool {
+	leftSet := make(map[string]struct{}, len(left))
+	for _, route := range left {
+		leftSet[route] = struct{}{}
+	}
+	rightSet := make(map[string]struct{}, len(right))
+	for _, route := range right {
+		rightSet[route] = struct{}{}
+	}
+	return sameMapKeys(leftSet, rightSet)
+}
+
+func sameMapKeys[K comparable](left, right map[K]struct{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key := range left {
+		if _, ok := right[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func render(proxyListen string, routes routeSet) string {
 	config := struct {
 		Proxy        string      `json:"Proxy"`
 		HostRoutes   []hostRoute `json:"HostRoutes"`
 		OriginRoutes []string    `json:"OriginRoutes"`
 	}{
-		Proxy:        opts.ProxyListen,
-		HostRoutes:   deriveHostRoutes(opts.UpstreamList.HostSelectors, opts.HTTPSActive),
-		OriginRoutes: deriveOriginRoutes(opts.UpstreamList.OriginSelectors, opts.HTTPSActive),
+		Proxy:        proxyListen,
+		HostRoutes:   routes.hostRoutes,
+		OriginRoutes: routes.originRoutes,
 	}
 
 	data, err := json.Marshal(config)

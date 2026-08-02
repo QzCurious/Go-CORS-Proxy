@@ -186,7 +186,7 @@ func ownershipForURL(raw string) Ownership {
 	if raw == "" || raw == "(null)" {
 		return OwnershipEmpty
 	}
-	if isOwnedURL(raw) {
+	if IsOwnedURL(raw) {
 		return OwnershipOwned
 	}
 	return OwnershipForeign

@@ -14,7 +14,11 @@ func Decode(data []byte) (UpstreamList, error) {
 		return UpstreamList{}, fmt.Errorf("invalid Upstream List: content must be UTF-8")
 	}
 
-	var decoded UpstreamList
+	var (
+		hostSelectors   []HostSelector
+		originSelectors []OriginSelector
+		warnings        []Warning
+	)
 
 	// Decode raw entries.
 	for idx, line := range strings.Split(string(data), "\n") {
@@ -28,52 +32,53 @@ func Decode(data []byte) (UpstreamList, error) {
 			// Handle the line as an Origin Selector.
 			selector, err := decodeOriginSelector(selectorText)
 			if err != nil {
-				decoded.Warnings = append(decoded.Warnings, Warning{
+				warnings = append(warnings, Warning{
 					Line:       lineNo,
 					Text:       selectorText,
 					Diagnostic: err.Error(),
 				})
 				continue
 			}
-			decoded.OriginSelectors = append(decoded.OriginSelectors, selector)
+			originSelectors = append(originSelectors, selector)
 			continue
 		}
 
 		// Handle the line as a Host Selector.
 		selector, err := decodeHostSelector(selectorText)
 		if err != nil {
-			decoded.Warnings = append(decoded.Warnings, Warning{
+			warnings = append(warnings, Warning{
 				Line:       lineNo,
 				Text:       selectorText,
 				Diagnostic: err.Error(),
 			})
 			continue
 		}
-		decoded.HostSelectors = append(decoded.HostSelectors, selector)
+		hostSelectors = append(hostSelectors, selector)
 	}
 
 	// Deduplicate normalized entries.
-	deduplicated := UpstreamList{Warnings: decoded.Warnings}
+	var deduplicatedHosts []HostSelector
 
-	seenHosts := make(map[HostSelector]struct{}, len(decoded.HostSelectors))
-	for _, selector := range decoded.HostSelectors {
+	seenHosts := make(map[HostSelector]struct{}, len(hostSelectors))
+	for _, selector := range hostSelectors {
 		if _, ok := seenHosts[selector]; ok {
 			continue
 		}
 		seenHosts[selector] = struct{}{}
-		deduplicated.HostSelectors = append(deduplicated.HostSelectors, selector)
+		deduplicatedHosts = append(deduplicatedHosts, selector)
 	}
 
-	seenOrigins := make(map[OriginSelector]struct{}, len(decoded.OriginSelectors))
-	for _, selector := range decoded.OriginSelectors {
+	var deduplicatedOrigins []OriginSelector
+	seenOrigins := make(map[OriginSelector]struct{}, len(originSelectors))
+	for _, selector := range originSelectors {
 		if _, ok := seenOrigins[selector]; ok {
 			continue
 		}
 		seenOrigins[selector] = struct{}{}
-		deduplicated.OriginSelectors = append(deduplicated.OriginSelectors, selector)
+		deduplicatedOrigins = append(deduplicatedOrigins, selector)
 	}
 
-	return deduplicated, nil
+	return NewUpstreamList(NewEntries(deduplicatedHosts, deduplicatedOrigins), warnings), nil
 }
 
 func decodeOriginSelector(selectorText string) (OriginSelector, error) {

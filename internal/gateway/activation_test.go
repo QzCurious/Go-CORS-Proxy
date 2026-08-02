@@ -38,10 +38,11 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Kind != StartResultConsentRequired || first.ManagedPACConsent == nil {
+	consentResult, ok := first.(StartConsentRequired)
+	if !ok {
 		t.Fatalf("first start = %#v", first)
 	}
-	detail := first.ManagedPACConsent
+	detail := consentResult.Consent
 	installResult := managedpac.NewInstallResult(
 		managedpac.NewRuntimeState([]string{"Ethernet", "USB"}, "ignored by assertion"),
 		[]string{"USB"},
@@ -57,14 +58,15 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed.Kind != StartResultStarted || changed.Guidance == nil {
+	started, ok := changed.(Started)
+	if !ok {
 		t.Fatalf("accepted retry = %#v", changed)
 	}
-	if got := changed.Guidance.ManagedPACServices; len(got) != 2 || got[0] != "Ethernet" || got[1] != "USB" {
+	if got := started.Guidance.ManagedPACServices; len(got) != 2 || got[0] != "Ethernet" || got[1] != "USB" {
 		t.Fatalf("fixed service set = %v", got)
 	}
-	if len(changed.Guidance.ManagedPACWarnings) != 1 || changed.Guidance.ManagedPACWarnings[0].ServiceName != "Ethernet" {
-		t.Fatalf("managed PAC warnings = %#v", changed.Guidance.ManagedPACWarnings)
+	if len(started.Guidance.ManagedPACWarnings) != 1 || started.Guidance.ManagedPACWarnings[0].ServiceName != "Ethernet" {
+		t.Fatalf("managed PAC warnings = %#v", started.Guidance.ManagedPACWarnings)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 }
@@ -83,7 +85,8 @@ func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultCleanupFailed || len(result.CleanupFailures) != 1 {
+	cleanup, ok := result.(StartCleanupFailed)
+	if !ok || len(cleanup.Failures) != 1 {
 		t.Fatalf("start result = %#v", result)
 	}
 }
@@ -103,11 +106,12 @@ func TestExecuteStartStopsWhenNoManageablePACServiceExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultNoManageablePACServices || lifecycle.RuntimeActive() {
+	noServices, ok := result.(StartNoManageablePACServices)
+	if !ok || lifecycle.RuntimeActive() {
 		t.Fatalf("start result = %#v runtime active = %t", result, lifecycle.RuntimeActive())
 	}
-	if result.ManagedPACConsent == nil || len(result.ManagedPACConsent.ProposedServices) != 0 {
-		t.Fatalf("service assessment = %#v", result.ManagedPACConsent)
+	if len(noServices.Consent.ProposedServices) != 0 {
+		t.Fatalf("service assessment = %#v", noServices.Consent)
 	}
 	if settings.applied != 0 {
 		t.Fatalf("PAC writes = %d, want none", settings.applied)
@@ -137,10 +141,11 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultManagedPACInstallationFailed || len(result.ManagedPACWarnings) != 1 {
+	failed, ok := result.(StartManagedPACInstallationFailed)
+	if !ok || len(failed.Warnings) != 1 {
 		t.Fatalf("start result = %#v", result)
 	}
-	if warning := result.ManagedPACWarnings[0]; warning.ServiceName != "Wi-Fi" || warning.Kind != ManagedPACWarningUpdateFailed {
+	if warning := failed.Warnings[0]; warning.ServiceName != "Wi-Fi" || warning.Kind != ManagedPACWarningUpdateFailed {
 		t.Fatalf("Managed PAC warning = %#v", warning)
 	}
 }
@@ -402,8 +407,8 @@ func TestTransientOwnerRejectsStartBeforeCAMutationAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultStartAlreadyMutating {
-		t.Fatalf("transient start result = %s", result.Kind)
+	if result.Kind() != StartResultStartAlreadyMutating {
+		t.Fatalf("transient start result = %s", result.Kind())
 	}
 }
 
@@ -493,9 +498,9 @@ func TestStartReportsUnmetHTTPSIntentWithoutInstallingUserCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-	if result.Kind != StartResultStarted || result.Guidance == nil ||
-		result.Guidance.HTTPSReadiness != HTTPSReadinessNotReady ||
-		!hasHTTPSWarning(result.Guidance.HTTPSWarnings, HTTPSWarningUnmetIntent) {
+	started, ok := result.(Started)
+	if !ok || started.Guidance.HTTPSReadiness != HTTPSReadinessNotReady ||
+		!hasHTTPSWarning(started.Guidance.HTTPSWarnings, HTTPSWarningUnmetIntent) {
 		t.Fatalf("start result = %#v", result)
 	}
 	if ca.installCalls != 0 {
@@ -527,7 +532,8 @@ func TestStartUsesFreshInstalledUserCASnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-	if result.Kind != StartResultStarted || result.Guidance.HTTPSReadiness != HTTPSReadinessReady {
+	started, ok := result.(Started)
+	if !ok || started.Guidance.HTTPSReadiness != HTTPSReadinessReady {
 		t.Fatalf("start result = %#v", result)
 	}
 	if ca.inspectCalls <= inspectionsAtConstruction {
@@ -642,11 +648,12 @@ func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
 
 func executeAcceptedStart(lifecycle *lifecycle) (StartResult, error) {
 	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
-	if err != nil || first.Kind != StartResultConsentRequired || first.ManagedPACConsent == nil {
+	consentResult, ok := first.(StartConsentRequired)
+	if err != nil || !ok {
 		return first, err
 	}
 	return lifecycle.ExecuteStart(context.Background(), StartRequest{ManagedPACConsent: &ManagedPACConsentInput{
-		ServiceNames: first.ManagedPACConsent.ProposedServices,
-		Fingerprint:  first.ManagedPACConsent.Fingerprint,
+		ServiceNames: consentResult.Consent.ProposedServices,
+		Fingerprint:  consentResult.Consent.Fingerprint,
 	}})
 }

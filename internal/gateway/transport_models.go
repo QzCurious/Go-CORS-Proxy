@@ -101,33 +101,73 @@ type uninstallFailureDetails struct {
 }
 
 func startSuccessBodyFrom(result StartResult) startSuccessBody {
-	return startSuccessBody{Changed: result.Kind == StartResultStarted, Guidance: result.Guidance}
+	switch typed := result.(type) {
+	case Started:
+		guidance := typed.Guidance
+		return startSuccessBody{Changed: true, Guidance: &guidance}
+	case AlreadyRunning:
+		return startSuccessBody{}
+	default:
+		return startSuccessBody{}
+	}
 }
 
 func (dto startSuccessBody) semantic() StartResult {
-	kind := StartResultAlreadyRunning
-	if dto.Changed {
-		kind = StartResultStarted
+	if !dto.Changed {
+		return AlreadyRunning{}
 	}
-	return StartResult{Kind: kind, Guidance: dto.Guidance}
+	var guidance StartGuidance
+	if dto.Guidance != nil {
+		guidance = *dto.Guidance
+	}
+	return Started{Guidance: guidance}
 }
 
 func startFailureDetailsFrom(result StartResult) startFailureDetails {
-	return startFailureDetails{
-		ManagedPACConsent:  result.ManagedPACConsent,
-		ManagedPACWarnings: result.ManagedPACWarnings,
-		Diagnostic:         result.Diagnostic,
-		CleanupFailures:    result.CleanupFailures,
+	details := startFailureDetails{}
+	switch typed := result.(type) {
+	case StartConsentRequired:
+		consent := typed.Consent
+		details.ManagedPACConsent = &consent
+	case StartNoManageablePACServices:
+		consent := typed.Consent
+		details.ManagedPACConsent = &consent
+	case StartManagedPACInstallationFailed:
+		details.ManagedPACWarnings = typed.Warnings
+		details.Diagnostic = typed.Diagnostic
+	case StartCleanupFailed:
+		details.ManagedPACWarnings = typed.Warnings
+		details.CleanupFailures = typed.Failures
 	}
+	return details
 }
 
-func (dto startFailureDetails) semantic(kind StartResultKind) StartResult {
-	return StartResult{
-		Kind:               kind,
-		ManagedPACConsent:  dto.ManagedPACConsent,
-		ManagedPACWarnings: dto.ManagedPACWarnings,
-		Diagnostic:         dto.Diagnostic,
-		CleanupFailures:    dto.CleanupFailures,
+func (dto startFailureDetails) semantic(kind StartKind) StartResult {
+	switch kind {
+	case StartResultOwnerTransition:
+		return StartOwnerTransition{}
+	case StartResultConsentRequired:
+		if dto.ManagedPACConsent == nil {
+			return nil
+		}
+		return StartConsentRequired{Consent: *dto.ManagedPACConsent}
+	case StartResultConsentDeclined:
+		return StartConsentDeclined{}
+	case StartResultNoManageablePACServices:
+		if dto.ManagedPACConsent == nil {
+			return nil
+		}
+		return StartNoManageablePACServices{Consent: *dto.ManagedPACConsent}
+	case StartResultManagedPACInstallationFailed:
+		return StartManagedPACInstallationFailed{Warnings: dto.ManagedPACWarnings, Diagnostic: dto.Diagnostic}
+	case StartResultStartAlreadyMutating:
+		return StartAlreadyMutating{}
+	case StartResultStopCancelled:
+		return StartStopCancelled{}
+	case StartResultCleanupFailed:
+		return StartCleanupFailed{Warnings: dto.ManagedPACWarnings, Failures: dto.CleanupFailures}
+	default:
+		return nil
 	}
 }
 

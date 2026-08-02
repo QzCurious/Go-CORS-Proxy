@@ -29,8 +29,8 @@ func TestStartReturnsOwnerTransitionWhenOwnershipLeaseIsHeldWithoutPublishedOwne
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultOwnerTransition {
-		t.Fatalf("start kind = %s, want %s", result.Kind, StartResultOwnerTransition)
+	if result.Kind() != StartResultOwnerTransition {
+		t.Fatalf("start kind = %s, want %s", result.Kind(), StartResultOwnerTransition)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestStartRoutesToExistingServeOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StartResultStarted {
+	if result.Kind() != StartResultStarted {
 		t.Fatalf("routed start = %#v", result)
 	}
 	if target, err := discover(); err != nil || target.kind != targetActive {

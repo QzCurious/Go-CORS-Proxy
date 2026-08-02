@@ -31,8 +31,8 @@ func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if start.Kind != StartResultStopCancelled {
-		t.Fatalf("start kind = %s, want %s", start.Kind, StartResultStopCancelled)
+	if start.Kind() != StartResultStopCancelled {
+		t.Fatalf("start kind = %s, want %s", start.Kind(), StartResultStopCancelled)
 	}
 
 	close(releaseCleanup)
@@ -82,8 +82,8 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if start.Kind != StartResultStopCancelled {
-		t.Fatalf("start kind = %s, want %s", start.Kind, StartResultStopCancelled)
+	if start.Kind() != StartResultStopCancelled {
+		t.Fatalf("start kind = %s, want %s", start.Kind(), StartResultStopCancelled)
 	}
 }
 

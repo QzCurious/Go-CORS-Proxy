@@ -62,9 +62,19 @@ func (c *client) Start(ctx context.Context, request StartRequest) (StartResult, 
 	var success startSuccessBody
 	err := c.callJSON(ctx, http.MethodPost, "/start", request, &success)
 	if err == nil {
+		if success.Changed && success.Guidance == nil {
+			return nil, fmt.Errorf("/start returned a started result without guidance")
+		}
+		if !success.Changed && success.Guidance != nil {
+			return nil, fmt.Errorf("/start returned already-running with guidance")
+		}
 		return success.semantic(), nil
 	}
-	return decodeCommandFailure(err, knownStartFailureKind, startFailureDetails.semantic)
+	result, decodeErr := decodeCommandFailure(err, knownStartFailureKind, startFailureDetails.semantic)
+	if decodeErr == nil && result == nil {
+		return nil, fmt.Errorf("/start returned an incomplete failure result")
+	}
+	return result, decodeErr
 }
 
 func (c *client) Stop(ctx context.Context) (StopResult, error) {
@@ -194,7 +204,7 @@ func decodeCommandFailure[K ~string, D, R any](
 	return semantic(details, kind), nil
 }
 
-func knownStartFailureKind(kind StartResultKind) bool {
+func knownStartFailureKind(kind StartKind) bool {
 	switch kind {
 	case StartResultOwnerTransition,
 		StartResultConsentRequired,

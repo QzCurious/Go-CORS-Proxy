@@ -74,7 +74,7 @@ func (f *fakeSettings) ClearOwned(_ context.Context, serviceNames []string) erro
 	selected := stringSet(serviceNames)
 	for index := range f.states {
 		state := &f.states[index]
-		if _, ok := selected[state.ServiceName]; ok && isOwnedURL(state.PACURL) {
+		if _, ok := selected[state.ServiceName]; ok && IsOwnedURL(state.PACURL) {
 			state.PACURL = ""
 			state.Enabled = false
 		}
@@ -380,8 +380,8 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 		"http://proxy.example.test/seamless-cors.pac":    false,
 	}
 	for raw, want := range tests {
-		if got := isOwnedURL(raw); got != want {
-			t.Fatalf("isOwnedURL(%q) = %t, want %t", raw, got, want)
+		if got := IsOwnedURL(raw); got != want {
+			t.Fatalf("IsOwnedURL(%q) = %t, want %t", raw, got, want)
 		}
 	}
 }

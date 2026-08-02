@@ -129,10 +129,7 @@ func TestStartPropagatesRequestContext(t *testing.T) {
 }
 
 func TestStartFailureUsesSharedErrorShell(t *testing.T) {
-	handler := &fakeCommandHandler{startResult: StartResult{
-		Kind:       StartResultManagedPACInstallationFailed,
-		Diagnostic: "PAC install failed",
-	}}
+	handler := &fakeCommandHandler{startResult: StartManagedPACInstallationFailed{Diagnostic: "PAC install failed"}}
 	server := newRouter("token", handler)
 	req := httptest.NewRequest(http.MethodPost, "/start", nil)
 	req.Header.Set(tokenHeader, "token")
@@ -162,7 +159,7 @@ func TestStartFailureUsesSharedErrorShell(t *testing.T) {
 }
 
 func TestStartSuccessIsBareSubjectResponse(t *testing.T) {
-	handler := &fakeCommandHandler{startResult: StartResult{Kind: StartResultStarted}}
+	handler := &fakeCommandHandler{startResult: Started{}}
 	server := newRouter("token", handler)
 	req := httptest.NewRequest(http.MethodPost, "/start", nil)
 	req.Header.Set(tokenHeader, "token")
@@ -239,8 +236,8 @@ func (f *fakeCommandHandler) ExecuteStart(ctx context.Context, request StartRequ
 	f.startRequest = request
 	f.startContext = ctx
 	result := f.startResult
-	if result.Kind == "" {
-		result.Kind = StartResultStarted
+	if result == nil {
+		result = Started{}
 	}
 	return result, f.startErr
 }

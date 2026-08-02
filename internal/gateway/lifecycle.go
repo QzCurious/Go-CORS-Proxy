@@ -18,7 +18,10 @@ var (
 	errOwnerTransition = errors.New("gateway ownership is transitioning")
 )
 
-type StartResultKind string
+// StartKind identifies the semantic outcome of a Start operation.  Start
+// outcomes are deliberately scoped to Start; they are not shared with the
+// other Gateway commands.
+type StartKind string
 
 type CommandFulfillment string
 
@@ -28,44 +31,146 @@ const (
 )
 
 const (
-	StartResultStarted                      StartResultKind = "started"
-	StartResultAlreadyRunning               StartResultKind = "already-running"
-	StartResultOwnerTransition              StartResultKind = "owner-transition"
-	StartResultConsentRequired              StartResultKind = "managed-pac-consent-required"
-	StartResultConsentDeclined              StartResultKind = "managed-pac-consent-declined"
-	StartResultNoManageablePACServices      StartResultKind = "no-manageable-pac-services"
-	StartResultManagedPACInstallationFailed StartResultKind = "managed-pac-installation-failed"
-	StartResultStartAlreadyMutating         StartResultKind = "start-already-mutating"
-	StartResultStopCancelled                StartResultKind = "stop-cancelled"
-	StartResultCleanupFailed                StartResultKind = "cleanup-failed"
+	StartResultStarted                      StartKind = "started"
+	StartResultAlreadyRunning               StartKind = "already-running"
+	StartResultOwnerTransition              StartKind = "owner-transition"
+	StartResultConsentRequired              StartKind = "managed-pac-consent-required"
+	StartResultConsentDeclined              StartKind = "managed-pac-consent-declined"
+	StartResultNoManageablePACServices      StartKind = "no-manageable-pac-services"
+	StartResultManagedPACInstallationFailed StartKind = "managed-pac-installation-failed"
+	StartResultStartAlreadyMutating         StartKind = "start-already-mutating"
+	StartResultStopCancelled                StartKind = "stop-cancelled"
+	StartResultCleanupFailed                StartKind = "cleanup-failed"
 )
 
 type StartRequest struct {
 	ManagedPACConsent *ManagedPACConsentInput `json:"managedPacConsent,omitempty"`
 }
 
-type StartResult struct {
-	Kind               StartResultKind
-	ManagedPACConsent  *ManagedPACConsentDetail
-	ManagedPACWarnings []ManagedPACWarningDetail
-	Diagnostic         string
-	Guidance           *StartGuidanceDetail
-	CleanupFailures    []CleanupFailureDetail
+// StartResult is the closed semantic result of a Start operation.  Concrete
+// variants carry only the payload that is legal for that outcome.
+type StartResult interface {
+	Kind() StartKind
+	Fulfillment() CommandFulfillment
+	startResult()
 }
 
-func (r StartResult) Fulfillment() CommandFulfillment {
-	if r.Kind == StartResultStarted || r.Kind == StartResultAlreadyRunning {
+// Started reports that the runtime was started and includes the initial
+// guidance snapshot.
+type Started struct {
+	Guidance StartGuidance
+}
+
+// AlreadyRunning reports that a runtime was already active.
+type AlreadyRunning struct{}
+
+// StartOwnerTransition reports that ownership is being acquired or released.
+type StartOwnerTransition struct{}
+
+// StartConsentRequired reports the managed PAC services requiring confirmation.
+type StartConsentRequired struct {
+	Consent ManagedPACConsent
+}
+
+// StartConsentDeclined reports that managed PAC consent was declined.
+type StartConsentDeclined struct{}
+
+// StartNoManageablePACServices reports that managed PAC inspection found no
+// services that can be managed.  Consent contains the inspection snapshot.
+type StartNoManageablePACServices struct {
+	Consent ManagedPACConsent
+}
+
+// StartManagedPACInstallationFailed reports a failed PAC installation and any
+// warnings produced while attempting it.
+type StartManagedPACInstallationFailed struct {
+	Warnings   []ManagedPACWarningDetail
+	Diagnostic string
+}
+
+// StartAlreadyMutating reports that another start/CA mutation is in progress.
+type StartAlreadyMutating struct{}
+
+// StartStopCancelled reports that Stop cancelled the Start operation.
+type StartStopCancelled struct{}
+
+// StartCleanupFailed reports cleanup failures.  Warnings are retained when
+// they were produced by a failed Managed PAC installation before cleanup.
+type StartCleanupFailed struct {
+	Failures []CleanupFailure
+	Warnings []ManagedPACWarningDetail
+}
+
+func startFulfillment(kind StartKind) CommandFulfillment {
+	if kind == StartResultStarted || kind == StartResultAlreadyRunning {
 		return CommandFulfilled
 	}
 	return CommandUnfulfilled
 }
 
-type ManagedPACConsentDetail struct {
+func (Started) Kind() StartKind                 { return StartResultStarted }
+func (Started) Fulfillment() CommandFulfillment { return startFulfillment(StartResultStarted) }
+func (Started) startResult()                    {}
+func (AlreadyRunning) Kind() StartKind          { return StartResultAlreadyRunning }
+func (AlreadyRunning) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultAlreadyRunning)
+}
+func (AlreadyRunning) startResult()          {}
+func (StartOwnerTransition) Kind() StartKind { return StartResultOwnerTransition }
+func (StartOwnerTransition) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultOwnerTransition)
+}
+func (StartOwnerTransition) startResult()    {}
+func (StartConsentRequired) Kind() StartKind { return StartResultConsentRequired }
+func (StartConsentRequired) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultConsentRequired)
+}
+func (StartConsentRequired) startResult()    {}
+func (StartConsentDeclined) Kind() StartKind { return StartResultConsentDeclined }
+func (StartConsentDeclined) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultConsentDeclined)
+}
+func (StartConsentDeclined) startResult() {}
+func (StartNoManageablePACServices) Kind() StartKind {
+	return StartResultNoManageablePACServices
+}
+func (StartNoManageablePACServices) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultNoManageablePACServices)
+}
+func (StartNoManageablePACServices) startResult() {}
+func (StartManagedPACInstallationFailed) Kind() StartKind {
+	return StartResultManagedPACInstallationFailed
+}
+func (StartManagedPACInstallationFailed) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultManagedPACInstallationFailed)
+}
+func (StartManagedPACInstallationFailed) startResult() {}
+func (StartAlreadyMutating) Kind() StartKind           { return StartResultStartAlreadyMutating }
+func (StartAlreadyMutating) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultStartAlreadyMutating)
+}
+func (StartAlreadyMutating) startResult()  {}
+func (StartStopCancelled) Kind() StartKind { return StartResultStopCancelled }
+func (StartStopCancelled) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultStopCancelled)
+}
+func (StartStopCancelled) startResult()    {}
+func (StartCleanupFailed) Kind() StartKind { return StartResultCleanupFailed }
+func (StartCleanupFailed) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultCleanupFailed)
+}
+func (StartCleanupFailed) startResult() {}
+
+type ManagedPACConsent struct {
 	CurrentPACState  []ManagedPACServiceState `json:"currentPacState"`
 	ProposedServices []string                 `json:"proposedServices"`
 	CleanupMode      CleanupMode              `json:"cleanupMode"`
 	Fingerprint      PACConsentFingerprint    `json:"fingerprint"`
 }
+
+// ManagedPACConsentDetail is retained as a representation-oriented alias for
+// existing control-surface helpers; Start variants use ManagedPACConsent.
+type ManagedPACConsentDetail = ManagedPACConsent
 
 type CleanupMode string
 
@@ -94,7 +199,7 @@ type ManagedPACConsentInput struct {
 
 type PACConsentFingerprint string
 
-type StartGuidanceDetail struct {
+type StartGuidance struct {
 	UpstreamListPath     string                      `json:"upstreamListPath"`
 	ManagedPACActive     bool                        `json:"managedPacActive"`
 	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
@@ -105,6 +210,10 @@ type StartGuidanceDetail struct {
 	ManagedPACWarnings   []ManagedPACWarningDetail   `json:"managedPacWarnings,omitempty"`
 	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
 }
+
+// StartGuidanceDetail is retained as a representation-oriented alias for
+// existing control-surface helpers; Started uses StartGuidance.
+type StartGuidanceDetail = StartGuidance
 
 type UpstreamListWarningDetail struct {
 	Line       int    `json:"line"`
@@ -134,10 +243,14 @@ func (r StopResult) Fulfillment() CommandFulfillment {
 	return CommandUnfulfilled
 }
 
-type CleanupFailureDetail struct {
+type CleanupFailure struct {
 	Subject    CleanupSubjectKind `json:"subject"`
 	Diagnostic string             `json:"diagnostic,omitempty"`
 }
+
+// CleanupFailureDetail is retained as a representation-oriented alias for
+// existing stop and cleanup surfaces; StartCleanupFailed uses CleanupFailure.
+type CleanupFailureDetail = CleanupFailure
 
 type CleanupSubjectKind string
 
@@ -483,23 +596,23 @@ func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (Sta
 	f.mu.Lock()
 	if f.ownerEnding {
 		f.mu.Unlock()
-		return StartResult{Kind: StartResultStopCancelled}, nil
+		return StartStopCancelled{}, nil
 	}
 	if f.transientOwner {
 		f.mu.Unlock()
-		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
+		return StartAlreadyMutating{}, nil
 	}
 	if f.runtime != nil {
 		f.mu.Unlock()
-		return StartResult{Kind: StartResultAlreadyRunning}, nil
+		return AlreadyRunning{}, nil
 	}
 	if f.startMutating {
 		f.mu.Unlock()
-		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
+		return StartAlreadyMutating{}, nil
 	}
 	if f.caMutating {
 		f.mu.Unlock()
-		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
+		return StartAlreadyMutating{}, nil
 	}
 	f.startMutating = true
 	startCtx, cancel := context.WithCancel(ctx)
@@ -693,7 +806,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	stillLive := f.runtime == active && active != nil
 	f.mu.Unlock()
 	if stillLive {
-		nextURL, recoveryErr := active.engine.RecoverHTTPS(current)
+		recoveryErr := active.engine.RecoverHTTPS(current)
 		if recoveryErr != nil {
 			return InstallResult{
 				Kind:               InstallResultRuntimeAdoptionFailed,
@@ -704,9 +817,6 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 					Action:     "Run `seamless-cors install` again.",
 				}},
 			}, nil
-		}
-		if nextURL != "" {
-			f.requestPACReconciliation(active, nextURL)
 		}
 	}
 	kind := InstallResultAlreadyUsable
@@ -763,12 +873,8 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 		f.mu.Unlock()
 		f.caAdmissionMu.Unlock()
 	}()
-	var nextURL string
 	if active != nil {
-		nextURL = active.engine.DeactivateHTTPS(userca.Snapshot{})
-		if nextURL != "" {
-			f.requestPACReconciliation(active, nextURL)
-		}
+		active.engine.DeactivateHTTPS(userca.Snapshot{})
 	}
 	result, err := f.userCA.Uninstall(context.Background())
 	if err != nil {
@@ -805,29 +911,53 @@ func (f *lifecycle) uninstallConsentFingerprint(active *activeRuntime) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (f *lifecycle) watchPACReconciliationRequests(ctx context.Context, active *activeRuntime) {
+// watchRuntimeChanges consumes coalesced current-state invalidations from the
+// runtime. Each notification is followed by one immutable snapshot read; the
+// snapshot revisions ensure that replacing a pending routing notification with
+// a warning notification cannot lose either concern.
+func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRuntime, baseline runtimeState) {
+	lastRoutingRevision := baseline.RoutingRevision
+	lastWarningsRevision := baseline.HTTPSWarningsRevision
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case nextURL := <-active.engine.PACURLUpdates():
-			f.requestPACReconciliation(active, nextURL)
-		}
-	}
-}
-
-func (f *lifecycle) watchHTTPSWarningUpdates(ctx context.Context, active *activeRuntime) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case warnings := <-active.engine.HTTPSWarningUpdates():
-			f.mu.Lock()
-			publish := f.httpsWarningsChanged
-			stillActive := f.runtime == active
-			f.mu.Unlock()
-			if publish != nil && stillActive {
-				publish(append([]HTTPSWarningDetail(nil), warnings...))
+		case kind := <-active.engine.RuntimeChanges():
+			state := active.engine.snapshot()
+			consumeRouting := func() {
+				if state.RoutingRevision == lastRoutingRevision {
+					return
+				}
+				lastRoutingRevision = state.RoutingRevision
+				f.requestPACReconciliation(active, state.PACURL)
+			}
+			consumeWarnings := func() {
+				if state.HTTPSWarningsRevision == lastWarningsRevision {
+					return
+				}
+				lastWarningsRevision = state.HTTPSWarningsRevision
+				f.mu.Lock()
+				publish := f.httpsWarningsChanged
+				stillActive := f.runtime == active
+				f.mu.Unlock()
+				if publish != nil && stillActive {
+					publish(append([]HTTPSWarningDetail(nil), state.HTTPSWarnings...))
+				}
+			}
+			// Process the indicated concern first. Then inspect the other
+			// revision too because the one-slot channel may have coalesced
+			// consecutive invalidations of different kinds.
+			switch kind {
+			case RoutingChanged:
+				consumeRouting()
+				consumeWarnings()
+			case HTTPSWarningsChanged:
+				consumeWarnings()
+				consumeRouting()
+			default:
+				// Unknown kinds are ignored; the scoped vocabulary is private
+				// to Gateway Runtime and this keeps a malformed notification
+				// from stopping lifecycle orchestration.
 			}
 		}
 	}

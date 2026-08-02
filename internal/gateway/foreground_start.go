@@ -17,14 +17,14 @@ type StartHooks struct {
 func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
 	target, err := discover()
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 	if target.kind == targetActive {
 		return executeAndStartClient(ctx, target.client, hooks)
 	}
 	ca, err := openSystemUserCA()
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 	return start(ctx, openSystemManagedPAC(), ca, hooks)
 }
@@ -32,21 +32,21 @@ func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
 func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks StartHooks) (StartResult, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 	lease, acquired, err := coord.AcquireOwnershipLease()
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 	if !acquired {
 		target, discoverErr := discover()
 		if discoverErr != nil {
-			return StartResult{}, discoverErr
+			return nil, discoverErr
 		}
 		if target.kind == targetActive {
 			return executeAndStartClient(ctx, target.client, hooks)
 		}
-		return StartResult{Kind: StartResultOwnerTransition}, nil
+		return StartOwnerTransition{}, nil
 	}
 	releaseLease := true
 	defer func() {
@@ -59,11 +59,11 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 	}
 	failures := cleanGatewayFootprint(ctx, pac, coord, nil)
 	if len(failures) > 0 {
-		return StartResult{Kind: StartResultCleanupFailed, CleanupFailures: failures}, nil
+		return StartCleanupFailed{Failures: failures}, nil
 	}
 	owner, err := newOwnerWithCoordinator(pac, ca, coord)
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 	owner.lease = lease
 	releaseLease = false
@@ -75,8 +75,11 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 		if err != nil {
 			return err
 		}
-		if start.Kind != StartResultStarted {
-			return fmt.Errorf("%w: %s", errStartNotActivated, start.Kind)
+		if start == nil || start.Kind() != StartResultStarted {
+			if start == nil {
+				return fmt.Errorf("%w: nil result", errStartNotActivated)
+			}
+			return fmt.Errorf("%w: %s", errStartNotActivated, start.Kind())
 		}
 		owner.lifecycle.SetHTTPSWarningsChanged(hooks.HTTPSWarningsChanged)
 		return nil
@@ -152,34 +155,32 @@ func executeStartLoop(
 		if err != nil {
 			return result, err
 		}
-		switch result.Kind {
-		case StartResultStarted, StartResultAlreadyRunning:
-			result.Kind = StartResultStarted
+		if result == nil {
+			return nil, fmt.Errorf("gateway start returned nil result")
+		}
+		switch typed := result.(type) {
+		case Started, AlreadyRunning,
+			StartStopCancelled, StartCleanupFailed, StartAlreadyMutating,
+			StartNoManageablePACServices, StartManagedPACInstallationFailed,
+			StartOwnerTransition, StartConsentDeclined:
 			return result, nil
-		case StartResultStopCancelled, StartResultCleanupFailed, StartResultStartAlreadyMutating,
-			StartResultNoManageablePACServices, StartResultManagedPACInstallationFailed:
-			return result, nil
-		case StartResultConsentRequired:
-			if result.ManagedPACConsent == nil {
-				return result, fmt.Errorf("consent-required start omitted Managed PAC Consent Detail")
-			}
+		case StartConsentRequired:
 			accepted := false
 			if hooks.ConfirmManagedPAC != nil {
-				accepted, err = hooks.ConfirmManagedPAC(ctx, *result.ManagedPACConsent)
+				accepted, err = hooks.ConfirmManagedPAC(ctx, typed.Consent)
 				if err != nil {
 					return result, err
 				}
 			}
 			if !accepted {
-				result.Kind = StartResultConsentDeclined
-				return result, nil
+				return StartConsentDeclined{}, nil
 			}
 			request.ManagedPACConsent = &ManagedPACConsentInput{
-				ServiceNames: append([]string(nil), result.ManagedPACConsent.ProposedServices...),
-				Fingerprint:  result.ManagedPACConsent.Fingerprint,
+				ServiceNames: append([]string(nil), typed.Consent.ProposedServices...),
+				Fingerprint:  typed.Consent.Fingerprint,
 			}
 		default:
-			return result, fmt.Errorf("gateway start did not activate runtime: %s", result.Kind)
+			return result, fmt.Errorf("gateway start did not activate runtime: %s", result.Kind())
 		}
 	}
 }

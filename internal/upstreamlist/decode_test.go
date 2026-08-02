@@ -16,18 +16,51 @@ http://[::1]:3000
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := UpstreamList{
-		HostSelectors: []HostSelector{
-			{Hostname: "api.example.test", HostnameMatch: HostnameExact},
-			{Hostname: "qa.example.test", HostnameMatch: HostnameSingleLevel},
-		},
-		OriginSelectors: []OriginSelector{
-			{Scheme: "https", Hostname: "example.test", Port: "443"},
-			{Scheme: "http", Hostname: "::1", Port: "3000"},
-		},
-	}
+	want := NewUpstreamList(NewEntries([]HostSelector{
+		{Hostname: "api.example.test", HostnameMatch: HostnameExact},
+		{Hostname: "qa.example.test", HostnameMatch: HostnameSingleLevel},
+	}, []OriginSelector{
+		{Scheme: "https", Hostname: "example.test", Port: "443"},
+		{Scheme: "http", Hostname: "::1", Port: "3000"},
+	}), nil)
 	if !reflect.DeepEqual(decoded, want) {
 		t.Fatalf("decoded = %#v, want %#v", decoded, want)
+	}
+}
+
+func TestUpstreamListOwnsImmutableEntrySemantics(t *testing.T) {
+	hosts := []HostSelector{{Hostname: "api.example.test", HostnameMatch: HostnameExact}}
+	origins := []OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}}
+	warnings := []Warning{{Line: 1, Text: "bad", Diagnostic: "invalid"}}
+	list := NewUpstreamList(NewEntries(hosts, origins), warnings)
+
+	hosts[0].Hostname = "mutated.example.test"
+	origins[0].Hostname = "mutated.example.test"
+	warnings[0].Diagnostic = "mutated"
+	entries := list.Entries()
+	if entries.Count() != 2 || !entries.HTTPSIntent() {
+		t.Fatalf("entry semantics = count %d, https intent %t", entries.Count(), entries.HTTPSIntent())
+	}
+	if entries.HostSelectors()[0].Hostname != "api.example.test" ||
+		entries.OriginSelectors()[0].Hostname != "secure.example.test" ||
+		list.Warnings()[0].Diagnostic != "invalid" {
+		t.Fatalf("list was mutated through constructor inputs: %#v", list)
+	}
+
+	gotHosts := entries.HostSelectors()
+	gotHosts[0].Hostname = "another.example.test"
+	if list.Entries().HostSelectors()[0].Hostname != "api.example.test" {
+		t.Fatal("list was mutated through entry accessor")
+	}
+}
+
+func TestHTTPSIntentIgnoresHostAndHTTPSelectors(t *testing.T) {
+	list := NewUpstreamList(NewEntries(
+		[]HostSelector{{Hostname: "api.example.test", HostnameMatch: HostnameExact}},
+		[]OriginSelector{{Scheme: "http", Hostname: "plain.example.test"}},
+	), nil)
+	if list.HTTPSIntent() {
+		t.Fatal("HTTP-only entries should not express HTTPS intent")
 	}
 }
 
@@ -44,8 +77,8 @@ https://example.test:0443
 		{Scheme: "https", Hostname: "example.test"},
 		{Scheme: "https", Hostname: "example.test", Port: "443"},
 	}
-	if !reflect.DeepEqual(decoded.OriginSelectors, want) {
-		t.Fatalf("Origin Selectors = %#v, want %#v", decoded.OriginSelectors, want)
+	if !reflect.DeepEqual(decoded.Entries().OriginSelectors(), want) {
+		t.Fatalf("Origin Selectors = %#v, want %#v", decoded.Entries().OriginSelectors(), want)
 	}
 }
 
@@ -59,14 +92,11 @@ https://example.test:443
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := UpstreamList{
-		HostSelectors: []HostSelector{
-			{Hostname: "example.test", HostnameMatch: HostnameExact},
-		},
-		OriginSelectors: []OriginSelector{
-			{Scheme: "https", Hostname: "example.test", Port: "443"},
-		},
-	}
+	want := NewUpstreamList(NewEntries([]HostSelector{
+		{Hostname: "example.test", HostnameMatch: HostnameExact},
+	}, []OriginSelector{
+		{Scheme: "https", Hostname: "example.test", Port: "443"},
+	}), nil)
 	if !reflect.DeepEqual(decoded, want) {
 		t.Fatalf("decoded = %#v, want %#v", decoded, want)
 	}
@@ -90,8 +120,8 @@ https://example.test:99999
 		{Scheme: "http", Hostname: "example.test", Port: "80"},
 		{Scheme: "https", Hostname: "example.test", Port: "99999"},
 	}
-	if !reflect.DeepEqual(decoded.OriginSelectors, want) {
-		t.Fatalf("Origin Selectors = %#v, want %#v", decoded.OriginSelectors, want)
+	if !reflect.DeepEqual(decoded.Entries().OriginSelectors(), want) {
+		t.Fatalf("Origin Selectors = %#v, want %#v", decoded.Entries().OriginSelectors(), want)
 	}
 }
 
@@ -111,23 +141,25 @@ example.test
 		{Hostname: "internal", HostnameMatch: HostnameRecursive},
 		{Hostname: "::1", HostnameMatch: HostnameExact},
 	}
-	if !reflect.DeepEqual(decoded.HostSelectors, want) {
-		t.Fatalf("Host Selectors = %#v, want %#v", decoded.HostSelectors, want)
+	if !reflect.DeepEqual(decoded.Entries().HostSelectors(), want) {
+		t.Fatalf("Host Selectors = %#v, want %#v", decoded.Entries().HostSelectors(), want)
 	}
 }
 
 func TestSameEntriesComparesNormalizedPortValues(t *testing.T) {
-	left := UpstreamList{OriginSelectors: []OriginSelector{
+	left := NewUpstreamList(NewEntries(nil, []OriginSelector{
 		{Scheme: "https", Hostname: "example.test", Port: "443"},
-	}}
-	right := UpstreamList{OriginSelectors: []OriginSelector{
+	}), nil)
+	right := NewUpstreamList(NewEntries(nil, []OriginSelector{
 		{Scheme: "https", Hostname: "example.test", Port: "443"},
-	}}
+	}), nil)
 	if !SameEntries(left, right) {
 		t.Fatal("equal explicit port values should identify the same entry")
 	}
 
-	right.OriginSelectors[0].Port = ""
+	right = NewUpstreamList(NewEntries(nil, []OriginSelector{
+		{Scheme: "https", Hostname: "example.test"},
+	}), nil)
 	if SameEntries(left, right) {
 		t.Fatal("omitted and explicit default ports should remain distinct entries")
 	}
@@ -146,9 +178,9 @@ func TestDecodeDiscardsOriginUserInformation(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []OriginSelector{{Scheme: "https", Hostname: "example.test"}}
-	if !reflect.DeepEqual(decoded.OriginSelectors, want) ||
-		len(decoded.HostSelectors) != 0 ||
-		len(decoded.Warnings) != 0 {
+	if !reflect.DeepEqual(decoded.Entries().OriginSelectors(), want) ||
+		decoded.Entries().Count() != 1 ||
+		len(decoded.Warnings()) != 0 {
 		t.Fatalf("decode result = %#v", decoded)
 	}
 }
@@ -163,15 +195,15 @@ api#bad.example.test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.HostSelectors) != 1 ||
-		decoded.HostSelectors[0].Hostname != "valid.example.test" {
-		t.Fatalf("Host Selectors = %#v", decoded.HostSelectors)
+	if len(decoded.Entries().HostSelectors()) != 1 ||
+		decoded.Entries().HostSelectors()[0].Hostname != "valid.example.test" {
+		t.Fatalf("Host Selectors = %#v", decoded.Entries().HostSelectors())
 	}
-	if len(decoded.Warnings) != 3 ||
-		decoded.Warnings[0].Line != 3 ||
-		decoded.Warnings[1].Line != 4 ||
-		decoded.Warnings[2].Line != 5 {
-		t.Fatalf("warnings = %#v", decoded.Warnings)
+	if len(decoded.Warnings()) != 3 ||
+		decoded.Warnings()[0].Line != 3 ||
+		decoded.Warnings()[1].Line != 4 ||
+		decoded.Warnings()[2].Line != 5 {
+		t.Fatalf("warnings = %#v", decoded.Warnings())
 	}
 }
 
@@ -195,12 +227,10 @@ https:///missing-host
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.HostSelectors) != 0 ||
-		len(decoded.OriginSelectors) != 0 ||
-		len(decoded.Warnings) != 14 {
+	if decoded.Count() != 0 || len(decoded.Warnings()) != 14 {
 		t.Fatalf("decoded = %#v", decoded)
 	}
-	for idx, warning := range decoded.Warnings {
+	for idx, warning := range decoded.Warnings() {
 		wantLine := idx + 2
 		if warning.Line != wantLine || warning.Text == "" || warning.Diagnostic == "" {
 			t.Fatalf("warning %d = %#v, want source line %d", idx, warning, wantLine)
@@ -217,12 +247,12 @@ valid.example.test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.OriginSelectors) != 0 ||
-		len(decoded.HostSelectors) != 1 ||
-		len(decoded.Warnings) != 2 {
+	if len(decoded.Entries().OriginSelectors()) != 0 ||
+		len(decoded.Entries().HostSelectors()) != 1 ||
+		len(decoded.Warnings()) != 2 {
 		t.Fatalf("decoded = %#v", decoded)
 	}
-	for _, warning := range decoded.Warnings {
+	for _, warning := range decoded.Warnings() {
 		if !strings.Contains(warning.Diagnostic, "port must not be empty") {
 			t.Fatalf("warning = %#v", warning)
 		}
@@ -237,7 +267,7 @@ func TestDecodeRequiresASCIIOrPunycodeHostname(t *testing.T) {
 	want := []HostSelector{
 		{Hostname: "xn--fsq.example", HostnameMatch: HostnameExact},
 	}
-	if len(decoded.Warnings) != 1 || !reflect.DeepEqual(decoded.HostSelectors, want) {
+	if len(decoded.Warnings()) != 1 || !reflect.DeepEqual(decoded.Entries().HostSelectors(), want) {
 		t.Fatalf("decoded = %#v", decoded)
 	}
 }
@@ -247,15 +277,15 @@ func TestDecodeRemovesInlineCommentsAndRejectsNonHostnameText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.HostSelectors) != 1 ||
-		decoded.HostSelectors[0].Hostname != "api.example.test" {
-		t.Fatalf("Host Selectors = %#v", decoded.HostSelectors)
+	if len(decoded.Entries().HostSelectors()) != 1 ||
+		decoded.Entries().HostSelectors()[0].Hostname != "api.example.test" {
+		t.Fatalf("Host Selectors = %#v", decoded.Entries().HostSelectors())
 	}
-	if len(decoded.Warnings) != 1 ||
-		decoded.Warnings[0].Line != 1 ||
-		decoded.Warnings[0].Text != "api#bad.example.test" ||
-		!strings.Contains(decoded.Warnings[0].Diagnostic, "only a hostname") {
-		t.Fatalf("warnings = %#v", decoded.Warnings)
+	if len(decoded.Warnings()) != 1 ||
+		decoded.Warnings()[0].Line != 1 ||
+		decoded.Warnings()[0].Text != "api#bad.example.test" ||
+		!strings.Contains(decoded.Warnings()[0].Diagnostic, "only a hostname") {
+		t.Fatalf("warnings = %#v", decoded.Warnings())
 	}
 }
 
@@ -265,9 +295,9 @@ func TestOriginSelectorDoesNotApplyHostWildcardSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []OriginSelector{{Scheme: "https", Hostname: "*.example.test"}}
-	if !reflect.DeepEqual(decoded.OriginSelectors, want) ||
-		len(decoded.HostSelectors) != 0 ||
-		len(decoded.Warnings) != 0 {
+	if !reflect.DeepEqual(decoded.Entries().OriginSelectors(), want) ||
+		len(decoded.Entries().HostSelectors()) != 0 ||
+		len(decoded.Warnings()) != 0 {
 		t.Fatalf("decode result = %#v", decoded)
 	}
 }

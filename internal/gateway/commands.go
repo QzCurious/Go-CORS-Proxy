@@ -11,10 +11,10 @@ import (
 func StartRouterHosted(ctx context.Context, request StartRequest) (StartResult, error) {
 	target, err := discover()
 	if err != nil {
-		return StartResult{}, err
+		return nil, err
 	}
 	if target.kind != targetActive {
-		return StartResult{}, fmt.Errorf("gateway owner is not running")
+		return nil, fmt.Errorf("gateway owner is not running")
 	}
 	return target.client.Start(ctx, request)
 }

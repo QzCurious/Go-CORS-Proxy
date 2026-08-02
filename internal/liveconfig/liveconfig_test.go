@@ -63,7 +63,7 @@ func TestSnapshotLoadsOnceAndReturnsCachedSemanticValue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := second.UpstreamList().HostSelectors
+	entries := second.UpstreamList().Entries().HostSelectors()
 	if len(entries) != 1 || entries[0].Hostname != "first.example.test" {
 		t.Fatalf("cached entries = %#v", entries)
 	}
@@ -81,14 +81,16 @@ func TestSnapshotUpstreamListIsImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	list := snapshot.UpstreamList()
-	list.HostSelectors[0].Hostname = "mutated.example.test"
-	list.Warnings[0].Diagnostic = "mutated"
+	hosts := list.Entries().HostSelectors()
+	hosts[0].Hostname = "mutated.example.test"
+	warnings := list.Warnings()
+	warnings[0].Diagnostic = "mutated"
 
 	reloaded := snapshot.UpstreamList()
-	if reloaded.HostSelectors[0].Hostname != "api.example.test" {
-		t.Fatalf("snapshot host mutated to %q", reloaded.HostSelectors[0].Hostname)
+	if reloaded.Entries().HostSelectors()[0].Hostname != "api.example.test" {
+		t.Fatalf("snapshot host mutated to %q", reloaded.Entries().HostSelectors()[0].Hostname)
 	}
-	if reloaded.Warnings[0].Diagnostic == "mutated" {
+	if reloaded.Warnings()[0].Diagnostic == "mutated" {
 		t.Fatal("snapshot warning mutated")
 	}
 }
@@ -105,7 +107,7 @@ func TestObservePublishesInitialSnapshotWhenCacheIsEmpty(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.UpstreamList().HostSelectors
+	entries := event.Snapshot.UpstreamList().Entries().HostSelectors()
 	if len(entries) != 1 || entries[0].Hostname != "api.example.test" {
 		t.Fatalf("initial entries = %#v", entries)
 	}
@@ -125,7 +127,7 @@ func TestObserveReconcilesCachedSnapshotBeforeWaitingForEvents(t *testing.T) {
 	event := waitForEvent(t, events)
 	cancel()
 
-	entries := event.Snapshot.UpstreamList().HostSelectors
+	entries := event.Snapshot.UpstreamList().Entries().HostSelectors()
 	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
 		t.Fatalf("reconciled entries = %#v", entries)
 	}
@@ -145,7 +147,7 @@ func TestObservePublishesSemanticChangesAndUpdatesCache(t *testing.T) {
 
 	writeFile(t, upstreamPath, "second.example.test\n")
 	changed := waitForEvent(t, events).Snapshot
-	entries := changed.UpstreamList().HostSelectors
+	entries := changed.UpstreamList().Entries().HostSelectors()
 	if len(entries) != 1 || entries[0].Hostname != "second.example.test" {
 		t.Fatalf("changed entries = %#v", entries)
 	}
@@ -186,8 +188,8 @@ func TestObservePublishesWarningsWithoutAdvancingEntryRevision(t *testing.T) {
 
 	writeFile(t, upstreamPath, "api.example.test\nbad/path\n")
 	warned := waitForEvent(t, events).Snapshot
-	if len(warned.UpstreamList().Warnings) != 1 {
-		t.Fatalf("warnings = %#v", warned.UpstreamList().Warnings)
+	if len(warned.UpstreamList().Warnings()) != 1 {
+		t.Fatalf("warnings = %#v", warned.UpstreamList().Warnings())
 	}
 	if warned.UpstreamListEntriesRevision() != initial.UpstreamListEntriesRevision() {
 		t.Fatal("warning advanced Upstream List Entries Revision")
@@ -212,7 +214,7 @@ func TestObserveSurvivesTransientMissingUpstreamList(t *testing.T) {
 	if event.Err != nil {
 		t.Fatal(event.Err)
 	}
-	entries := event.Snapshot.UpstreamList().HostSelectors
+	entries := event.Snapshot.UpstreamList().Entries().HostSelectors()
 	if len(entries) != 1 || entries[0].Hostname != "recovered.example.test" {
 		t.Fatalf("recovered entries = %#v", entries)
 	}
@@ -261,7 +263,7 @@ func TestLegacyConfigFileIsIgnored(t *testing.T) {
 	if snapshot.UpstreamListPath() != upstreamPath {
 		t.Fatalf("Upstream List path = %q, want %q", snapshot.UpstreamListPath(), upstreamPath)
 	}
-	entries := snapshot.UpstreamList().HostSelectors
+	entries := snapshot.UpstreamList().Entries().HostSelectors()
 	if len(entries) != 1 || entries[0].Hostname != "fixed.example.test" {
 		t.Fatalf("entries = %#v", entries)
 	}

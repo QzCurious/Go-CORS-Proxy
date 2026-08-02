@@ -144,7 +144,7 @@ func (c *Config) readFromSourceLocked(observed bool) (Snapshot, error) {
 func sameSemanticSnapshot(left, right Snapshot) bool {
 	if left.upstreamListPath != right.upstreamListPath ||
 		left.upstreamListEntriesRevision != right.upstreamListEntriesRevision ||
-		!slices.Equal(left.upstreamList.Warnings, right.upstreamList.Warnings) {
+		!slices.Equal(left.upstreamList.Warnings(), right.upstreamList.Warnings()) {
 		return false
 	}
 	return true
@@ -159,12 +159,11 @@ func snapshotFromUpstreamList(path string, decoded upstreamlist.UpstreamList, up
 }
 
 func cloneUpstreamList(source upstreamlist.UpstreamList) upstreamlist.UpstreamList {
-	cloned := upstreamlist.UpstreamList{
-		HostSelectors:   append([]upstreamlist.HostSelector(nil), source.HostSelectors...),
-		OriginSelectors: append([]upstreamlist.OriginSelector(nil), source.OriginSelectors...),
-		Warnings:        append([]upstreamlist.Warning(nil), source.Warnings...),
-	}
-	return cloned
+	entries := source.Entries()
+	return upstreamlist.NewUpstreamList(
+		upstreamlist.NewEntries(entries.HostSelectors(), entries.OriginSelectors()),
+		source.Warnings(),
+	)
 }
 
 func homeConfigDir() (string, error) {

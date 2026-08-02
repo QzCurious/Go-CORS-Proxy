@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"slices"
 	"sync"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
-	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
@@ -31,16 +29,29 @@ type trafficRuntime struct {
 	proxyConfigured             bool
 	httpsWarnings               []HTTPSWarningDetail
 	proxy                       *http.Server
-	pacHandler                  *pacrouting.DynamicHandler
+	pacRouting                  *pacrouting.Routing
 	pac                         *http.Server
 	listeners                   []net.Listener
 	liveConfig                  *liveconfig.Config
 	pacVersion                  uint64
-	pacUpdates                  chan string
-	httpsWarningUpdates         chan []HTTPSWarningDetail
+	runtimeChangesMu            sync.Mutex
+	runtimeChanges              chan RuntimeChangeKind
 	upstreamListEntriesRevision uint64
+	routingRevision             uint64
+	httpsWarningsRevision       uint64
 	now                         func() time.Time
 }
+
+// RuntimeChangeKind identifies the current-state concern invalidated by a
+// runtime mutation. Notifications are deliberately coalesced; consumers read
+// snapshot after receiving a kind instead of treating the notification as an
+// event history.
+type RuntimeChangeKind uint8
+
+const (
+	RoutingChanged RuntimeChangeKind = iota
+	HTTPSWarningsChanged
+)
 
 type dynamicHTTPHandler struct {
 	mu      sync.RWMutex
@@ -78,24 +89,20 @@ func newRuntime(config *liveconfig.Config, snapshot liveconfig.Snapshot) (*traff
 
 	proxyListen := proxyListener.Addr().String()
 
-	pacBody := pacrouting.Generate(pacrouting.Options{
-		ProxyListen:  proxyListen,
-		HTTPSActive:  false,
-		UpstreamList: snapshot.UpstreamList(),
-	})
-	pacHandler := pacrouting.NewDynamicHandler(pacBody)
+	pacRouting := pacrouting.NewRouting(proxyListen)
+	pacRouting.Apply(snapshot.UpstreamList().Entries(), false)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
 	return &trafficRuntime{
 		currentSnapshot:             snapshot,
 		liveConfig:                  config,
 		proxyHandler:                proxyHandler,
-		pacHandler:                  pacHandler,
+		pacRouting:                  pacRouting,
 		proxy:                       &http.Server{Handler: proxyHandler},
-		pac:                         &http.Server{Handler: pacHandler},
+		pac:                         &http.Server{Handler: pacRouting.Handler()},
 		listeners:                   []net.Listener{proxyListener, pacListener},
 		pacVersion:                  1,
-		pacUpdates:                  make(chan string, 1),
-		httpsWarningUpdates:         make(chan []HTTPSWarningDetail, 1),
+		routingRevision:             1,
+		runtimeChanges:              make(chan RuntimeChangeKind, 1),
 		upstreamListEntriesRevision: snapshot.UpstreamListEntriesRevision(),
 		now:                         time.Now,
 	}, nil
@@ -122,18 +129,23 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userca.Snapshot, asse
 	}
 	r.interceptionError = nil
 	r.proxyConfigured = true
-	r.httpsWarnings = r.currentHTTPSWarningsLocked()
-	r.pacHandler.Set(r.generatedPACLocked())
+	nextWarnings := r.currentHTTPSWarningsLocked()
+	if !slices.Equal(nextWarnings, r.httpsWarnings) {
+		r.httpsWarnings = nextWarnings
+		r.httpsWarningsRevision++
+	}
+	r.pacRouting.Apply(r.currentSnapshot.UpstreamList().Entries(), r.interceptionState == HTTPSInterceptionActive)
 	r.mu.Unlock()
 	return nil
 }
 
-// RecoverHTTPS applies a successful UserCA install to a live runtime. It
-// returns a new PAC URL only when HTTPS routing changed from inactive to active.
-func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) (string, error) {
+// RecoverHTTPS applies a successful UserCA install to a live runtime. If the
+// semantic route set changes, the runtime publishes a RoutingChanged
+// invalidation; callers read the resulting PACURL from snapshot.
+func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) error {
 	generation, ok := proxyGeneration(snapshot)
 	if !ok {
-		return "", fmt.Errorf("HTTPS Readiness Recovery requires an Installed User CA")
+		return fmt.Errorf("HTTPS Readiness Recovery requires an Installed User CA")
 	}
 	r.mu.Lock()
 	core := r.proxyCore
@@ -141,20 +153,20 @@ func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) (string, error) 
 	current := r.userCA
 	r.mu.Unlock()
 	if core == nil {
-		return "", fmt.Errorf("HTTPS proxy is not configured")
+		return fmt.Errorf("HTTPS proxy is not configured")
 	}
 	if wasActive && sameUserCA(current, snapshot) {
 		r.mu.Lock()
 		r.userCA = snapshot
 		r.readinessError = nil
 		r.interceptionError = nil
-		warnings, warningsChanged := r.updateHTTPSWarningsLocked()
+		warningsChanged := r.updateHTTPSWarningsLocked()
 		r.mu.Unlock()
-		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-		return "", nil
+		r.publishHTTPSWarningUpdate(warningsChanged)
+		return nil
 	}
 	if err := core.ActivateHTTPS(*generation); err != nil {
-		return "", err
+		return err
 	}
 	r.mu.Lock()
 	r.userCA = snapshot
@@ -162,18 +174,24 @@ func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) (string, error) 
 	r.interceptionState = HTTPSInterceptionActive
 	r.interceptionError = nil
 	r.proxyConfigured = true
-	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
+	warningsChanged := r.updateHTTPSWarningsLocked()
 	if wasActive {
 		r.mu.Unlock()
-		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-		return "", nil
+		r.publishHTTPSWarningUpdate(warningsChanged)
+		return nil
+	}
+	routingChanged := r.pacRouting.Apply(r.currentSnapshot.UpstreamList().Entries(), true)
+	if !routingChanged {
+		r.mu.Unlock()
+		r.publishHTTPSWarningUpdate(warningsChanged)
+		return nil
 	}
 	r.pacVersion++
-	nextURL := r.pacURL(r.pacVersion)
-	r.pacHandler.Set(r.generatedPACLocked())
+	r.routingRevision++
 	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-	return nextURL, nil
+	r.publishHTTPSWarningUpdate(warningsChanged)
+	r.publishRuntimeChange(RoutingChanged)
+	return nil
 }
 
 func sameUserCA(left, right userca.Snapshot) bool {
@@ -190,9 +208,8 @@ func sameUserCA(left, right userca.Snapshot) bool {
 
 // DeactivateHTTPS is the live-uninstall linearization companion: new CONNECT
 // requests tunnel directly and HTTPS PAC routes are withdrawn immediately.
-func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot) string {
+func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot) {
 	r.mu.Lock()
-	wasActive := r.interceptionState == HTTPSInterceptionActive
 	if r.proxyCore != nil {
 		r.proxyCore.DeactivateHTTPS()
 	}
@@ -200,18 +217,18 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot) string {
 	r.readinessError = nil
 	r.interceptionState = HTTPSInterceptionInactive
 	r.interceptionError = nil
-	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
-	if !wasActive {
+	warningsChanged := r.updateHTTPSWarningsLocked()
+	routingChanged := r.pacRouting.Apply(r.currentSnapshot.UpstreamList().Entries(), false)
+	if !routingChanged {
 		r.mu.Unlock()
-		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-		return ""
+		r.publishHTTPSWarningUpdate(warningsChanged)
+		return
 	}
 	r.pacVersion++
-	nextURL := r.pacURL(r.pacVersion)
-	r.pacHandler.Set(r.generatedPACLocked())
+	r.routingRevision++
 	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-	return nextURL
+	r.publishHTTPSWarningUpdate(warningsChanged)
+	r.publishRuntimeChange(RoutingChanged)
 }
 
 func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
@@ -228,13 +245,17 @@ func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
 		r.interceptionState = HTTPSInterceptionFailed
 	}
 	r.interceptionError = failure.Err
-	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
-	r.pacVersion++
-	nextURL := r.pacURL(r.pacVersion)
-	r.pacHandler.Set(r.generatedPACLocked())
+	warningsChanged := r.updateHTTPSWarningsLocked()
+	routingChanged := r.pacRouting.Apply(r.currentSnapshot.UpstreamList().Entries(), r.interceptionState == HTTPSInterceptionActive)
+	if routingChanged {
+		r.pacVersion++
+		r.routingRevision++
+	}
 	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-	r.publishPACUpdate(nextURL)
+	r.publishHTTPSWarningUpdate(warningsChanged)
+	if routingChanged {
+		r.publishRuntimeChange(RoutingChanged)
+	}
 }
 
 func (r *trafficRuntime) Serve(ctx context.Context) error {
@@ -318,12 +339,8 @@ func (r *trafficRuntime) PACListen() string {
 	return r.listeners[1].Addr().String()
 }
 
-func (r *trafficRuntime) PACURLUpdates() <-chan string {
-	return r.pacUpdates
-}
-
-func (r *trafficRuntime) HTTPSWarningUpdates() <-chan []HTTPSWarningDetail {
-	return r.httpsWarningUpdates
+func (r *trafficRuntime) RuntimeChanges() <-chan RuntimeChangeKind {
+	return r.runtimeChanges
 }
 
 func (r *trafficRuntime) snapshot() runtimeState {
@@ -349,30 +366,38 @@ func (r *trafficRuntime) applyLiveConfig(snapshot liveconfig.Snapshot) {
 	r.mu.Lock()
 	routingInputsChanged := snapshot.UpstreamListEntriesRevision() != r.upstreamListEntriesRevision
 	r.currentSnapshot = snapshot
-	warnings, warningsChanged := r.updateHTTPSWarningsLocked()
+	warningsChanged := r.updateHTTPSWarningsLocked()
 	if !routingInputsChanged {
 		r.mu.Unlock()
-		r.publishHTTPSWarningUpdate(warnings, warningsChanged)
+		r.publishHTTPSWarningUpdate(warningsChanged)
 		return
 	}
 	r.upstreamListEntriesRevision = snapshot.UpstreamListEntriesRevision()
-	r.pacVersion++
-	nextURL := r.pacURL(r.pacVersion)
-	r.pacHandler.Set(r.generatedPACLocked())
+	routingChanged := r.pacRouting.Apply(r.currentSnapshot.UpstreamList().Entries(), r.interceptionState == HTTPSInterceptionActive)
+	if routingChanged {
+		r.pacVersion++
+		r.routingRevision++
+	}
 	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-	r.publishPACUpdate(nextURL)
+	r.publishHTTPSWarningUpdate(warningsChanged)
+	if routingChanged {
+		r.publishRuntimeChange(RoutingChanged)
+	}
 }
 
-func (r *trafficRuntime) publishPACUpdate(nextURL string) {
+func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
+	r.runtimeChangesMu.Lock()
+	defer r.runtimeChangesMu.Unlock()
 	select {
-	case r.pacUpdates <- nextURL:
+	case r.runtimeChanges <- kind:
 	default:
 		select {
-		case <-r.pacUpdates:
+		case <-r.runtimeChanges:
 		default:
 		}
-		r.pacUpdates <- nextURL
+		// The channel has capacity one and the publisher lock prevents a
+		// concurrent publisher from filling it between the drain and send.
+		r.runtimeChanges <- kind
 	}
 }
 
@@ -383,39 +408,35 @@ func (r *trafficRuntime) SetUninstallWarning(err error) {
 		Diagnostic: fmt.Sprintf("Installed User CA uninstall is incomplete: %v.", err),
 		Action:     "Run `seamless-cors uninstall` again.",
 	}
-	warnings, changed := r.updateHTTPSWarningsLocked()
+	changed := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warnings, changed)
+	r.publishHTTPSWarningUpdate(changed)
 }
 
-func (r *trafficRuntime) updateHTTPSWarningsLocked() ([]HTTPSWarningDetail, bool) {
+func (r *trafficRuntime) updateHTTPSWarningsLocked() bool {
 	next := r.currentHTTPSWarningsLocked()
 	if slices.Equal(next, r.httpsWarnings) {
-		return nil, false
+		return false
 	}
 	r.httpsWarnings = next
-	return append([]HTTPSWarningDetail(nil), next...), true
+	r.httpsWarningsRevision++
+	return true
 }
 
-func (r *trafficRuntime) publishHTTPSWarningUpdate(warnings []HTTPSWarningDetail, changed bool) {
+func (r *trafficRuntime) publishHTTPSWarningUpdate(changed bool) {
 	if !changed {
 		return
 	}
-	select {
-	case r.httpsWarningUpdates <- warnings:
-	default:
-		select {
-		case <-r.httpsWarningUpdates:
-		default:
-		}
-		r.httpsWarningUpdates <- warnings
-	}
+	// Warning details remain in the immutable runtime snapshot. The
+	// notification only invalidates the current warning revision.
+	r.publishRuntimeChange(HTTPSWarningsChanged)
 }
 
 func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
 	var warnings []HTTPSWarningDetail
+	upstreamList := r.currentSnapshot.UpstreamList()
 	warnings = append(warnings, httpsRuntimeWarnings(
-		r.currentSnapshot.UpstreamList(),
+		upstreamList.HTTPSIntent(),
 		r.userCA,
 		r.readinessError,
 		r.interceptionState,
@@ -427,34 +448,23 @@ func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
 	return warnings
 }
 
-func (r *trafficRuntime) generatedPACLocked() string {
-	return pacrouting.Generate(pacrouting.Options{
-		ProxyListen:  r.listeners[0].Addr().String(),
-		HTTPSActive:  r.interceptionState == HTTPSInterceptionActive,
-		UpstreamList: r.currentSnapshot.UpstreamList(),
-	})
-}
-
 func (r *trafficRuntime) pacURL(version uint64) string {
-	u := url.URL{
-		Scheme:   "http",
-		Host:     r.listeners[1].Addr().String(),
-		Path:     "/" + managedpac.FootprintFileName,
-		RawQuery: fmt.Sprintf("v=%d", version),
-	}
-	return u.String()
+	return managedpac.PACURL(r.listeners[1].Addr().String(), version)
 }
 
 type runtimeState struct {
-	ProxyListen          string
-	PACListen            string
-	UpstreamList         string
-	HTTPSReadiness       HTTPSReadinessStatus
-	HTTPSInterception    HTTPSInterceptionState
-	HTTPSIntent          bool
-	HTTPSWarnings        []HTTPSWarningDetail
-	UpstreamCount        int
-	UpstreamListWarnings []UpstreamListWarningDetail
+	PACURL                string
+	RoutingRevision       uint64
+	HTTPSWarningsRevision uint64
+	ProxyListen           string
+	PACListen             string
+	UpstreamList          string
+	HTTPSReadiness        HTTPSReadinessStatus
+	HTTPSInterception     HTTPSInterceptionState
+	HTTPSIntent           bool
+	HTTPSWarnings         []HTTPSWarningDetail
+	UpstreamCount         int
+	UpstreamListWarnings  []UpstreamListWarningDetail
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
@@ -472,25 +482,19 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		}}
 	}
 	return runtimeState{
-		ProxyListen:          r.listeners[0].Addr().String(),
-		PACListen:            r.listeners[1].Addr().String(),
-		UpstreamList:         r.currentSnapshot.UpstreamListPath(),
-		HTTPSReadiness:       readiness,
-		HTTPSInterception:    interception,
-		HTTPSIntent:          hasHTTPSIntent(upstreamList),
-		HTTPSWarnings:        warnings,
-		UpstreamCount:        len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
-		UpstreamListWarnings: upstreamListWarningDetails(upstreamList.Warnings),
+		PACURL:                r.pacURL(r.pacVersion),
+		RoutingRevision:       r.routingRevision,
+		HTTPSWarningsRevision: r.httpsWarningsRevision,
+		ProxyListen:           r.listeners[0].Addr().String(),
+		PACListen:             r.listeners[1].Addr().String(),
+		UpstreamList:          r.currentSnapshot.UpstreamListPath(),
+		HTTPSReadiness:        readiness,
+		HTTPSInterception:     interception,
+		HTTPSIntent:           upstreamList.HTTPSIntent(),
+		HTTPSWarnings:         warnings,
+		UpstreamCount:         upstreamList.Count(),
+		UpstreamListWarnings:  upstreamListWarningDetails(upstreamList.Warnings()),
 	}
-}
-
-func hasHTTPSIntent(list upstreamlist.UpstreamList) bool {
-	for _, selector := range list.OriginSelectors {
-		if selector.Scheme == "https" {
-			return true
-		}
-	}
-	return false
 }
 
 func httpsReadinessStatus(snapshot userca.Snapshot) HTTPSReadinessStatus {
@@ -500,7 +504,7 @@ func httpsReadinessStatus(snapshot userca.Snapshot) HTTPSReadinessStatus {
 	return HTTPSReadinessNotReady
 }
 
-func httpsReadinessWarnings(list upstreamlist.UpstreamList, snapshot userca.Snapshot, assessmentErr error) []HTTPSWarningDetail {
+func httpsReadinessWarnings(httpsIntent bool, snapshot userca.Snapshot, assessmentErr error) []HTTPSWarningDetail {
 	if assessmentErr != nil {
 		return []HTTPSWarningDetail{{
 			Kind:       HTTPSWarningReadinessUnavailable,
@@ -519,7 +523,7 @@ func httpsReadinessWarnings(list upstreamlist.UpstreamList, snapshot userca.Snap
 		}
 		return warnings
 	}
-	if !hasHTTPSIntent(list) {
+	if !httpsIntent {
 		return nil
 	}
 	return []HTTPSWarningDetail{{
@@ -530,7 +534,7 @@ func httpsReadinessWarnings(list upstreamlist.UpstreamList, snapshot userca.Snap
 }
 
 func httpsRuntimeWarnings(
-	list upstreamlist.UpstreamList,
+	httpsIntent bool,
 	snapshot userca.Snapshot,
 	assessmentErr error,
 	state HTTPSInterceptionState,
@@ -543,7 +547,7 @@ func httpsRuntimeWarnings(
 			Action:     "Run `seamless-cors install`.",
 		}}
 	}
-	return httpsReadinessWarnings(list, snapshot, assessmentErr)
+	return httpsReadinessWarnings(httpsIntent, snapshot, assessmentErr)
 }
 
 func proxyGeneration(snapshot userca.Snapshot) (*corsproxy.HTTPSGeneration, bool) {
