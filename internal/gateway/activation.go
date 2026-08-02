@@ -135,7 +135,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	pacInstall, err := s.lifecycle.managedPAC.Install(ctx, acceptedServices, engine.PACURL())
 	if err != nil {
 		withdraw()
-		warnings := managedPACWarningDetails(pacInstall.warnings)
+		warnings := managedPACWarningDetails(pacInstall.Warnings())
 		if failure := s.cleanupFailedPACInstall(); failure != nil {
 			return StartResult{
 				Kind:               StartResultCleanupFailed,
@@ -161,8 +161,8 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return StartResult{Kind: StartResultStopCancelled}, nil
 	}
 	active.managedPAC = &managedPACRuntime{
-		state:    pacInstall.state,
-		warnings: managedPACWarningDetails(pacInstall.warnings),
+		state:    pacInstall.State(),
+		warnings: managedPACWarningDetails(pacInstall.Warnings()),
 	}
 	active.phase = runtimePhaseRunning
 	s.lifecycle.mu.Unlock()
@@ -177,8 +177,8 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		Guidance: &StartGuidanceDetail{
 			UpstreamListPath:     snapshot.UpstreamListPath(),
 			ManagedPACActive:     true,
-			ManagedPACServices:   append([]string(nil), pacInstall.state.services...),
-			ManagedPACWarnings:   managedPACWarningDetails(pacInstall.warnings),
+			ManagedPACServices:   pacInstall.State().ServiceNames(),
+			ManagedPACWarnings:   managedPACWarningDetails(pacInstall.Warnings()),
 			HTTPSReadiness:       state.HTTPSReadiness,
 			HTTPSInterception:    state.HTTPSInterception,
 			HTTPSIntent:          state.HTTPSIntent,

@@ -16,6 +16,7 @@ import (
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestPACVersionFollowsUpstreamListEntriesRevision(t *testing.T) {
@@ -53,7 +54,7 @@ func TestHTTPSIntentDoesNotReassessLatchedUserCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userCASnapshot{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -77,7 +78,7 @@ func TestRecoverHTTPSPublishesNewGenerationAndPAC(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userCASnapshot{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	initialPACURL := runtime.PACURL()
@@ -184,7 +185,7 @@ func TestHTTPSReadinessWarningsUseOnlySemanticUserCAState(t *testing.T) {
 	tests := []struct {
 		name     string
 		list     liveconfig.Snapshot
-		snapshot userCASnapshot
+		snapshot userca.Snapshot
 		err      error
 		want     string
 	}{
@@ -213,7 +214,7 @@ func TestHTTPSReadinessWarningsUseOnlySemanticUserCAState(t *testing.T) {
 	}
 }
 
-func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) userCASnapshot {
+func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) userca.Snapshot {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -233,16 +234,19 @@ func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) user
 	if err != nil {
 		t.Fatal(err)
 	}
-	return userCASnapshot{
-		usable: true,
-		certificate: tls.Certificate{
+	snapshot, err := userca.NewSnapshot(
+		tls.Certificate{
 			Certificate: [][]byte{der},
 			PrivateKey:  key,
 			Leaf:        template,
 		},
-		expiresAt:  expiresAt,
-		renewalDue: renewalDue,
+		expiresAt,
+		renewalDue,
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return snapshot
 }
 
 func httpsWarningDiagnostics(warnings []HTTPSWarningDetail) string {

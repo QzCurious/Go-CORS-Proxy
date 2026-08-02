@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
@@ -41,10 +43,11 @@ func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
 
 func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	settings := &lifecycleTestSystemSettings{
-		states: []testPACState{{
-			ServiceName: "Wi-Fi",
-			PACURL:      "http://127.0.0.1/seamless-cors.pac",
-			Enabled:     true,
+		services: []managedpac.Service{{
+			Name:      "Wi-Fi",
+			URL:       "http://127.0.0.1/seamless-cors.pac",
+			Enabled:   true,
+			Ownership: managedpac.OwnershipOwned,
 		}},
 		clearErr: errors.New("cleanup denied"),
 	}
@@ -89,15 +92,15 @@ type blockingCleanupSettings struct {
 	releaseCleanup <-chan struct{}
 }
 
-func (*blockingCleanupSettings) Inspect(context.Context) (managedPACSnapshot, error) {
-	return managedPACSnapshot{}, nil
+func (*blockingCleanupSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
+	return managedpac.Snapshot{}, nil
 }
 
-func (*blockingCleanupSettings) Install(context.Context, []string, string) (managedPACInstallResult, error) {
-	return managedPACInstallResult{}, nil
+func (*blockingCleanupSettings) Install(context.Context, []string, string) (managedpac.InstallResult, error) {
+	return managedpac.InstallResult{}, nil
 }
 
-func (*blockingCleanupSettings) RequestReconcile(managedPACRuntimeState, string, func(managedPACReconcileResult)) {
+func (*blockingCleanupSettings) RequestReconcile(managedpac.RuntimeState, string, func(managedpac.ReconcileResult)) {
 }
 
 func (f *blockingCleanupSettings) Uninstall(context.Context) error {

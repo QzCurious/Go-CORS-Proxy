@@ -15,12 +15,13 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type trafficRuntime struct {
 	mu                          sync.RWMutex
 	currentSnapshot             liveconfig.Snapshot
-	userCA                      userCASnapshot
+	userCA                      userca.Snapshot
 	readinessError              error
 	interceptionState           HTTPSInterceptionState
 	interceptionError           error
@@ -100,7 +101,7 @@ func newRuntime(config *liveconfig.Config, snapshot liveconfig.Snapshot) (*traff
 	}, nil
 }
 
-func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userCASnapshot, assessmentErr error) error {
+func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userca.Snapshot, assessmentErr error) error {
 	generation, generationOK := proxyGeneration(snapshot)
 	proxyHandler, err := corsproxy.New(corsproxy.Options{
 		InterceptHTTPS:  generationOK,
@@ -129,7 +130,7 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userCASnapshot, asses
 
 // RecoverHTTPS applies a successful UserCA install to a live runtime. It
 // returns a new PAC URL only when HTTPS routing changed from inactive to active.
-func (r *trafficRuntime) RecoverHTTPS(snapshot userCASnapshot) (string, error) {
+func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) (string, error) {
 	generation, ok := proxyGeneration(snapshot)
 	if !ok {
 		return "", fmt.Errorf("HTTPS Readiness Recovery requires an Installed User CA")
@@ -175,12 +176,12 @@ func (r *trafficRuntime) RecoverHTTPS(snapshot userCASnapshot) (string, error) {
 	return nextURL, nil
 }
 
-func sameUserCA(left, right userCASnapshot) bool {
-	if left.usable != right.usable || !left.usable {
-		return left.usable == right.usable
+func sameUserCA(left, right userca.Snapshot) bool {
+	if left.Usable() != right.Usable() || !left.Usable() {
+		return left.Usable() == right.Usable()
 	}
-	leftCert := left.certificate
-	rightCert := right.certificate
+	leftCert, _ := left.TLSCertificate()
+	rightCert, _ := right.TLSCertificate()
 	if len(leftCert.Certificate) == 0 || len(rightCert.Certificate) == 0 {
 		return false
 	}
@@ -189,7 +190,7 @@ func sameUserCA(left, right userCASnapshot) bool {
 
 // DeactivateHTTPS is the live-uninstall linearization companion: new CONNECT
 // requests tunnel directly and HTTPS PAC routes are withdrawn immediately.
-func (r *trafficRuntime) DeactivateHTTPS(snapshot userCASnapshot) string {
+func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot) string {
 	r.mu.Lock()
 	wasActive := r.interceptionState == HTTPSInterceptionActive
 	if r.proxyCore != nil {
@@ -221,7 +222,7 @@ func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
 	}
 	switch failure.Kind {
 	case corsproxy.HTTPSFailureReadiness:
-		r.userCA = userCASnapshot{}
+		r.userCA = userca.Snapshot{}
 		r.interceptionState = HTTPSInterceptionInactive
 	default:
 		r.interceptionState = HTTPSInterceptionFailed
@@ -244,7 +245,7 @@ func (r *trafficRuntime) Serve(ctx context.Context) error {
 // serving goroutines. Callers may then safely publish the PAC URL.
 func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
 	if !r.proxyConfigured {
-		if err := r.SetInitialHTTPSReadiness(userCASnapshot{}, nil); err != nil {
+		if err := r.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
 			return err
 		}
 	}
@@ -461,7 +462,7 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 	readiness := httpsReadinessStatus(r.userCA)
 	interception := r.interceptionState
 	warnings := append([]HTTPSWarningDetail(nil), r.httpsWarnings...)
-	if r.userCA.usable && !r.now().Before(r.userCA.expiresAt) {
+	if r.userCA.Usable() && !r.now().Before(r.userCA.ExpiresAt()) {
 		readiness = HTTPSReadinessNotReady
 		interception = HTTPSInterceptionInactive
 		warnings = []HTTPSWarningDetail{{
@@ -492,14 +493,14 @@ func hasHTTPSIntent(list upstreamlist.UpstreamList) bool {
 	return false
 }
 
-func httpsReadinessStatus(snapshot userCASnapshot) HTTPSReadinessStatus {
-	if snapshot.usable {
+func httpsReadinessStatus(snapshot userca.Snapshot) HTTPSReadinessStatus {
+	if snapshot.Usable() {
 		return HTTPSReadinessReady
 	}
 	return HTTPSReadinessNotReady
 }
 
-func httpsReadinessWarnings(list upstreamlist.UpstreamList, snapshot userCASnapshot, assessmentErr error) []HTTPSWarningDetail {
+func httpsReadinessWarnings(list upstreamlist.UpstreamList, snapshot userca.Snapshot, assessmentErr error) []HTTPSWarningDetail {
 	if assessmentErr != nil {
 		return []HTTPSWarningDetail{{
 			Kind:       HTTPSWarningReadinessUnavailable,
@@ -507,12 +508,12 @@ func httpsReadinessWarnings(list upstreamlist.UpstreamList, snapshot userCASnaps
 			Action:     "Run `seamless-cors install`.",
 		}}
 	}
-	if snapshot.usable {
+	if snapshot.Usable() {
 		var warnings []HTTPSWarningDetail
-		if snapshot.renewalDue {
+		if snapshot.RenewalDue() {
 			warnings = append(warnings, HTTPSWarningDetail{
 				Kind:       HTTPSWarningRenewalRecommended,
-				Diagnostic: fmt.Sprintf("Installed User CA expires soon (%s).", snapshot.expiresAt.Format("2006-01-02")),
+				Diagnostic: fmt.Sprintf("Installed User CA expires soon (%s).", snapshot.ExpiresAt().Format("2006-01-02")),
 				Action:     "Run `seamless-cors install` to renew it.",
 			})
 		}
@@ -530,7 +531,7 @@ func httpsReadinessWarnings(list upstreamlist.UpstreamList, snapshot userCASnaps
 
 func httpsRuntimeWarnings(
 	list upstreamlist.UpstreamList,
-	snapshot userCASnapshot,
+	snapshot userca.Snapshot,
 	assessmentErr error,
 	state HTTPSInterceptionState,
 	interceptionErr error,
@@ -545,13 +546,14 @@ func httpsRuntimeWarnings(
 	return httpsReadinessWarnings(list, snapshot, assessmentErr)
 }
 
-func proxyGeneration(snapshot userCASnapshot) (*corsproxy.HTTPSGeneration, bool) {
-	if !snapshot.usable {
+func proxyGeneration(snapshot userca.Snapshot) (*corsproxy.HTTPSGeneration, bool) {
+	certificate, usable := snapshot.TLSCertificate()
+	if !usable {
 		return nil, false
 	}
 	return &corsproxy.HTTPSGeneration{
-		Certificate: snapshot.certificate,
-		ExpiresAt:   snapshot.expiresAt,
+		Certificate: certificate,
+		ExpiresAt:   snapshot.ExpiresAt(),
 	}, true
 }
 

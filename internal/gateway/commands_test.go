@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
@@ -16,8 +19,8 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
 		t.Fatal(err)
 	}
-	settings := &lifecycleTestSystemSettings{states: []testPACState{{
-		ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
+		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
 	}}}
 
 	result, err := stop(context.Background(), settings)
@@ -41,10 +44,10 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	ca := &fakeUserCA{
-		install: func(context.Context) (userCAInstallResult, error) {
+		install: func(context.Context) (userca.InstallResult, error) {
 			close(entered)
 			<-release
-			return userCAInstallResult{changed: true}, nil
+			return userca.NewInstallResult(userca.Snapshot{}, true), nil
 		},
 	}
 	done := make(chan error, 1)
@@ -138,8 +141,8 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	}
 	settings := &lifecycleTestSystemSettings{
 		clearErr: errors.New("pac denied"),
-		states: []testPACState{{
-			ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
+		services: []managedpac.Service{{
+			Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
 		}},
 	}
 

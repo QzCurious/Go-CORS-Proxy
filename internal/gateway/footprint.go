@@ -52,7 +52,7 @@ func inspectGatewayFootprint(ctx context.Context, pacModule managedPACModule, co
 		if err != nil {
 			pac.State = CleanupStatusUnknown
 			pac.Diagnostic = err.Error()
-		} else if snapshot.hasOwnedState() {
+		} else if snapshot.HasOwnedState() {
 			pac.State = CleanupStatusNeeded
 		}
 	}

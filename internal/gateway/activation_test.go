@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testing.T) {
@@ -22,10 +24,10 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	settings := &lifecycleTestSystemSettings{states: []testPACState{
-		{ServiceName: "Wi-Fi", Enabled: true, PACURL: "http://corp.example/a.pac"},
-		{ServiceName: "Ethernet"},
-		{ServiceName: "USB"},
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{
+		{Name: "Wi-Fi", Enabled: true, URL: "http://corp.example/a.pac", Ownership: managedpac.OwnershipForeign},
+		{Name: "Ethernet", Ownership: managedpac.OwnershipEmpty},
+		{Name: "USB", Ownership: managedpac.OwnershipEmpty},
 	}}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
@@ -40,7 +42,12 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 		t.Fatalf("first start = %#v", first)
 	}
 	detail := first.ManagedPACConsent
-	settings.states[1].PACURL = "http://corp.example/b.pac"
+	installResult := managedpac.NewInstallResult(
+		managedpac.NewRuntimeState([]string{"Ethernet", "USB"}, "ignored by assertion"),
+		[]string{"USB"},
+		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Ethernet", Diagnostic: "foreign PAC state is active"}},
+	)
+	settings.installResult = &installResult
 	changed, err := lifecycle.ExecuteStart(context.Background(), StartRequest{
 		ManagedPACConsent: &ManagedPACConsentInput{
 			ServiceNames: detail.ProposedServices,
@@ -64,9 +71,6 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 
 func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
 	settings := &lifecycleTestSystemSettings{
-		states: []testPACState{{
-			ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1/seamless-cors.pac", Enabled: true,
-		}},
 		clearErr: errors.New("cleanup denied"),
 	}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
@@ -87,8 +91,8 @@ func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T)
 func TestExecuteStartStopsWhenNoManageablePACServiceExists(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	settings := &lifecycleTestSystemSettings{states: []testPACState{{
-		ServiceName: "Wi-Fi", PACURL: "http://corp.example/proxy.pac", Enabled: true,
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
+		Name: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true, Ownership: managedpac.OwnershipForeign,
 	}}}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
@@ -114,9 +118,15 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	settings := &lifecycleTestSystemSettings{
-		states:   []testPACState{{ServiceName: "Wi-Fi"}},
-		applyErr: errors.New("PAC write denied"),
+		services:   []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		installErr: errors.New("managed PAC install updated no services"),
 	}
+	installResult := managedpac.NewInstallResult(
+		managedpac.NewRuntimeState([]string{"Wi-Fi"}, ""),
+		nil,
+		[]managedpac.Warning{{Kind: managedpac.WarningUpdateFailed, ServiceName: "Wi-Fi", Diagnostic: "PAC write denied"}},
+	)
+	settings.installResult = &installResult
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +149,7 @@ func TestInstallUsesOnlyUserCAAndDoesNotBootstrapLiveConfiguration(t *testing.T)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ca := &fakeUserCA{
-		installResult: userCAInstallResult{current: testUserCASnapshot(t, time.Now().Add(24*time.Hour), false), changed: true},
+		installResult: userca.NewInstallResult(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false), true),
 	}
 	lifecycle, err := newLifecycle(
 		&lifecycleTestSystemSettings{},
@@ -169,11 +179,11 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(userCASnapshot{}, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	ca := &fakeUserCA{installResult: userCAInstallResult{current: installed, changed: true}}
+	ca := &fakeUserCA{installResult: userca.NewInstallResult(installed, true)}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -197,23 +207,26 @@ func TestInstallReturnsPartialSuccessWhenRuntimeCannotAdopt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(userCASnapshot{}, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	invalidTLS := userCASnapshot{usable: true, expiresAt: time.Now().Add(time.Hour)}
-	ca := &fakeUserCA{installResult: userCAInstallResult{current: invalidTLS, changed: true}}
+	installed := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
+	ca := &fakeUserCA{installResult: userca.NewInstallResult(installed, true)}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+	engine.mu.Lock()
+	engine.proxyCore = nil
+	engine.mu.Unlock()
 
 	result, err := lifecycle.Install(context.Background())
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != InstallResultRuntimeAdoptionFailed || lifecycle.userCASnapshot.usable != true {
+	if result.Kind != InstallResultRuntimeAdoptionFailed || !lifecycle.userCASnapshot.Usable() {
 		t.Fatalf("partial install result = %#v latched = %#v", result, lifecycle.userCASnapshot)
 	}
 }
@@ -225,12 +238,12 @@ func TestManagedPACReconciliationUpdatesLatchedWarningsWithoutLosingFixedSet(t *
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(userCASnapshot{}, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	settings := &lifecycleTestSystemSettings{states: []testPACState{{
-		ServiceName: "Wi-Fi", PACURL: "http://corp.example/proxy.pac", Enabled: true,
-	}}}
+	settings := &lifecycleTestSystemSettings{
+		reconcileWarnings: []managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Wi-Fi", Diagnostic: "foreign PAC state is active"}},
+	}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -238,10 +251,10 @@ func TestManagedPACReconciliationUpdatesLatchedWarningsWithoutLosingFixedSet(t *
 	active := &activeRuntime{
 		engine: engine,
 		phase:  runtimePhaseRunning,
-		managedPAC: &managedPACRuntime{state: managedPACRuntimeState{
-			services: []string{"Wi-Fi"},
-			pacURL:   "http://127.0.0.1/seamless-cors.pac?v=1",
-		}},
+		managedPAC: &managedPACRuntime{state: managedpac.NewRuntimeState(
+			[]string{"Wi-Fi"},
+			"http://127.0.0.1/seamless-cors.pac?v=1",
+		)},
 	}
 	lifecycle.runtime = active
 	engine.mu.Lock()
@@ -269,18 +282,15 @@ func TestManagedPACReconciliationSuppressesStaleRuntimeURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	settings := &lifecycleTestSystemSettings{states: []testPACState{{ServiceName: "Wi-Fi"}}}
+	settings := &lifecycleTestSystemSettings{}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	active := &activeRuntime{
-		engine: engine,
-		phase:  runtimePhaseRunning,
-		managedPAC: &managedPACRuntime{state: managedPACRuntimeState{
-			services: []string{"Wi-Fi"},
-			pacURL:   engine.pacURL(1),
-		}},
+		engine:     engine,
+		phase:      runtimePhaseRunning,
+		managedPAC: &managedPACRuntime{state: managedpac.NewRuntimeState([]string{"Wi-Fi"}, engine.pacURL(1))},
 	}
 	lifecycle.runtime = active
 	engine.mu.Lock()
@@ -314,7 +324,7 @@ func TestManagedPACReconciliationFailurePreservesWarningSnapshot(t *testing.T) {
 		engine: engine,
 		phase:  runtimePhaseRunning,
 		managedPAC: &managedPACRuntime{
-			state:    managedPACRuntimeState{services: []string{"Wi-Fi"}, pacURL: engine.pacURL(1)},
+			state:    managedpac.NewRuntimeState([]string{"Wi-Fi"}, engine.pacURL(1)),
 			warnings: initial,
 		},
 	}
@@ -335,13 +345,13 @@ func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userCAInstallResult, error) {
+		install: func(ctx context.Context) (userca.InstallResult, error) {
 			if ctx.Err() != nil {
-				return userCAInstallResult{}, ctx.Err()
+				return userca.InstallResult{}, ctx.Err()
 			}
 			close(entered)
 			<-release
-			return userCAInstallResult{current: userCASnapshot{}, changed: true}, nil
+			return userca.NewInstallResult(userca.Snapshot{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -401,10 +411,10 @@ func TestAdmittedCAOperationIgnoresRequestCancellation(t *testing.T) {
 	requestCtx, cancel := context.WithCancel(context.Background())
 	observed := make(chan error, 1)
 	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userCAInstallResult, error) {
+		install: func(ctx context.Context) (userca.InstallResult, error) {
 			cancel()
 			observed <- ctx.Err()
-			return userCAInstallResult{}, nil
+			return userca.InstallResult{}, nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -434,9 +444,9 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 	var inactiveDuringUninstall bool
 	ca := &fakeUserCA{
 		snapshot: installed,
-		uninstall: func(context.Context) (userCAUninstallResult, error) {
+		uninstall: func(context.Context) (userca.UninstallResult, error) {
 			inactiveDuringUninstall = engine.snapshot().HTTPSInterception == HTTPSInterceptionInactive
-			return userCAUninstallResult{current: userCASnapshot{}, changed: true}, nil
+			return userca.NewUninstallResult(userca.Snapshot{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -471,7 +481,7 @@ func TestStartReportsUnmetHTTPSIntentWithoutInstallingUserCA(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), []byte("https://api.example.test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	settings := &lifecycleTestSystemSettings{states: []testPACState{{ServiceName: "Wi-Fi"}}}
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
 	ca := &fakeUserCA{}
 	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
@@ -505,7 +515,7 @@ func TestStartUsesFreshInstalledUserCASnapshot(t *testing.T) {
 	}
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
 	ca := &fakeUserCA{snapshot: installed}
-	settings := &lifecycleTestSystemSettings{states: []testPACState{{ServiceName: "Wi-Fi"}}}
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
 	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
 		t.Fatal(err)
@@ -527,27 +537,27 @@ func TestStartUsesFreshInstalledUserCASnapshot(t *testing.T) {
 
 type fakeUserCA struct {
 	mu              sync.Mutex
-	snapshot        userCASnapshot
+	snapshot        userca.Snapshot
 	inspectErr      error
-	installResult   userCAInstallResult
+	installResult   userca.InstallResult
 	installErr      error
-	uninstallResult userCAUninstallResult
+	uninstallResult userca.UninstallResult
 	uninstallErr    error
-	install         func(context.Context) (userCAInstallResult, error)
-	uninstall       func(context.Context) (userCAUninstallResult, error)
+	install         func(context.Context) (userca.InstallResult, error)
+	uninstall       func(context.Context) (userca.UninstallResult, error)
 	inspectCalls    int
 	installCalls    int
 	uninstallCalls  int
 }
 
-func (f *fakeUserCA) Inspect(context.Context) (userCASnapshot, error) {
+func (f *fakeUserCA) Inspect(context.Context) (userca.Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inspectCalls++
 	return f.snapshot, f.inspectErr
 }
 
-func (f *fakeUserCA) Install(ctx context.Context) (userCAInstallResult, error) {
+func (f *fakeUserCA) Install(ctx context.Context) (userca.InstallResult, error) {
 	f.mu.Lock()
 	f.installCalls++
 	operation := f.install
@@ -559,7 +569,7 @@ func (f *fakeUserCA) Install(ctx context.Context) (userCAInstallResult, error) {
 	return result, err
 }
 
-func (f *fakeUserCA) Uninstall(ctx context.Context) (userCAUninstallResult, error) {
+func (f *fakeUserCA) Uninstall(ctx context.Context) (userca.UninstallResult, error) {
 	f.mu.Lock()
 	f.uninstallCalls++
 	operation := f.uninstall
@@ -573,101 +583,52 @@ func (f *fakeUserCA) Uninstall(ctx context.Context) (userCAUninstallResult, erro
 
 type emptyTestUserCA struct{}
 
-func (emptyTestUserCA) Inspect(context.Context) (userCASnapshot, error) {
-	return userCASnapshot{}, nil
+func (emptyTestUserCA) Inspect(context.Context) (userca.Snapshot, error) {
+	return userca.Snapshot{}, nil
 }
-func (emptyTestUserCA) Install(context.Context) (userCAInstallResult, error) {
-	return userCAInstallResult{}, nil
+func (emptyTestUserCA) Install(context.Context) (userca.InstallResult, error) {
+	return userca.InstallResult{}, nil
 }
-func (emptyTestUserCA) Uninstall(context.Context) (userCAUninstallResult, error) {
-	return userCAUninstallResult{}, nil
+func (emptyTestUserCA) Uninstall(context.Context) (userca.UninstallResult, error) {
+	return userca.UninstallResult{}, nil
 }
 
 type lifecycleTestSystemSettings struct {
-	states        []testPACState
-	applied       int
-	applyErr      error
-	stateErr      error
-	clearErr      error
-	cleared       int
-	reconcileErr  error
-	requestedURLs []string
+	services          []managedpac.Service
+	applied           int
+	installResult     *managedpac.InstallResult
+	installErr        error
+	stateErr          error
+	clearErr          error
+	cleared           int
+	reconcileWarnings []managedpac.Warning
+	reconcileErr      error
+	requestedURLs     []string
 }
 
-type testPACState struct {
-	ServiceName string
-	PACURL      string
-	Enabled     bool
-}
-
-func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedPACSnapshot, error) {
+func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
 	if f.stateErr != nil {
-		return managedPACSnapshot{}, f.stateErr
+		return managedpac.Snapshot{}, f.stateErr
 	}
-	services := make([]managedPACService, 0, len(f.states))
-	for _, state := range f.states {
-		ownership := testPACOwnership(state.PACURL)
-		services = append(services, managedPACService{name: state.ServiceName, enabled: state.Enabled, url: state.PACURL, ownership: ownership})
-	}
-	slices.SortFunc(services, func(a, b managedPACService) int { return strings.Compare(a.name, b.name) })
-	return managedPACSnapshot{services: services}, nil
+	return managedpac.NewSnapshot(f.services), nil
 }
 
-func (f *lifecycleTestSystemSettings) Install(ctx context.Context, services []string, pacURL string) (managedPACInstallResult, error) {
-	snapshot, err := f.Inspect(ctx)
-	if err != nil {
-		return managedPACInstallResult{}, err
+func (f *lifecycleTestSystemSettings) Install(_ context.Context, services []string, pacURL string) (managedpac.InstallResult, error) {
+	f.applied++
+	if f.installResult != nil {
+		return *f.installResult, f.installErr
 	}
-	selected := make(map[string]struct{}, len(services))
-	for _, service := range services {
-		selected[service] = struct{}{}
-	}
-	var installed []string
-	var warnings []managedPACWarning
-	for _, service := range snapshot.services {
-		if _, ok := selected[service.name]; !ok {
-			continue
-		}
-		if service.ownership == managedPACOwnershipForeign {
-			warnings = append(warnings, managedPACWarning{kind: managedPACWarningDrift, serviceName: service.name, diagnostic: "foreign PAC state is active"})
-			continue
-		}
-		f.applied++
-		if f.applyErr != nil {
-			warnings = append(warnings, managedPACWarning{kind: managedPACWarningUpdateFailed, serviceName: service.name, diagnostic: f.applyErr.Error()})
-			continue
-		}
-		for index := range f.states {
-			if f.states[index].ServiceName == service.name {
-				f.states[index].PACURL = pacURL
-				f.states[index].Enabled = true
-			}
-		}
-		installed = append(installed, service.name)
-	}
-	sorted := sortedUniqueServiceNames(services)
-	result := managedPACInstallResult{
-		state:             managedPACRuntimeState{services: sorted, pacURL: pacURL},
-		installedServices: installed,
-		warnings:          warnings,
-	}
-	if len(installed) == 0 {
-		return result, errors.New("managed PAC install updated no services")
-	}
-	return result, nil
+	return managedpac.NewInstallResult(
+		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), pacURL),
+		sortedUniqueServiceNames(services),
+		nil,
+	), f.installErr
 }
 
-func (f *lifecycleTestSystemSettings) RequestReconcile(state managedPACRuntimeState, pacURL string, complete func(managedPACReconcileResult)) {
+func (f *lifecycleTestSystemSettings) RequestReconcile(_ managedpac.RuntimeState, pacURL string, complete func(managedpac.ReconcileResult)) {
 	f.requestedURLs = append(f.requestedURLs, pacURL)
-	if f.reconcileErr != nil {
-		if complete != nil {
-			complete(managedPACReconcileResult{err: f.reconcileErr})
-		}
-		return
-	}
-	result, _ := f.Install(context.Background(), state.services, pacURL)
 	if complete != nil {
-		complete(managedPACReconcileResult{warnings: result.warnings})
+		complete(managedpac.NewReconcileResult(f.reconcileWarnings, f.reconcileErr))
 	}
 }
 
@@ -676,25 +637,7 @@ func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
 	if f.clearErr != nil {
 		return f.clearErr
 	}
-	for index, state := range f.states {
-		if testPACOwnership(state.PACURL) == managedPACOwnershipOwned {
-			f.states[index].PACURL = ""
-			f.states[index].Enabled = false
-		}
-	}
 	return nil
-}
-
-func testPACOwnership(raw string) managedPACOwnership {
-	if raw == "" || raw == "(null)" {
-		return managedPACOwnershipEmpty
-	}
-	if strings.HasPrefix(raw, "http://127.0.0.1") || strings.HasPrefix(raw, "http://localhost") || strings.HasPrefix(raw, "http://[::1]") {
-		if strings.Contains(raw, "/seamless-cors.pac") {
-			return managedPACOwnershipOwned
-		}
-	}
-	return managedPACOwnershipForeign
 }
 
 func executeAcceptedStart(lifecycle *lifecycle) (StartResult, error) {

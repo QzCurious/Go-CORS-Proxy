@@ -31,6 +31,13 @@ type Snapshot struct {
 	services []Service
 }
 
+// NewSnapshot returns an immutable semantic observation sorted by service name.
+func NewSnapshot(services []Service) Snapshot {
+	cloned := append([]Service(nil), services...)
+	sort.Slice(cloned, func(i, j int) bool { return cloned[i].Name < cloned[j].Name })
+	return Snapshot{services: cloned}
+}
+
 func (s Snapshot) Services() []Service {
 	return append([]Service(nil), s.services...)
 }
@@ -59,6 +66,14 @@ type RuntimeState struct {
 	pacURL       string
 }
 
+// NewRuntimeState returns immutable state for a fixed Managed PAC Service Set.
+func NewRuntimeState(serviceNames []string, pacURL string) RuntimeState {
+	return RuntimeState{
+		serviceNames: sortedUniqueStrings(serviceNames),
+		pacURL:       pacURL,
+	}
+}
+
 func (s RuntimeState) ServiceNames() []string {
 	return append([]string(nil), s.serviceNames...)
 }
@@ -84,6 +99,15 @@ type InstallResult struct {
 	warnings          []Warning
 }
 
+// NewInstallResult returns an immutable Managed PAC installation result.
+func NewInstallResult(state RuntimeState, installedServices []string, warnings []Warning) InstallResult {
+	return InstallResult{
+		state:             cloneRuntimeState(state),
+		installedServices: append([]string(nil), installedServices...),
+		warnings:          append([]Warning(nil), warnings...),
+	}
+}
+
 func (r InstallResult) State() RuntimeState { return cloneRuntimeState(r.state) }
 
 func (r InstallResult) InstalledServices() []string {
@@ -97,6 +121,11 @@ func (r InstallResult) Warnings() []Warning {
 type ReconcileResult struct {
 	warnings []Warning
 	err      error
+}
+
+// NewReconcileResult returns an immutable Managed PAC reconciliation result.
+func NewReconcileResult(warnings []Warning, err error) ReconcileResult {
+	return ReconcileResult{warnings: append([]Warning(nil), warnings...), err: err}
 }
 
 func (r ReconcileResult) Warnings() []Warning {
@@ -150,7 +179,7 @@ func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
 		})
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
-	return Snapshot{services: services}, nil
+	return NewSnapshot(services), nil
 }
 
 func ownershipForURL(raw string) Ownership {
@@ -178,8 +207,8 @@ func (m *ManagedPAC) Install(ctx context.Context, serviceNames []string, pacURL 
 		return InstallResult{}, err
 	}
 	installed, warnings := m.applyEligible(ctx, snapshot, selected, pacURL)
-	state := RuntimeState{serviceNames: selected, pacURL: pacURL}
-	result := InstallResult{state: state, installedServices: installed, warnings: warnings}
+	state := NewRuntimeState(selected, pacURL)
+	result := NewInstallResult(state, installed, warnings)
 	if len(installed) == 0 {
 		return result, errNoServicesInstalled
 	}
@@ -259,10 +288,10 @@ func (m *ManagedPAC) runReconciliation() {
 func (m *ManagedPAC) reconcile(ctx context.Context, state RuntimeState, pacURL string) ReconcileResult {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return ReconcileResult{err: err}
+		return NewReconcileResult(nil, err)
 	}
 	_, warnings := m.applyEligible(ctx, snapshot, state.serviceNames, pacURL)
-	return ReconcileResult{warnings: warnings}
+	return NewReconcileResult(warnings, nil)
 }
 
 func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selected []string, pacURL string) ([]string, []Warning) {

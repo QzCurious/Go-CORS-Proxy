@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 var (
@@ -348,7 +350,7 @@ type lifecycle struct {
 	managedPACRequestMu  sync.Mutex
 	managedPAC           managedPACModule
 	userCA               userCAModule
-	userCASnapshot       userCASnapshot
+	userCASnapshot       userca.Snapshot
 	userCAAssessmentErr  error
 	coord                *coordinator
 	runtimeDir           string
@@ -375,7 +377,7 @@ type activeRuntime struct {
 }
 
 type managedPACRuntime struct {
-	state    managedPACRuntimeState
+	state    managedpac.RuntimeState
 	warnings []ManagedPACWarningDetail
 }
 
@@ -418,7 +420,7 @@ func newLifecycleState(
 	if pac == nil {
 		pac = openSystemManagedPAC()
 	}
-	var initial userCASnapshot
+	var initial userca.Snapshot
 	var assessmentErr error
 	if inspectUserCA {
 		initial, assessmentErr = ca.Inspect(context.Background())
@@ -577,7 +579,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		phase = active.phase
 		if active.managedPAC != nil {
 			managedPACActive = true
-			managedPACServiceNames = append([]string(nil), active.managedPAC.state.services...)
+			managedPACServiceNames = active.managedPAC.state.ServiceNames()
 			managedPACWarningSnapshot = append([]ManagedPACWarningDetail(nil), active.managedPAC.warnings...)
 		}
 	}
@@ -679,12 +681,12 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	// Once admitted, CA work belongs to the owner rather than the request.
 	result, err := f.userCA.Install(context.Background())
 	if err != nil {
-		if errors.Is(err, errUserCAApprovalDenied) {
+		if errors.Is(err, userca.ErrApprovalDenied) {
 			return InstallResult{Kind: InstallResultApprovalDenied}, nil
 		}
 		return InstallResult{}, err
 	}
-	current := result.current
+	current := result.Current()
 	f.mu.Lock()
 	f.userCASnapshot = current
 	f.userCAAssessmentErr = nil
@@ -695,7 +697,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 		if recoveryErr != nil {
 			return InstallResult{
 				Kind:               InstallResultRuntimeAdoptionFailed,
-				InstalledCAExpires: current.expiresAt,
+				InstalledCAExpires: current.ExpiresAt(),
 				Warnings: []HTTPSWarningDetail{{
 					Kind:       HTTPSWarningInterceptionFailed,
 					Diagnostic: fmt.Sprintf("Installed User CA is usable, but runtime adoption failed: %v.", recoveryErr),
@@ -708,12 +710,12 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 		}
 	}
 	kind := InstallResultAlreadyUsable
-	if result.changed {
+	if result.Changed() {
 		kind = InstallResultInstalled
 	}
 	return InstallResult{
 		Kind:               kind,
-		InstalledCAExpires: current.expiresAt,
+		InstalledCAExpires: current.ExpiresAt(),
 	}, nil
 }
 
@@ -763,7 +765,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	}()
 	var nextURL string
 	if active != nil {
-		nextURL = active.engine.DeactivateHTTPS(userCASnapshot{})
+		nextURL = active.engine.DeactivateHTTPS(userca.Snapshot{})
 		if nextURL != "" {
 			f.requestPACReconciliation(active, nextURL)
 		}
@@ -771,7 +773,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	result, err := f.userCA.Uninstall(context.Background())
 	if err != nil {
 		f.mu.Lock()
-		f.userCASnapshot = userCASnapshot{}
+		f.userCASnapshot = userca.Snapshot{}
 		f.userCAAssessmentErr = err
 		f.mu.Unlock()
 		if active != nil {
@@ -786,12 +788,12 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 			}},
 		}, nil
 	}
-	current := result.current
+	current := result.Current()
 	f.mu.Lock()
 	f.userCASnapshot = current
 	f.userCAAssessmentErr = nil
 	f.mu.Unlock()
-	if !result.changed {
+	if !result.Changed() {
 		return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
 	}
 	return UninstallResult{Kind: UninstallResultUninstalled}, nil
@@ -846,30 +848,31 @@ func (f *lifecycle) requestPACReconciliation(active *activeRuntime, nextURL stri
 		f.mu.Unlock()
 		return
 	}
-	active.managedPAC.state.pacURL = nextURL
+	active.managedPAC.state = managedpac.NewRuntimeState(active.managedPAC.state.ServiceNames(), nextURL)
 	state := active.managedPAC.state
 	f.mu.Unlock()
-	f.managedPAC.RequestReconcile(state, nextURL, func(result managedPACReconcileResult) {
+	f.managedPAC.RequestReconcile(state, nextURL, func(result managedpac.ReconcileResult) {
 		f.mu.Lock()
-		if result.err == nil && f.runtime == active && active.managedPAC != nil && active.managedPAC.state.pacURL == nextURL {
-			active.managedPAC.warnings = managedPACWarningDetails(result.warnings)
+		if result.Err() == nil && f.runtime == active && active.managedPAC != nil && active.managedPAC.state.PACURL() == nextURL {
+			active.managedPAC.warnings = managedPACWarningDetails(result.Warnings())
 		}
 		f.mu.Unlock()
 	})
 }
 
-func (f *lifecycle) managedPACConsentDetail(snapshot managedPACSnapshot) *ManagedPACConsentDetail {
-	out := make([]ManagedPACServiceState, 0, len(snapshot.services))
-	for _, state := range snapshot.services {
+func (f *lifecycle) managedPACConsentDetail(snapshot managedpac.Snapshot) *ManagedPACConsentDetail {
+	services := snapshot.Services()
+	out := make([]ManagedPACServiceState, 0, len(services))
+	for _, state := range services {
 		out = append(out, ManagedPACServiceState{
-			ServiceName: state.name,
-			Enabled:     state.enabled,
-			URL:         state.url,
-			Ownership:   pacOwnership(state.ownership),
-			Manageable:  state.manageable(),
+			ServiceName: state.Name,
+			Enabled:     state.Enabled,
+			URL:         state.URL,
+			Ownership:   pacOwnership(state.Ownership),
+			Manageable:  state.Manageable(),
 		})
 	}
-	proposed := snapshot.manageableServices()
+	proposed := snapshot.ManageableServices()
 	return &ManagedPACConsentDetail{
 		CurrentPACState:  out,
 		ProposedServices: proposed,
@@ -887,23 +890,23 @@ func pacConsentFingerprint(serviceNames []string) PACConsentFingerprint {
 	return PACConsentFingerprint(hex.EncodeToString(h.Sum(nil)))
 }
 
-func managedPACWarningDetails(warnings []managedPACWarning) []ManagedPACWarningDetail {
+func managedPACWarningDetails(warnings []managedpac.Warning) []ManagedPACWarningDetail {
 	out := make([]ManagedPACWarningDetail, 0, len(warnings))
 	for _, warning := range warnings {
 		kind := ManagedPACWarningUpdateFailed
-		if warning.kind == managedPACWarningDrift {
+		if warning.Kind == managedpac.WarningDrift {
 			kind = ManagedPACWarningDrift
 		}
-		out = append(out, ManagedPACWarningDetail{Kind: kind, ServiceName: warning.serviceName, Diagnostic: warning.diagnostic})
+		out = append(out, ManagedPACWarningDetail{Kind: kind, ServiceName: warning.ServiceName, Diagnostic: warning.Diagnostic})
 	}
 	return out
 }
 
-func pacOwnership(ownership managedPACOwnership) PACOwnership {
+func pacOwnership(ownership managedpac.Ownership) PACOwnership {
 	switch ownership {
-	case managedPACOwnershipEmpty:
+	case managedpac.OwnershipEmpty:
 		return PACOwnershipEmpty
-	case managedPACOwnershipOwned:
+	case managedpac.OwnershipOwned:
 		return PACOwnershipOwned
 	default:
 		return PACOwnershipForeign
@@ -914,12 +917,12 @@ func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive
 	return inspectGatewayFootprint(ctx, f.managedPAC, f.coord, stale, runtimeActive, ownerCache)
 }
 
-func installedCAStatus(snapshot userCASnapshot, assessmentErr error, mutating bool) InstalledCAStatusDetail {
+func installedCAStatus(snapshot userca.Snapshot, assessmentErr error, mutating bool) InstalledCAStatusDetail {
 	if mutating {
 		return InstalledCAStatusDetail{Health: CAHealthMutating}
 	}
-	if assessmentErr != nil || !snapshot.usable {
+	if assessmentErr != nil || !snapshot.Usable() {
 		return InstalledCAStatusDetail{Health: CAHealthNotUsable}
 	}
-	return InstalledCAStatusDetail{Health: CAHealthUsable, Expires: snapshot.expiresAt}
+	return InstalledCAStatusDetail{Health: CAHealthUsable, Expires: snapshot.ExpiresAt()}
 }

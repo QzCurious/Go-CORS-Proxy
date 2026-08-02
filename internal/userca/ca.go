@@ -55,6 +55,20 @@ type Snapshot struct {
 	renewalDue  bool
 }
 
+// NewSnapshot returns a usable immutable UserCA observation. The zero value
+// represents a UserCA that is not usable.
+func NewSnapshot(certificate tls.Certificate, expiresAt time.Time, renewalDue bool) (Snapshot, error) {
+	if len(certificate.Certificate) == 0 || certificate.PrivateKey == nil || expiresAt.IsZero() {
+		return Snapshot{}, fmt.Errorf("usable UserCA snapshot requires certificate, private key, and expiry")
+	}
+	return Snapshot{
+		usable:      true,
+		certificate: cloneTLSCertificate(certificate),
+		expiresAt:   expiresAt,
+		renewalDue:  renewalDue,
+	}, nil
+}
+
 func (s Snapshot) Usable() bool { return s.usable }
 
 func (s Snapshot) TLSCertificate() (tls.Certificate, bool) {
@@ -73,6 +87,11 @@ type InstallResult struct {
 	changed bool
 }
 
+// NewInstallResult returns an immutable UserCA installation result.
+func NewInstallResult(current Snapshot, changed bool) InstallResult {
+	return InstallResult{current: current, changed: changed}
+}
+
 func (r InstallResult) Current() Snapshot { return r.current }
 
 func (r InstallResult) Changed() bool { return r.changed }
@@ -80,6 +99,11 @@ func (r InstallResult) Changed() bool { return r.changed }
 type UninstallResult struct {
 	current Snapshot
 	changed bool
+}
+
+// NewUninstallResult returns an immutable UserCA removal result.
+func NewUninstallResult(current Snapshot, changed bool) UninstallResult {
+	return UninstallResult{current: current, changed: changed}
 }
 
 func (r UninstallResult) Current() Snapshot { return r.current }
