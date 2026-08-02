@@ -146,9 +146,9 @@ func TestStartCommandReportsManagedPACInstallationWarnings(t *testing.T) {
 func TestInstallReportsGatewayClassifiedApprovalDenial(t *testing.T) {
 	var out bytes.Buffer
 	err := installCAWithCommand(context.Background(), &out, func(context.Context) (gateway.InstallResult, error) {
-		return gateway.InstallResult{}, gateway.ErrUserCAApprovalDenied
+		return gateway.InstallResult{Kind: gateway.InstallResultApprovalDenied}, nil
 	})
-	if !errors.Is(err, gateway.ErrUserCAApprovalDenied) {
+	if err == nil {
 		t.Fatalf("install error = %v", err)
 	}
 	for _, want := range []string{"Certificate trust was not approved.", "approve the system prompt"} {
@@ -227,7 +227,10 @@ func TestStopCommandRendersCleanupFailure(t *testing.T) {
 func TestStatusCommandRendersStaleCacheGuidance(t *testing.T) {
 	var out bytes.Buffer
 	err := statusWithCommand(context.Background(), &out, func(context.Context) (gateway.StatusResult, error) {
-		return gateway.StatusResult{Kind: gateway.GatewayStatusStaleCache}, nil
+		return gateway.StatusResult{
+			Kind:         gateway.StatusResultReported,
+			StatusReport: gateway.StatusReport{State: gateway.GatewayStatusStaleCache},
+		}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -240,13 +243,16 @@ func TestStatusCommandRendersStaleCacheGuidance(t *testing.T) {
 func TestStatusRendersCurrentUpstreamListWarnings(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{
-		Kind: gateway.GatewayStatusRunning,
-		Runtime: &gateway.RuntimeStatusDetail{
-			UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
-				Line:       4,
-				Text:       "bad/origin",
-				Diagnostic: "Host Selector must not include a scheme, port, or path",
-			}},
+		Kind: gateway.StatusResultReported,
+		StatusReport: gateway.StatusReport{
+			State: gateway.GatewayStatusRunning,
+			Runtime: &gateway.RuntimeStatusDetail{
+				UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
+					Line:       4,
+					Text:       "bad/origin",
+					Diagnostic: "Host Selector must not include a scheme, port, or path",
+				}},
+			},
 		},
 	})
 	if !strings.Contains(out.String(), "warning: upstream-list line 4: bad/origin: Host Selector") {
@@ -257,15 +263,18 @@ func TestStatusRendersCurrentUpstreamListWarnings(t *testing.T) {
 func TestStatusRendersUnmetHTTPSIntent(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{
-		Kind: gateway.GatewayStatusRunning,
-		Runtime: &gateway.RuntimeStatusDetail{
-			HTTPSReadiness: gateway.HTTPSReadinessNotReady,
-			HTTPSIntent:    true,
-			HTTPSWarnings: []gateway.HTTPSWarningDetail{{
-				Kind:       gateway.HTTPSWarningUnmetIntent,
-				Diagnostic: "HTTPS was requested but the Installed User CA is missing.",
-				Action:     "Run `seamless-cors install`.",
-			}},
+		Kind: gateway.StatusResultReported,
+		StatusReport: gateway.StatusReport{
+			State: gateway.GatewayStatusRunning,
+			Runtime: &gateway.RuntimeStatusDetail{
+				HTTPSReadiness: gateway.HTTPSReadinessNotReady,
+				HTTPSIntent:    true,
+				HTTPSWarnings: []gateway.HTTPSWarningDetail{{
+					Kind:       gateway.HTTPSWarningUnmetIntent,
+					Diagnostic: "HTTPS was requested but the Installed User CA is missing.",
+					Action:     "Run `seamless-cors install`.",
+				}},
+			},
 		},
 	})
 	status := out.String()
@@ -283,8 +292,11 @@ func TestStatusRendersUnmetHTTPSIntent(t *testing.T) {
 func TestStatusRendersOwnerEndingGuidance(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{
-		Kind:  gateway.GatewayStatusEnding,
-		Owner: &gateway.OwnerStatusDetail{RouterListen: "127.0.0.1:1234"},
+		Kind: gateway.StatusResultReported,
+		StatusReport: gateway.StatusReport{
+			State: gateway.GatewayStatusEnding,
+			Owner: &gateway.OwnerStatusDetail{RouterListen: "127.0.0.1:1234"},
+		},
 	})
 	if !strings.Contains(out.String(), "seamless-cors status: owner ending") {
 		t.Fatalf("status output = %q", out.String())

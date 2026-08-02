@@ -9,8 +9,8 @@ A local DEV/QA network tool that sits between the browser and configured upstrea
 _Avoid_: generic proxy, CORS middleware
 
 **Gateway Module**:
-The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands for CLI and HTTP control surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing.
-_Avoid_: Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
+The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands together with their semantic results, fulfillment, state classifications, and details for CLI and HTTP control surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing; control surfaces translate Gateway semantics without redefining them.
+_Avoid_: surface-owned outcome, CLI result classification, HTTP-defined command semantics, Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
 
 **Gateway Feature Orchestration**:
 A rule that only the Gateway Module orders and combines facts and mutations across Live Configuration, UserCA, Managed PAC, and Gateway Runtime; feature modules never call one another. Gateway may establish result ordering without waiting for an independent feature mutation to settle.
@@ -21,20 +21,28 @@ A concurrency rule where each feature module serializes only its own mutations w
 _Avoid_: cross-feature mutex, global lifecycle lock, UserCA-blocked configuration, PAC-blocked UserCA mutation
 
 **Surface-Neutral Command Result**:
-A Gateway Module operation result that describes successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting.
-_Avoid_: CLI output, HTTP response model, stringly command result, terminal error text
+The authoritative semantic outcome of a Gateway Module operation, describing successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting. Every anticipated command condition produces such a result, while an error means the Gateway could not produce a semantic outcome; every control surface translates results and errors into its own representation.
+_Avoid_: CLI output, HTTP response model, shared wire model, semantic sentinel error, stringly command result, terminal error text
+
+**Command Fulfillment**:
+An intrinsic two-state property of a Surface-Neutral Command Result: `fulfilled` when the requested postcondition was satisfied or `unfulfilled` when Gateway produced a semantic result but could not satisfy it. Gateway fixes this property for each Operation-Specific Result Kind so every control surface translates the same classification; a failure that prevents Gateway from producing a semantic result has no Command Fulfillment.
+_Avoid_: surface-defined success, HTTP-defined fulfillment, success-means-result-exists, non-HTTP-error, unclassified command failure, panic-only failure
 
 **Operation-Specific Result Kind**:
-A closed command result vocabulary scoped to one Gateway Module operation, so each operation exposes only the outcomes that can actually happen for that command.
-_Avoid_: global result code, shared outcome enum, impossible command state
+A closed command result vocabulary scoped to one Gateway Module operation, including its anticipated coordination, user-decision, and next-action conditions, so each operation exposes only outcomes that can actually happen for that command. A control surface identifies a kind together with its already-known operation rather than promoting kinds into a global vocabulary.
+_Avoid_: operation echoed in result, globally prefixed result code, global result code, shared outcome enum, exported control-flow error, impossible command state
 
 **Gateway Router**:
-The private authenticated-local-HTTP adapter inside the Gateway Module that exposes gateway feature routes and renders Surface-Neutral Command Results as HTTP responses.
-_Avoid_: runtime control endpoint, proxy route, daemon supervisor
+The private authenticated-local-HTTP adapter inside the Gateway Module that owns HTTP request and response representations, exposes gateway feature routes, and translates between those representations and Surface-Neutral Command Results. It introduces a private representation type only where HTTP changes the semantic shape, reusing stable Gateway request and detail value records where shape and meaning are identical. It renders fulfilled results as bare operation-specific success bodies and every non-success HTTP response through the Gateway Error Response.
+_Avoid_: success response envelope, echoed operation name, non-success-means-no-result, Gateway semantic interface, shared command model, runtime control endpoint, proxy route, daemon supervisor
+
+**Gateway Error Response**:
+The shared Gateway Router representation for every non-success HTTP command response, containing a stable machine-authoritative error code, optional structured detail, and non-authoritative human-readable message without imposing an envelope on successful responses. The route and an operation-scoped code together identify an unfulfilled Surface-Neutral Command Result, while Router-wide protocol and infrastructure codes mean Gateway produced no semantic result; clients never parse or reuse the message as Gateway semantics.
+_Avoid_: authoritative error prose, message-based result reconstruction, success response shell, route-specific error shape, HTTP status duplicated in the body, non-success-means-client-error
 
 **Gateway Client**:
-A typed client-facing layer used by CLI and future user interfaces to discover and call an existing Gateway Owner's Gateway Router through the Gateway State Cache identity.
-_Avoid_: command service, lifecycle client, generic JSON caller, managed gateway
+A typed client-facing layer used by CLI and future user interfaces to discover and call an existing Gateway Owner's Gateway Router through the Gateway State Cache identity. It reconstructs fulfilled results from operation-specific success bodies and unfulfilled results from recognized operation-scoped Gateway Error Response codes, while network, malformed, Router-wide, and unknown responses remain errors.
+_Avoid_: HTTP response leak, non-success-means-error, message-parsing client, command service, lifecycle client, generic JSON caller, managed gateway
 
 **Gateway Owner**:
 The module that holds the Gateway Ownership Lease and publishes Gateway Router discovery state for a long-running ownerless `serve` or `start` command or transient ownerless CA work. Once published, start, CA Lifecycle Commands, status, and stop address that owner, while competing serve fails.
@@ -437,12 +445,12 @@ A surface-neutral successful start result detail containing the user-relevant Up
 _Avoid_: terminal start text, listener status detail, proxy setup instructions
 
 **Already-Running Start**:
-An idempotent start result where executing start against an active Gateway Runtime reports that the gateway is already running without treating the command as a failure.
-_Avoid_: duplicate runtime activation, start failure for active runtime, second owner
+An idempotent fulfilled start result where executing start against an active Gateway Runtime reports that the requested running postcondition is already satisfied without requiring another mutation.
+_Avoid_: changed-means-fulfilled, duplicate runtime activation, start failure for active runtime, second owner
 
 **Execute-Time Start Assessment**:
-A start execution rule where an initial `ExecuteStart` attempt inspects every visible network service and returns Managed PAC Consent Detail before mutating. An accepted retry fixes the agreed manageable service set; members that become absent or foreign remain selected but are skipped with Managed PAC Warnings, while excluded and newly appearing services do not join.
-_Avoid_: start plan, repeated consent loop, mutation-before-assessment, consent-time service expansion
+A start execution rule where an initial `ExecuteStart` attempt inspects every visible network service and returns an unfulfilled consent-required result with Managed PAC Consent Detail before mutating. An accepted retry fixes the agreed manageable service set; members that become absent or foreign remain selected but are skipped with Managed PAC Warnings, while excluded and newly appearing services do not join.
+_Avoid_: fulfilled assessment, successful start assessment, start plan, repeated consent loop, mutation-before-assessment, consent-time service expansion
 
 **Single-Flight Start**:
 A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through Upstream List loading, HTTPS Readiness assessment, PAC assessment, Gateway Activation, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
@@ -565,8 +573,8 @@ A status behavior that reports gateway, cleanup-needed, Installed User CA, Human
 _Avoid_: status-triggered cleanup, mutating status command
 
 **Gateway Status State**:
-A read-only gateway status vocabulary that describes whether the Gateway Owner and Gateway Runtime are absent, stale, router-only, starting, or running without encoding cleanup, HTTPS Readiness, or UserCA Usability.
-_Avoid_: cleanup status, UserCA state, start result, runtime state file truth
+A read-only gateway status vocabulary that describes whether the Gateway Owner and Gateway Runtime are absent, stale, router-only, ending, starting, or running without encoding Command Fulfillment, cleanup, HTTPS Readiness, or UserCA Usability. A Status Result keeps its Operation-Specific Result Kind separate from this state: `reported` is fulfilled for every reported state, while an ownership-transition result is unfulfilled and has no reported state.
+_Avoid_: status-as-command-failure, cleanup status, UserCA state, start result, runtime state file truth
 
 **UserCA Usability**:
 A two-state assessment where UserCA is `usable` only when one valid Active UserCA has matching local material and current-user OS trust, and is otherwise `not-usable`. Renewal due is an independent fact; private cleanup state does not cross the UserCA seam, assessment failure is an error, and `mutating` belongs to Gateway command coordination rather than UserCA state.

@@ -54,8 +54,8 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 			_ = lease.Release()
 		}
 	}()
-	if coord.Verify().Status == stateActive {
-		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
+	if verification := coord.Verify(); verification.Status == stateActive {
+		return executeAndStartClient(ctx, newClient(verification.Cache), hooks)
 	}
 	failures := cleanGatewayFootprint(ctx, pac, coord, nil)
 	if len(failures) > 0 {

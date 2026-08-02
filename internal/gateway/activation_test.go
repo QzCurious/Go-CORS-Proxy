@@ -355,8 +355,12 @@ func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
 	}()
 	<-entered
 
-	if _, err := lifecycle.Install(context.Background()); !errors.Is(err, errCAOperationInProgress) {
-		t.Fatalf("competing install error = %v", err)
+	competing, err := lifecycle.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if competing.Kind != InstallResultAlreadyMutating {
+		t.Fatalf("competing install result = %#v", competing)
 	}
 	status, err := lifecycle.Status(context.Background(), false)
 	if err != nil {

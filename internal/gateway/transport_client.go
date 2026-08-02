@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 )
 
 const tokenHeader = "X-Seamless-CORS-Token"
@@ -60,42 +59,52 @@ func newClient(cache stateCache) *client {
 }
 
 func (c *client) Start(ctx context.Context, request StartRequest) (StartResult, error) {
-	var result StartResult
-	err := c.callJSON(ctx, http.MethodPost, "/start", request, &result)
-	var responseErr *responseError
-	if errors.As(err, &responseErr) {
-		var failure struct {
-			Detail string `json:"detail"`
-		}
-		if json.Unmarshal(responseErr.body, &failure) == nil && failure.Detail != "" {
-			return result, &StartError{Diagnostic: failure.Detail}
-		}
+	var success startSuccessBody
+	err := c.callJSON(ctx, http.MethodPost, "/start", request, &success)
+	if err == nil {
+		return success.semantic(), nil
 	}
-	return result, err
+	return decodeCommandFailure(err, knownStartFailureKind, startFailureDetails.semantic)
 }
 
 func (c *client) Stop(ctx context.Context) (StopResult, error) {
-	var result StopResult
-	err := c.callJSON(ctx, http.MethodPost, "/stop", nil, &result)
-	return result, err
+	var success stopSuccessBody
+	err := c.callJSON(ctx, http.MethodPost, "/stop", nil, &success)
+	if err == nil {
+		return success.semantic(), nil
+	}
+	return decodeCommandFailure(err, knownStopFailureKind, stopFailureDetails.semantic)
 }
 
 func (c *client) Status(ctx context.Context) (StatusResult, error) {
-	var result StatusResult
-	err := c.callJSON(ctx, http.MethodGet, "/status", nil, &result)
-	return result, err
+	var success StatusReport
+	err := c.callJSON(ctx, http.MethodGet, "/status", nil, &success)
+	if err == nil {
+		return StatusResult{Kind: StatusResultReported, StatusReport: success}, nil
+	}
+	var remote *remoteGatewayError
+	if errors.As(err, &remote) && remote.body.Code == string(StatusResultOwnerTransition) {
+		return StatusResult{Kind: StatusResultOwnerTransition}, nil
+	}
+	return StatusResult{}, err
 }
 
 func (c *client) Install(ctx context.Context) (InstallResult, error) {
-	var result InstallResult
-	err := c.callJSON(ctx, http.MethodPost, "/install", nil, &result)
-	return result, err
+	var success installSuccessBody
+	err := c.callJSON(ctx, http.MethodPost, "/install", nil, &success)
+	if err == nil {
+		return success.semantic(), nil
+	}
+	return decodeCommandFailure(err, knownInstallFailureKind, installFailureDetails.semantic)
 }
 
 func (c *client) Uninstall(ctx context.Context, request UninstallRequest) (UninstallResult, error) {
-	var result UninstallResult
-	err := c.callJSON(ctx, http.MethodPost, "/uninstall", request, &result)
-	return result, err
+	var success uninstallSuccessBody
+	err := c.callJSON(ctx, http.MethodPost, "/uninstall", request, &success)
+	if err == nil {
+		return success.semantic(), nil
+	}
+	return decodeCommandFailure(err, knownUninstallFailureKind, uninstallFailureDetails.semantic)
 }
 
 func (c *client) callJSON(ctx context.Context, method, path string, body any, out any) error {
@@ -120,15 +129,16 @@ func (c *client) callJSON(ctx context.Context, method, path string, body any, ou
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		text := strings.TrimSpace(string(data))
-		for _, coordinationErr := range []error{errCAOperationInProgress, errGatewayOwnerEnding, errOwnerTransition, ErrUserCAApprovalDenied} {
-			if strings.Contains(text, coordinationErr.Error()) {
-				return coordinationErr
-			}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return readErr
 		}
-		return &responseError{path: path, status: resp.Status, body: data, text: text}
+		var envelope gatewayErrorResponse
+		if err := json.Unmarshal(data, &envelope); err != nil || envelope.ErrorBody.Code == "" || envelope.ErrorBody.Message == "" {
+			return &responseError{path: path, status: resp.Status, body: data}
+		}
+		return &remoteGatewayError{path: path, status: resp.StatusCode, body: envelope.ErrorBody}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -137,9 +147,95 @@ type responseError struct {
 	path   string
 	status string
 	body   []byte
-	text   string
 }
 
 func (e *responseError) Error() string {
-	return fmt.Sprintf("%s returned %s: %s", e.path, e.status, e.text)
+	return fmt.Sprintf("%s returned %s with an invalid Gateway error response: %s", e.path, e.status, string(e.body))
+}
+
+type remoteGatewayError struct {
+	path   string
+	status int
+	body   gatewayErrorBody
+}
+
+func (e *remoteGatewayError) Error() string {
+	return fmt.Sprintf("%s returned %d %s: %s", e.path, e.status, e.body.Code, e.body.Message)
+}
+
+func decodeRemoteDetails(remote *remoteGatewayError, out any) error {
+	if len(remote.body.Details) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(remote.body.Details, out); err != nil {
+		return fmt.Errorf("decode %s details: %w", remote.body.Code, err)
+	}
+	return nil
+}
+
+func decodeCommandFailure[K ~string, D, R any](
+	err error,
+	known func(K) bool,
+	semantic func(D, K) R,
+) (R, error) {
+	var zero R
+	var remote *remoteGatewayError
+	if !errors.As(err, &remote) {
+		return zero, err
+	}
+	kind := K(remote.body.Code)
+	if !known(kind) {
+		return zero, err
+	}
+	var details D
+	if err := decodeRemoteDetails(remote, &details); err != nil {
+		return zero, err
+	}
+	return semantic(details, kind), nil
+}
+
+func knownStartFailureKind(kind StartResultKind) bool {
+	switch kind {
+	case StartResultOwnerTransition,
+		StartResultConsentRequired,
+		StartResultConsentDeclined,
+		StartResultNoManageablePACServices,
+		StartResultManagedPACInstallationFailed,
+		StartResultStartAlreadyMutating,
+		StartResultStopCancelled,
+		StartResultCleanupFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func knownStopFailureKind(kind StopResultKind) bool {
+	return kind == StopResultCleanupFailed || kind == StopResultNotRunningCleanupFailed
+}
+
+func knownInstallFailureKind(kind InstallResultKind) bool {
+	switch kind {
+	case InstallResultRuntimeAdoptionFailed,
+		InstallResultApprovalDenied,
+		InstallResultAlreadyMutating,
+		InstallResultOwnerEnding,
+		InstallResultOwnerTransition:
+		return true
+	default:
+		return false
+	}
+}
+
+func knownUninstallFailureKind(kind UninstallResultKind) bool {
+	switch kind {
+	case UninstallResultConsentRequired,
+		UninstallResultAlreadyMutating,
+		UninstallResultOwnerEnding,
+		UninstallResultOwnerTransition,
+		UninstallResultIncomplete:
+		return true
+	default:
+		return false
+	}
 }

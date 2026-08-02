@@ -65,8 +65,8 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Kind != GatewayStatusEnding {
-		t.Fatalf("status kind = %s, want %s", status.Kind, GatewayStatusEnding)
+	if status.State != GatewayStatusEnding {
+		t.Fatalf("status state = %s, want %s", status.State, GatewayStatusEnding)
 	}
 	if status.Owner == nil || status.Owner.RouterListen != "127.0.0.1:1" {
 		t.Fatalf("status owner = %#v, want router detail", status.Owner)

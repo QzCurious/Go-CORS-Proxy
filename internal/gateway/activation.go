@@ -37,7 +37,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		if ctx.Err() != nil {
 			return StartResult{Kind: StartResultStopCancelled}, nil
 		}
-		return StartResult{}, &StartError{Diagnostic: err.Error(), Cause: err}
+		return StartResult{}, fmt.Errorf("start runtime: %w", err)
 	}
 
 	acceptedServices, assessmentResult, err := s.acceptedManagedPACServices(ctx, request)

@@ -69,7 +69,7 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Kind != GatewayStatusRouterOnly || status.InstalledCA.Health != CAHealthMutating {
+	if status.State != GatewayStatusRouterOnly || status.InstalledCA.Health != CAHealthMutating {
 		t.Fatalf("transient status = %#v", status)
 	}
 	start, err := target.client.Start(context.Background(), StartRequest{})
@@ -79,8 +79,12 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 	if start.Kind != StartResultStartAlreadyMutating {
 		t.Fatalf("start during transient mutation = %#v", start)
 	}
-	if _, err := target.client.Install(context.Background()); !errors.Is(err, errCAOperationInProgress) {
-		t.Fatalf("competing install error = %v", err)
+	competing, err := target.client.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if competing.Kind != InstallResultAlreadyMutating {
+		t.Fatalf("competing install result = %#v", competing)
 	}
 
 	close(release)
@@ -113,10 +117,12 @@ func TestOwnerlessStatusReportsOwnershipTransitionInsteadOfInspectingUnlocked(t 
 	defer lease.Release()
 	ca := &fakeUserCA{}
 
-	_, err = status(context.Background(), &lifecycleTestSystemSettings{}, ca)
-
-	if !errors.Is(err, errOwnerTransition) {
-		t.Fatalf("status error = %v", err)
+	result, err := status(context.Background(), &lifecycleTestSystemSettings{}, ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != StatusResultOwnerTransition || result.Fulfillment() != CommandUnfulfilled {
+		t.Fatalf("status result = %#v", result)
 	}
 	if ca.inspectCalls != 0 {
 		t.Fatalf("status inspected UserCA without coherent ownership: %d calls", ca.inspectCalls)

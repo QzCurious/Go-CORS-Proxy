@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,7 +26,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if request.ManagedPACConsent == nil || request.ManagedPACConsent.Fingerprint != "services-v1" || len(request.ManagedPACConsent.ServiceNames) != 1 || request.ManagedPACConsent.ServiceNames[0] != "Wi-Fi" {
 			t.Fatalf("request = %#v", request)
 		}
-		_ = json.NewEncoder(w).Encode(StartResult{Kind: StartResultStarted})
+		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true})
 	}))
 	defer server.Close()
 
@@ -46,22 +45,21 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 	}
 }
 
-func TestStartFailureReturnsDiagnostic(t *testing.T) {
+func TestStartFailureReturnsSemanticResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/problem+json")
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"status":500,"detail":"PAC install failed"}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"managed-pac-installation-failed","message":"Gateway Start was not fulfilled.","details":{"diagnostic":"PAC install failed"}}}`))
 	}))
 	defer server.Close()
 	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
 
-	_, err := client.Start(context.Background(), StartRequest{})
-	var startErr *StartError
-	if !errors.As(err, &startErr) {
-		t.Fatalf("error = %v, want StartError", err)
+	result, err := client.Start(context.Background(), StartRequest{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if startErr.Diagnostic != "PAC install failed" {
-		t.Fatalf("diagnostic = %q", startErr.Diagnostic)
+	if result.Kind != StartResultManagedPACInstallationFailed || result.Diagnostic != "PAC install failed" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -80,16 +78,21 @@ func TestStatusReportsHTTPFailure(t *testing.T) {
 	}
 }
 
-func TestInstallPreservesUserCAApprovalDenialClassification(t *testing.T) {
+func TestInstallDecodesApprovalDenialResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, ErrUserCAApprovalDenied.Error(), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error":{"code":"approval-denied","message":"Certificate trust approval was denied."}}`))
 	}))
 	defer server.Close()
 	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
 
-	_, err := client.Install(context.Background())
-	if !errors.Is(err, ErrUserCAApprovalDenied) {
-		t.Fatalf("install error = %v", err)
+	result, err := client.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != InstallResultApprovalDenied || result.Fulfillment() != CommandUnfulfilled {
+		t.Fatalf("install result = %#v", result)
 	}
 }
 

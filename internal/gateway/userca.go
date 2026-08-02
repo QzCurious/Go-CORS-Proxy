@@ -10,7 +10,7 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
-var ErrUserCAApprovalDenied = errors.New("UserCA trust approval denied")
+var errUserCAApprovalDenied = errors.New("UserCA trust approval denied")
 
 type userCASnapshot struct {
 	usable      bool
@@ -58,7 +58,7 @@ func (a systemUserCA) Install(ctx context.Context) (userCAInstallResult, error) 
 	result, err := a.module.Install(ctx)
 	if err != nil {
 		if errors.Is(err, userca.ErrApprovalDenied) {
-			return userCAInstallResult{}, fmt.Errorf("%w: %v", ErrUserCAApprovalDenied, err)
+			return userCAInstallResult{}, fmt.Errorf("%w: %v", errUserCAApprovalDenied, err)
 		}
 		return userCAInstallResult{}, err
 	}

@@ -13,17 +13,21 @@ import (
 )
 
 var (
-	errCAOperationInProgress = errors.New("ca-operation-in-progress")
-	errGatewayOwnerEnding    = errors.New("gateway owner is ending")
-	errOwnerTransition       = errors.New("gateway ownership is transitioning")
+	errOwnerTransition = errors.New("gateway ownership is transitioning")
 )
 
 type StartResultKind string
 
+type CommandFulfillment string
+
+const (
+	CommandFulfilled   CommandFulfillment = "fulfilled"
+	CommandUnfulfilled CommandFulfillment = "unfulfilled"
+)
+
 const (
 	StartResultStarted                      StartResultKind = "started"
 	StartResultAlreadyRunning               StartResultKind = "already-running"
-	StartResultOwnerAlreadyRunning          StartResultKind = "owner-already-running"
 	StartResultOwnerTransition              StartResultKind = "owner-transition"
 	StartResultConsentRequired              StartResultKind = "managed-pac-consent-required"
 	StartResultConsentDeclined              StartResultKind = "managed-pac-consent-declined"
@@ -34,25 +38,24 @@ const (
 	StartResultCleanupFailed                StartResultKind = "cleanup-failed"
 )
 
-type StartError struct {
-	Diagnostic string `json:"diagnostic"`
-	Cause      error  `json:"-"`
-}
-
-func (e *StartError) Error() string { return e.Diagnostic }
-func (e *StartError) Unwrap() error { return e.Cause }
-
 type StartRequest struct {
 	ManagedPACConsent *ManagedPACConsentInput `json:"managedPacConsent,omitempty"`
 }
 
 type StartResult struct {
-	Kind               StartResultKind           `json:"kind"`
-	ManagedPACConsent  *ManagedPACConsentDetail  `json:"managedPacConsent,omitempty"`
-	ManagedPACWarnings []ManagedPACWarningDetail `json:"managedPacWarnings,omitempty"`
-	Diagnostic         string                    `json:"diagnostic,omitempty"`
-	Guidance           *StartGuidanceDetail      `json:"guidance,omitempty"`
-	CleanupFailures    []CleanupFailureDetail    `json:"cleanupFailures,omitempty"`
+	Kind               StartResultKind
+	ManagedPACConsent  *ManagedPACConsentDetail
+	ManagedPACWarnings []ManagedPACWarningDetail
+	Diagnostic         string
+	Guidance           *StartGuidanceDetail
+	CleanupFailures    []CleanupFailureDetail
+}
+
+func (r StartResult) Fulfillment() CommandFulfillment {
+	if r.Kind == StartResultStarted || r.Kind == StartResultAlreadyRunning {
+		return CommandFulfilled
+	}
+	return CommandUnfulfilled
 }
 
 type ManagedPACConsentDetail struct {
@@ -117,9 +120,16 @@ const (
 )
 
 type StopResult struct {
-	Kind            StopResultKind         `json:"kind"`
-	Warnings        []CommandWarning       `json:"warnings,omitempty"`
-	CleanupFailures []CleanupFailureDetail `json:"cleanupFailures,omitempty"`
+	Kind            StopResultKind
+	Warnings        []CommandWarning
+	CleanupFailures []CleanupFailureDetail
+}
+
+func (r StopResult) Fulfillment() CommandFulfillment {
+	if r.Kind == StopResultStopped || r.Kind == StopResultNotRunning {
+		return CommandFulfilled
+	}
+	return CommandUnfulfilled
 }
 
 type CleanupFailureDetail struct {
@@ -151,12 +161,23 @@ const (
 	InstallResultInstalled             InstallResultKind = "installed"
 	InstallResultAlreadyUsable         InstallResultKind = "already-usable"
 	InstallResultRuntimeAdoptionFailed InstallResultKind = "installed-runtime-adoption-failed"
+	InstallResultApprovalDenied        InstallResultKind = "approval-denied"
+	InstallResultAlreadyMutating       InstallResultKind = "already-mutating"
+	InstallResultOwnerEnding           InstallResultKind = "owner-ending"
+	InstallResultOwnerTransition       InstallResultKind = "owner-transition"
 )
 
 type InstallResult struct {
-	Kind               InstallResultKind    `json:"kind"`
-	InstalledCAExpires time.Time            `json:"installedCAExpires,omitempty"`
-	Warnings           []HTTPSWarningDetail `json:"warnings,omitempty"`
+	Kind               InstallResultKind
+	InstalledCAExpires time.Time
+	Warnings           []HTTPSWarningDetail
+}
+
+func (r InstallResult) Fulfillment() CommandFulfillment {
+	if r.Kind == InstallResultInstalled || r.Kind == InstallResultAlreadyUsable {
+		return CommandFulfilled
+	}
+	return CommandUnfulfilled
 }
 
 type UninstallResultKind string
@@ -165,12 +186,23 @@ const (
 	UninstallResultUninstalled     UninstallResultKind = "uninstalled"
 	UninstallResultAlreadyAbsent   UninstallResultKind = "already-absent"
 	UninstallResultConsentRequired UninstallResultKind = "consent-required"
+	UninstallResultAlreadyMutating UninstallResultKind = "already-mutating"
+	UninstallResultOwnerEnding     UninstallResultKind = "owner-ending"
+	UninstallResultOwnerTransition UninstallResultKind = "owner-transition"
+	UninstallResultIncomplete      UninstallResultKind = "incomplete"
 )
 
 type UninstallResult struct {
-	Kind               UninstallResultKind  `json:"kind"`
-	ConsentFingerprint string               `json:"consentFingerprint,omitempty"`
-	Warnings           []HTTPSWarningDetail `json:"warnings,omitempty"`
+	Kind               UninstallResultKind
+	ConsentFingerprint string
+	Warnings           []HTTPSWarningDetail
+}
+
+func (r UninstallResult) Fulfillment() CommandFulfillment {
+	if r.Kind == UninstallResultUninstalled || r.Kind == UninstallResultAlreadyAbsent {
+		return CommandFulfilled
+	}
+	return CommandUnfulfilled
 }
 
 type UninstallRequest struct {
@@ -178,6 +210,13 @@ type UninstallRequest struct {
 }
 
 type GatewayStatusKind string
+
+type StatusResultKind string
+
+const (
+	StatusResultReported        StatusResultKind = "reported"
+	StatusResultOwnerTransition StatusResultKind = "owner-transition"
+)
 
 const (
 	GatewayStatusNotRunning GatewayStatusKind = "not-running"
@@ -189,11 +228,23 @@ const (
 )
 
 type StatusResult struct {
-	Kind        GatewayStatusKind       `json:"kind"`
+	Kind StatusResultKind
+	StatusReport
+}
+
+type StatusReport struct {
+	State       GatewayStatusKind       `json:"state"`
 	Owner       *OwnerStatusDetail      `json:"owner,omitempty"`
 	Runtime     *RuntimeStatusDetail    `json:"runtime,omitempty"`
 	Cleanup     CleanupStatusDetail     `json:"cleanup"`
 	InstalledCA InstalledCAStatusDetail `json:"installedCA"`
+}
+
+func (r StatusResult) Fulfillment() CommandFulfillment {
+	if r.Kind == StatusResultReported {
+		return CommandFulfilled
+	}
+	return CommandUnfulfilled
 }
 
 type OwnerStatusDetail struct {
@@ -532,12 +583,15 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	}
 	f.mu.Unlock()
 	result := StatusResult{
-		Kind:        GatewayStatusNotRunning,
-		Cleanup:     f.cleanupStatus(ctx, stale, active != nil, ownerCache),
-		InstalledCA: installedCAStatus(caSnapshot, caAssessmentErr, caMutating),
+		Kind: StatusResultReported,
+		StatusReport: StatusReport{
+			State:       GatewayStatusNotRunning,
+			Cleanup:     f.cleanupStatus(ctx, stale, active != nil, ownerCache),
+			InstalledCA: installedCAStatus(caSnapshot, caAssessmentErr, caMutating),
+		},
 	}
 	if ownerEnding {
-		result.Kind = GatewayStatusEnding
+		result.State = GatewayStatusEnding
 		if f.routerListen != "" {
 			result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		}
@@ -545,11 +599,11 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	}
 	if active != nil {
 		if phase != runtimePhaseRunning {
-			result.Kind = GatewayStatusStarting
+			result.State = GatewayStatusStarting
 		}
 		state := active.engine.snapshot()
 		if phase == runtimePhaseRunning {
-			result.Kind = GatewayStatusRunning
+			result.State = GatewayStatusRunning
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
@@ -569,10 +623,10 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		return result, nil
 	}
 	if f.routerListen != "" {
-		result.Kind = GatewayStatusRouterOnly
+		result.State = GatewayStatusRouterOnly
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 	} else if stale {
-		result.Kind = GatewayStatusStaleCache
+		result.State = GatewayStatusStaleCache
 	}
 	return result, nil
 }
@@ -594,7 +648,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 		return InstallResult{}, err
 	}
 	if !f.caAdmissionMu.TryLock() {
-		return InstallResult{}, errCAOperationInProgress
+		return InstallResult{Kind: InstallResultAlreadyMutating}, nil
 	}
 	f.mu.Lock()
 	ownerEnding := f.ownerEnding
@@ -606,9 +660,9 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	if ownerEnding || startMutating {
 		f.caAdmissionMu.Unlock()
 		if startMutating {
-			return InstallResult{}, errCAOperationInProgress
+			return InstallResult{Kind: InstallResultAlreadyMutating}, nil
 		}
-		return InstallResult{}, errGatewayOwnerEnding
+		return InstallResult{Kind: InstallResultOwnerEnding}, nil
 	}
 	defer func() {
 		f.mu.Lock()
@@ -625,6 +679,9 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	// Once admitted, CA work belongs to the owner rather than the request.
 	result, err := f.userCA.Install(context.Background())
 	if err != nil {
+		if errors.Is(err, errUserCAApprovalDenied) {
+			return InstallResult{Kind: InstallResultApprovalDenied}, nil
+		}
 		return InstallResult{}, err
 	}
 	current := result.current
@@ -669,7 +726,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 		return UninstallResult{}, err
 	}
 	if !f.caAdmissionMu.TryLock() {
-		return UninstallResult{}, errCAOperationInProgress
+		return UninstallResult{Kind: UninstallResultAlreadyMutating}, nil
 	}
 	f.mu.Lock()
 	if f.ownerEnding || f.startMutating {
@@ -677,9 +734,9 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 		f.mu.Unlock()
 		f.caAdmissionMu.Unlock()
 		if ending {
-			return UninstallResult{}, errGatewayOwnerEnding
+			return UninstallResult{Kind: UninstallResultOwnerEnding}, nil
 		}
-		return UninstallResult{}, errCAOperationInProgress
+		return UninstallResult{Kind: UninstallResultAlreadyMutating}, nil
 	}
 	active := f.runtime
 	if active != nil && active.engine.snapshot().HTTPSInterception == HTTPSInterceptionActive {
@@ -720,7 +777,14 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 		if active != nil {
 			active.engine.SetUninstallWarning(err)
 		}
-		return UninstallResult{}, err
+		return UninstallResult{
+			Kind: UninstallResultIncomplete,
+			Warnings: []HTTPSWarningDetail{{
+				Kind:       HTTPSWarningUninstallIncomplete,
+				Diagnostic: err.Error(),
+				Action:     "Run `seamless-cors uninstall` again.",
+			}},
+		}, nil
 	}
 	current := result.current
 	f.mu.Lock()

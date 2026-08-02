@@ -2,9 +2,9 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -26,6 +26,8 @@ type routerServer struct {
 	handler    commandHandler
 	shutdownCh chan struct{}
 }
+
+var configureGatewayErrorsOnce sync.Once
 
 func newRouter(token string, handler commandHandler) *routerServer {
 	s := &routerServer{
@@ -68,7 +70,13 @@ func (s *routerServer) commandOperation(api huma.API, method, path, operationID,
 		OperationID: operationID,
 		Summary:     summary,
 		Tags:        []string{"Gateway Router"},
-		Errors:      []int{http.StatusUnauthorized},
+		Errors: []int{
+			http.StatusUnauthorized,
+			http.StatusConflict,
+			http.StatusUnprocessableEntity,
+			http.StatusInternalServerError,
+			http.StatusServiceUnavailable,
+		},
 		Security:    []map[string][]string{{"gatewayOwnerToken": []string{}}},
 		Middlewares: huma.Middlewares{s.authorize(api)},
 	}
@@ -97,7 +105,7 @@ type startInput struct {
 }
 
 type startOutput struct {
-	Body StartResult
+	Body startSuccessBody
 }
 
 func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutput, error) {
@@ -107,36 +115,26 @@ func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutp
 	}
 	result, err := s.handler.ExecuteStart(ctx, request)
 	if err != nil {
-		var startErr *StartError
-		if errors.As(err, &startErr) {
-			return nil, &startHTTPError{
-				Status: http.StatusInternalServerError,
-				Title:  "gateway start failed",
-				Detail: startErr.Diagnostic,
-			}
-		}
-		return nil, err
+		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce a Start result.", err)
 	}
-	return &startOutput{Body: result}, nil
+	if result.Fulfillment() == CommandUnfulfilled {
+		failure := startFailureRepresentation(result.Kind)
+		return nil, newGatewayError(failure.status, string(result.Kind), failure.message, startFailureDetailsFrom(result))
+	}
+	return &startOutput{Body: startSuccessBodyFrom(result)}, nil
 }
-
-type startHTTPError struct {
-	Status int    `json:"status"`
-	Title  string `json:"title"`
-	Detail string `json:"detail"`
-}
-
-func (e *startHTTPError) Error() string  { return e.Detail }
-func (e *startHTTPError) GetStatus() int { return e.Status }
 
 type stopOutput struct {
-	Body StopResult
+	Body stopSuccessBody
 }
 
 func (s *routerServer) stop(ctx context.Context, _ *struct{}) (*stopOutput, error) {
 	result, err := s.handler.Stop(ctx)
 	if err != nil {
-		return nil, err
+		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce a Stop result.", err)
+	}
+	if result.Fulfillment() == CommandUnfulfilled {
+		return nil, newGatewayError(http.StatusInternalServerError, string(result.Kind), "Gateway cleanup did not complete.", stopFailureDetailsFrom(result))
 	}
 	if result.Kind == StopResultStopped {
 		go func() {
@@ -145,35 +143,42 @@ func (s *routerServer) stop(ctx context.Context, _ *struct{}) (*stopOutput, erro
 			_ = s.server.Close()
 		}()
 	}
-	return &stopOutput{Body: result}, nil
+	return &stopOutput{Body: stopSuccessBodyFrom(result)}, nil
 }
 
 type statusOutput struct {
-	Body StatusResult
+	Body StatusReport
 }
 
 func (s *routerServer) status(ctx context.Context, _ *struct{}) (*statusOutput, error) {
 	result, err := s.handler.Status(ctx, false)
 	if err != nil {
-		return nil, err
+		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce a Status result.", err)
 	}
-	return &statusOutput{Body: result}, nil
+	if result.Fulfillment() == CommandUnfulfilled {
+		return nil, newGatewayError(http.StatusServiceUnavailable, string(result.Kind), "Gateway ownership is transitioning; retry Status.", nil)
+	}
+	return &statusOutput{Body: result.StatusReport}, nil
 }
 
 type installOutput struct {
-	Body InstallResult
+	Body installSuccessBody
 }
 
 func (s *routerServer) install(ctx context.Context, _ *struct{}) (*installOutput, error) {
 	result, err := s.handler.Install(ctx)
 	if err != nil {
-		return nil, err
+		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce an Install result.", err)
 	}
-	return &installOutput{Body: result}, nil
+	if result.Fulfillment() == CommandUnfulfilled {
+		failure := installFailureRepresentation(result.Kind)
+		return nil, newGatewayError(failure.status, string(result.Kind), failure.message, installFailureDetailsFrom(result))
+	}
+	return &installOutput{Body: installSuccessBodyFrom(result)}, nil
 }
 
 type uninstallOutput struct {
-	Body UninstallResult
+	Body uninstallSuccessBody
 }
 
 type uninstallInput struct {
@@ -183,9 +188,13 @@ type uninstallInput struct {
 func (s *routerServer) uninstall(ctx context.Context, input *uninstallInput) (*uninstallOutput, error) {
 	result, err := s.handler.UninstallWithConsent(ctx, input.Body.ConsentFingerprint)
 	if err != nil {
-		return nil, err
+		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce an Uninstall result.", err)
 	}
-	return &uninstallOutput{Body: result}, nil
+	if result.Fulfillment() == CommandUnfulfilled {
+		failure := uninstallFailureRepresentation(result.Kind)
+		return nil, newGatewayError(failure.status, string(result.Kind), failure.message, uninstallFailureDetailsFrom(result))
+	}
+	return &uninstallOutput{Body: uninstallSuccessBodyFrom(result)}, nil
 }
 
 func (s *routerServer) requestShutdown() {
@@ -197,6 +206,14 @@ func (s *routerServer) requestShutdown() {
 }
 
 func gatewayRouterConfig() huma.Config {
+	configureGatewayErrorsOnce.Do(func() {
+		huma.NewError = func(status int, message string, errs ...error) huma.StatusError {
+			return newRouterError(status, message, errs...)
+		}
+		huma.NewErrorWithContext = func(_ huma.Context, status int, message string, errs ...error) huma.StatusError {
+			return newRouterError(status, message, errs...)
+		}
+	})
 	config := huma.DefaultConfig("seamless-cors Gateway Router", "0.0.0")
 	config.CreateHooks = nil
 	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
@@ -208,4 +225,64 @@ func gatewayRouterConfig() huma.Config {
 		},
 	}
 	return config
+}
+
+type failureRepresentation struct {
+	status  int
+	message string
+}
+
+func startFailureRepresentation(kind StartResultKind) failureRepresentation {
+	switch kind {
+	case StartResultOwnerTransition:
+		return failureRepresentation{http.StatusServiceUnavailable, "Gateway ownership is transitioning; retry Start."}
+	case StartResultConsentRequired:
+		return failureRepresentation{http.StatusUnprocessableEntity, "Managed PAC consent is required."}
+	case StartResultConsentDeclined:
+		return failureRepresentation{http.StatusUnprocessableEntity, "Managed PAC consent was declined."}
+	case StartResultNoManageablePACServices:
+		return failureRepresentation{http.StatusUnprocessableEntity, "No manageable PAC services are available."}
+	case StartResultStartAlreadyMutating:
+		return failureRepresentation{http.StatusConflict, "Another Gateway mutation is in progress."}
+	case StartResultStopCancelled:
+		return failureRepresentation{http.StatusConflict, "Stop cancelled the Start operation."}
+	case StartResultCleanupFailed:
+		return failureRepresentation{http.StatusInternalServerError, "Gateway cleanup did not complete."}
+	default:
+		return failureRepresentation{http.StatusInternalServerError, "Gateway Start was not fulfilled."}
+	}
+}
+
+func installFailureRepresentation(kind InstallResultKind) failureRepresentation {
+	switch kind {
+	case InstallResultApprovalDenied:
+		return failureRepresentation{http.StatusUnprocessableEntity, "Certificate trust approval was denied."}
+	case InstallResultOwnerTransition:
+		return failureRepresentation{http.StatusServiceUnavailable, "Gateway ownership is transitioning; retry Install."}
+	case InstallResultAlreadyMutating:
+		return failureRepresentation{http.StatusConflict, "Another certificate operation is in progress."}
+	case InstallResultOwnerEnding:
+		return failureRepresentation{http.StatusConflict, "The Gateway owner is ending."}
+	case InstallResultRuntimeAdoptionFailed:
+		return failureRepresentation{http.StatusInternalServerError, "The User CA was installed, but runtime adoption did not complete."}
+	default:
+		return failureRepresentation{http.StatusInternalServerError, "Gateway Install was not fulfilled."}
+	}
+}
+
+func uninstallFailureRepresentation(kind UninstallResultKind) failureRepresentation {
+	switch kind {
+	case UninstallResultConsentRequired:
+		return failureRepresentation{http.StatusUnprocessableEntity, "Confirmation is required while HTTPS interception is active."}
+	case UninstallResultOwnerTransition:
+		return failureRepresentation{http.StatusServiceUnavailable, "Gateway ownership is transitioning; retry Uninstall."}
+	case UninstallResultAlreadyMutating:
+		return failureRepresentation{http.StatusConflict, "Another certificate operation is in progress."}
+	case UninstallResultOwnerEnding:
+		return failureRepresentation{http.StatusConflict, "The Gateway owner is ending."}
+	case UninstallResultIncomplete:
+		return failureRepresentation{http.StatusInternalServerError, "User CA removal did not complete."}
+	default:
+		return failureRepresentation{http.StatusInternalServerError, "Gateway Uninstall was not fulfilled."}
+	}
 }

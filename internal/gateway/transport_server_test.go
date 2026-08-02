@@ -38,6 +38,15 @@ func TestCommandRoutesRequireToken(t *testing.T) {
 	if handler.statusCalled {
 		t.Fatal("command handler Status was called without token")
 	}
+	var body struct {
+		Error gatewayErrorBody `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != errorCodeUnauthorized || body.Error.Message == "" {
+		t.Fatalf("unauthorized body = %#v", body)
+	}
 }
 
 func TestHealthRequiresTokenAndDoesNotCallCommandHandler(t *testing.T) {
@@ -119,8 +128,11 @@ func TestStartPropagatesRequestContext(t *testing.T) {
 	}
 }
 
-func TestStartFailureCarriesDiagnostic(t *testing.T) {
-	handler := &fakeCommandHandler{startErr: &StartError{Diagnostic: "PAC install failed"}}
+func TestStartFailureUsesSharedErrorShell(t *testing.T) {
+	handler := &fakeCommandHandler{startResult: StartResult{
+		Kind:       StartResultManagedPACInstallationFailed,
+		Diagnostic: "PAC install failed",
+	}}
 	server := newRouter("token", handler)
 	req := httptest.NewRequest(http.MethodPost, "/start", nil)
 	req.Header.Set(tokenHeader, "token")
@@ -132,13 +144,47 @@ func TestStartFailureCarriesDiagnostic(t *testing.T) {
 		t.Fatalf("start status = %d, want %d: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
 	}
 	var body struct {
-		Detail string `json:"detail"`
+		Error gatewayErrorBody `json:"error"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Detail != "PAC install failed" {
+	if body.Error.Code != string(StartResultManagedPACInstallationFailed) {
 		t.Fatalf("failure body = %#v", body)
+	}
+	var details startFailureDetails
+	if err := json.Unmarshal(body.Error.Details, &details); err != nil {
+		t.Fatal(err)
+	}
+	if details.Diagnostic != "PAC install failed" {
+		t.Fatalf("failure details = %#v", details)
+	}
+}
+
+func TestStartSuccessIsBareSubjectResponse(t *testing.T) {
+	handler := &fakeCommandHandler{startResult: StartResult{Kind: StartResultStarted}}
+	server := newRouter("token", handler)
+	req := httptest.NewRequest(http.MethodPost, "/start", nil)
+	req.Header.Set(tokenHeader, "token")
+	rec := httptest.NewRecorder()
+
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["changed"] != true {
+		t.Fatalf("start body = %#v", body)
+	}
+	if _, exists := body["kind"]; exists {
+		t.Fatalf("start body echoed result kind: %#v", body)
+	}
+	if _, exists := body["result"]; exists {
+		t.Fatalf("start body used a success envelope: %#v", body)
 	}
 }
 
@@ -185,13 +231,18 @@ type fakeCommandHandler struct {
 	startRequest StartRequest
 	startContext context.Context
 	startErr     error
+	startResult  StartResult
 }
 
 func (f *fakeCommandHandler) ExecuteStart(ctx context.Context, request StartRequest) (StartResult, error) {
 	f.startCalled = true
 	f.startRequest = request
 	f.startContext = ctx
-	return StartResult{Kind: StartResultStarted}, f.startErr
+	result := f.startResult
+	if result.Kind == "" {
+		result.Kind = StartResultStarted
+	}
+	return result, f.startErr
 }
 
 func (f *fakeCommandHandler) Stop(context.Context) (StopResult, error) {
@@ -200,7 +251,7 @@ func (f *fakeCommandHandler) Stop(context.Context) (StopResult, error) {
 
 func (f *fakeCommandHandler) Status(context.Context, bool) (StatusResult, error) {
 	f.statusCalled = true
-	return StatusResult{Kind: GatewayStatusRouterOnly}, nil
+	return StatusResult{Kind: StatusResultReported, StatusReport: StatusReport{State: GatewayStatusRouterOnly}}, nil
 }
 
 func (f *fakeCommandHandler) Install(context.Context) (InstallResult, error) {

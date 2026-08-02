@@ -88,7 +88,7 @@ func status(ctx context.Context, pac managedPACModule, ca userCAModule) (StatusR
 		if retry.kind == targetActive {
 			return retry.client.Status(ctx)
 		}
-		return StatusResult{}, fmt.Errorf("%w; retry status", errOwnerTransition)
+		return StatusResult{Kind: StatusResultOwnerTransition}, nil
 	}
 	defer lease.Release()
 	lifecycle, err := newLifecycle(pac, ca, coord, "")
@@ -127,6 +127,9 @@ func installCA(ctx context.Context, ca userCAModule) (InstallResult, error) {
 	if routed != nil {
 		return routed.Install(ctx)
 	}
+	if errors.Is(err, errOwnerTransition) {
+		return InstallResult{Kind: InstallResultOwnerTransition}, nil
+	}
 	return result, err
 }
 
@@ -155,6 +158,9 @@ func uninstallCA(ctx context.Context, ca userCAModule, request UninstallRequest)
 	})
 	if routed != nil {
 		return routed.Uninstall(ctx, request)
+	}
+	if errors.Is(err, errOwnerTransition) {
+		return UninstallResult{Kind: UninstallResultOwnerTransition}, nil
 	}
 	return result, err
 }

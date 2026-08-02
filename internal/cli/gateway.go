@@ -50,9 +50,11 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 		HTTPSWarningsChanged: liveWarnings.RenderSnapshot,
 	}
 	result, err := command(ctx, hooks)
-	if result.Kind == gateway.StartResultOwnerAlreadyRunning {
-		fmt.Fprintln(stdout, "gateway owner already running")
-		return fmt.Errorf("gateway owner already running")
+	if err != nil {
+		return err
+	}
+	if result.Fulfillment() == gateway.CommandFulfilled {
+		return nil
 	}
 	if result.Kind == gateway.StartResultOwnerTransition {
 		return fmt.Errorf("Gateway Ownership is transitioning; retry start")
@@ -72,7 +74,7 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	if result.Kind == gateway.StartResultManagedPACInstallationFailed {
 		return fmt.Errorf("gateway start failed: %s", result.Diagnostic)
 	}
-	return err
+	return fmt.Errorf("gateway start was not fulfilled: %s", result.Kind)
 }
 
 type serveCommand func(context.Context, func()) error
@@ -114,7 +116,7 @@ func stopGatewayWithCommand(ctx context.Context, stdout io.Writer, command stopC
 		return err
 	}
 	renderStopResult(stdout, result)
-	if result.Kind == gateway.StopResultStopped || result.Kind == gateway.StopResultNotRunning {
+	if result.Fulfillment() == gateway.CommandFulfilled {
 		return nil
 	}
 	return fmt.Errorf("gateway stop failed: %s", cleanupFailureText(result.CleanupFailures))
@@ -138,8 +140,11 @@ func statusWithCommand(ctx context.Context, stdout io.Writer, command statusComm
 	if err != nil {
 		return err
 	}
+	if result.Fulfillment() == gateway.CommandUnfulfilled {
+		return fmt.Errorf("Gateway Ownership is transitioning; retry status")
+	}
 	renderStatus(stdout, result)
-	if result.Kind == gateway.GatewayStatusStaleCache {
+	if result.State == gateway.GatewayStatusStaleCache {
 		fmt.Fprintln(stdout, "stale Gateway State Cache detected; run start or stop to clean up")
 	}
 	return nil
@@ -161,17 +166,28 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 	stdout = writerOrDiscard(stdout)
 	result, err := command(ctx)
 	if err != nil {
-		if errors.Is(err, gateway.ErrUserCAApprovalDenied) {
-			fmt.Fprintln(stdout, "Certificate trust was not approved.")
-			fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
-		}
 		return err
 	}
 	renderInstallResult(stdout, result)
-	if result.Kind == gateway.InstallResultRuntimeAdoptionFailed {
-		return fmt.Errorf("Installed User CA is usable, but Gateway recovery is incomplete")
+	if result.Fulfillment() == gateway.CommandFulfilled {
+		return nil
 	}
-	return nil
+	switch result.Kind {
+	case gateway.InstallResultApprovalDenied:
+		fmt.Fprintln(stdout, "Certificate trust was not approved.")
+		fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
+		return fmt.Errorf("certificate trust approval denied")
+	case gateway.InstallResultRuntimeAdoptionFailed:
+		return fmt.Errorf("Installed User CA is usable, but Gateway recovery is incomplete")
+	case gateway.InstallResultAlreadyMutating:
+		return fmt.Errorf("certificate operation in progress; retry install")
+	case gateway.InstallResultOwnerEnding:
+		return fmt.Errorf("Gateway owner is ending; retry install")
+	case gateway.InstallResultOwnerTransition:
+		return fmt.Errorf("Gateway Ownership is transitioning; retry install")
+	default:
+		return fmt.Errorf("gateway install was not fulfilled: %s", result.Kind)
+	}
 }
 
 type uninstallCACommand func(context.Context, gateway.UninstallRequest) (gateway.UninstallResult, error)
@@ -213,7 +229,21 @@ func uninstallCAWithCommand(ctx context.Context, stdin io.Reader, stdout io.Writ
 		}
 	}
 	renderUninstallResult(stdout, result)
-	return nil
+	if result.Fulfillment() == gateway.CommandFulfilled {
+		return nil
+	}
+	switch result.Kind {
+	case gateway.UninstallResultIncomplete:
+		return fmt.Errorf("Installed User CA removal is incomplete")
+	case gateway.UninstallResultAlreadyMutating:
+		return fmt.Errorf("certificate operation in progress; retry uninstall")
+	case gateway.UninstallResultOwnerEnding:
+		return fmt.Errorf("Gateway owner is ending; retry uninstall")
+	case gateway.UninstallResultOwnerTransition:
+		return fmt.Errorf("Gateway Ownership is transitioning; retry uninstall")
+	default:
+		return fmt.Errorf("gateway uninstall was not fulfilled: %s", result.Kind)
+	}
 }
 
 func confirmManagedPACConsent(ctx context.Context, stdin io.Reader, stdout io.Writer, detail *gateway.ManagedPACConsentDetail) (bool, error) {
@@ -404,11 +434,14 @@ func renderUninstallResult(stdout io.Writer, result gateway.UninstallResult) {
 		fmt.Fprintln(stdout, "Installed User CA is already absent.")
 	case gateway.UninstallResultConsentRequired:
 		fmt.Fprintln(stdout, "Installed User CA uninstall requires confirmation.")
+	case gateway.UninstallResultIncomplete:
+		fmt.Fprintln(stdout, "Installed User CA uninstall is incomplete.")
+		renderHTTPSWarnings(stdout, result.Warnings)
 	}
 }
 
 func renderStatus(stdout io.Writer, result gateway.StatusResult) {
-	switch result.Kind {
+	switch result.State {
 	case gateway.GatewayStatusRunning:
 		fmt.Fprintln(stdout, "seamless-cors status: running")
 	case gateway.GatewayStatusStarting:
