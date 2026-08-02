@@ -4,16 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
 
 type StartHooks struct {
-	ConfirmPACReplacement func(context.Context, PACReplacementConsentDetail) (bool, error)
-	Started               func(StartResult)
-	HTTPSWarningsChanged  func([]HTTPSWarningDetail)
+	ConfirmManagedPAC    func(context.Context, ManagedPACConsentDetail) (bool, error)
+	Started              func(StartResult)
+	HTTPSWarningsChanged func([]HTTPSWarningDetail)
 }
 
 func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
@@ -28,10 +26,10 @@ func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
 	if err != nil {
 		return StartResult{}, err
 	}
-	return start(ctx, managedpac.NewSystemSettings(), ca, hooks)
+	return start(ctx, openSystemManagedPAC(), ca, hooks)
 }
 
-func start(ctx context.Context, settings managedpac.SystemSettings, ca userCAModule, hooks StartHooks) (StartResult, error) {
+func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks StartHooks) (StartResult, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return StartResult{}, err
@@ -59,11 +57,11 @@ func start(ctx context.Context, settings managedpac.SystemSettings, ca userCAMod
 	if coord.Verify().Status == stateActive {
 		return StartResult{Kind: StartResultOwnerAlreadyRunning}, nil
 	}
-	failures := cleanGatewayFootprint(ctx, settings, coord, nil)
+	failures := cleanGatewayFootprint(ctx, pac, coord, nil)
 	if len(failures) > 0 {
 		return StartResult{Kind: StartResultCleanupFailed, CleanupFailures: failures}, nil
 	}
-	owner, err := newOwnerWithCoordinator(settings, ca, coord)
+	owner, err := newOwnerWithCoordinator(pac, ca, coord)
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -98,10 +96,10 @@ func Serve(ctx context.Context, ready func()) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, managedpac.NewSystemSettings(), ca, ready)
+	return serve(ctx, openSystemManagedPAC(), ca, ready)
 }
 
-func serve(ctx context.Context, settings managedpac.SystemSettings, ca userCAModule, ready func()) error {
+func serve(ctx context.Context, pac managedPACModule, ca userCAModule, ready func()) error {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return err
@@ -122,7 +120,7 @@ func serve(ctx context.Context, settings managedpac.SystemSettings, ca userCAMod
 	if coord.Verify().Status == stateActive {
 		return fmt.Errorf("gateway owner already running")
 	}
-	owner, err := newOwnerWithCoordinator(settings, ca, coord)
+	owner, err := newOwnerWithCoordinator(pac, ca, coord)
 	if err != nil {
 		return err
 	}
@@ -158,26 +156,27 @@ func executeStartLoop(
 		case StartResultStarted, StartResultAlreadyRunning:
 			result.Kind = StartResultStarted
 			return result, nil
-		case StartResultStopCancelled, StartResultCleanupFailed, StartResultStartAlreadyMutating:
+		case StartResultStopCancelled, StartResultCleanupFailed, StartResultStartAlreadyMutating,
+			StartResultNoManageablePACServices, StartResultManagedPACInstallationFailed:
 			return result, nil
 		case StartResultConsentRequired:
-			if result.PACReplacementConsent == nil {
-				return result, fmt.Errorf("consent-required start omitted PAC replacement consent detail")
+			if result.ManagedPACConsent == nil {
+				return result, fmt.Errorf("consent-required start omitted Managed PAC Consent Detail")
 			}
 			accepted := false
-			if hooks.ConfirmPACReplacement != nil {
-				accepted, err = hooks.ConfirmPACReplacement(ctx, *result.PACReplacementConsent)
+			if hooks.ConfirmManagedPAC != nil {
+				accepted, err = hooks.ConfirmManagedPAC(ctx, *result.ManagedPACConsent)
 				if err != nil {
 					return result, err
 				}
 			}
 			if !accepted {
-				result.Kind = StartResultPACReplacementDeclined
+				result.Kind = StartResultConsentDeclined
 				return result, nil
 			}
-			request.PACReplacementConsent = &PACReplacementConsentInput{
-				Accepted:    true,
-				Fingerprint: result.PACReplacementConsent.Fingerprint,
+			request.ManagedPACConsent = &ManagedPACConsentInput{
+				ServiceNames: append([]string(nil), result.ManagedPACConsent.ProposedServices...),
+				Fingerprint:  result.ManagedPACConsent.Fingerprint,
 			}
 		default:
 			return result, fmt.Errorf("gateway start did not activate runtime: %s", result.Kind)
@@ -185,7 +184,7 @@ func executeStartLoop(
 	}
 }
 
-func cleanRuntime(ctx context.Context, settings managedpac.SystemSettings) ([]CleanupFailureDetail, error) {
+func cleanRuntime(ctx context.Context, pac managedPACModule) ([]CleanupFailureDetail, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, err
@@ -198,5 +197,5 @@ func cleanRuntime(ctx context.Context, settings managedpac.SystemSettings) ([]Cl
 		return nil, fmt.Errorf("gateway owner already running; retry after it finishes starting or stopping")
 	}
 	defer lease.Release()
-	return cleanGatewayFootprint(ctx, settings, coord, nil), nil
+	return cleanGatewayFootprint(ctx, pac, coord, nil), nil
 }

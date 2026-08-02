@@ -24,7 +24,6 @@ type trafficRuntime struct {
 	readinessError              error
 	interceptionState           HTTPSInterceptionState
 	interceptionError           error
-	pacRefreshError             error
 	userCAOperationWarning      *HTTPSWarningDetail
 	proxyCore                   *corsproxy.Core
 	proxyHandler                *dynamicHTTPHandler
@@ -211,7 +210,6 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userCASnapshot) string {
 	r.pacHandler.Set(r.generatedPACLocked())
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warnings, warningsChanged)
-	r.publishPACUpdate(nextURL)
 	return nextURL
 }
 
@@ -377,14 +375,6 @@ func (r *trafficRuntime) publishPACUpdate(nextURL string) {
 	}
 }
 
-func (r *trafficRuntime) SetPACRefreshError(err error) {
-	r.mu.Lock()
-	r.pacRefreshError = err
-	warnings, changed := r.updateHTTPSWarningsLocked()
-	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warnings, changed)
-}
-
 func (r *trafficRuntime) SetUninstallWarning(err error) {
 	r.mu.Lock()
 	r.userCAOperationWarning = &HTTPSWarningDetail{
@@ -430,13 +420,6 @@ func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
 		r.interceptionState,
 		r.interceptionError,
 	)...)
-	if r.pacRefreshError != nil {
-		warnings = append(warnings, HTTPSWarningDetail{
-			Kind:       HTTPSWarningPACRefreshFailed,
-			Diagnostic: fmt.Sprintf("HTTPS routing refresh failed: %v.", r.pacRefreshError),
-			Action:     "Retry the lifecycle operation.",
-		})
-	}
 	if r.userCAOperationWarning != nil && !hasHTTPSWarning(warnings, r.userCAOperationWarning.Kind) {
 		warnings = append(warnings, *r.userCAOperationWarning)
 	}

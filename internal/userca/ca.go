@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,15 +34,17 @@ const (
 var (
 	errInvalidActiveFingerprint = errors.New("active UserCA fingerprint is invalid")
 	errInvalidAuthority         = errors.New("UserCA authority material is invalid")
+	errMutationInProgress       = errors.New("UserCA mutation already in progress")
 	readFile                    = os.ReadFile
 )
 
 // UserCA owns Installed User CA material, its storage layout, and current-user
 // operating-system trust integration. It does not cache inspection results.
 type UserCA struct {
-	dir   string
-	store trustStore
-	now   func() time.Time
+	dir        string
+	store      trustStore
+	now        func() time.Time
+	mutationMu sync.Mutex
 }
 
 // Snapshot is an immutable semantic observation of UserCA facts.
@@ -127,6 +130,10 @@ func (u *UserCA) Inspect(ctx context.Context) (Snapshot, error) {
 // Install repairs a valid Active authority in place or installs a fresh
 // immutable generation. Renewal is explicit and occurs only through Install.
 func (u *UserCA) Install(ctx context.Context) (InstallResult, error) {
+	if !u.mutationMu.TryLock() {
+		return InstallResult{}, errMutationInProgress
+	}
+	defer u.mutationMu.Unlock()
 	before, err := u.assess(ctx, false)
 	if err != nil {
 		return InstallResult{}, err
@@ -212,6 +219,10 @@ func (u *UserCA) Install(ctx context.Context) (InstallResult, error) {
 
 // Uninstall removes every owned authority from OS trust and local storage.
 func (u *UserCA) Uninstall(ctx context.Context) (UninstallResult, error) {
+	if !u.mutationMu.TryLock() {
+		return UninstallResult{}, errMutationInProgress
+	}
+	defer u.mutationMu.Unlock()
 	before, err := u.assess(ctx, false)
 	if err != nil {
 		return UninstallResult{}, err

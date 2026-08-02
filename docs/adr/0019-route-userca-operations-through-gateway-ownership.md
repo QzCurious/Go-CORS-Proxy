@@ -1,0 +1,31 @@
+# Route UserCA operations through Gateway Ownership
+
+Gateway Ownership is the cross-process routing authority for UserCA work. Ownerless `serve` and `start` create long-running owners; serve fails when an owner exists, while CLI start calls the existing owner's `/start` route and exits after its result without transferring foreground ownership. Install and uninstall likewise address an existing owner. Ownerless CA lifecycle work publishes a discoverable Transient Gateway Owner before it begins, so callers never need a private platform lease or participate in lifecycle linearization.
+
+Ownerless status is the read-only exception: it briefly holds Gateway Ownership without publishing discovery state, assesses coherent facts, and rediscovers once if ownership acquisition loses a publication race. It then routes to the newly reachable owner or returns a retryable ownership-transition result.
+
+A Transient Gateway Owner cannot be promoted into a long-running owner. After its UserCA operation settles, it atomically enters Owner Ending, rejects new long-running ownership work, removes discovery state, and releases ownership. A later ownerless start can then become the foreground owner instead of leaving an install or uninstall process attached.
+
+UserCA owns its mutation serialization. `Install` and `Uninstall` are single-flight and fail fast rather than queueing; their private serialization does not block Live Configuration or Managed PAC work. Gateway routes commands and reports `userca: mutating`, but it does not hold a cross-feature lock. Stop closes traffic immediately and waits for an already-admitted owner-owned UserCA operation before removing discovery state and releasing ownership.
+
+UserCA follows the Live Configuration module shape without live observation. `Open` obtains a non-mutating module object, `Inspect` freshly reads authoritative facts into an immutable semantic UserCA Snapshot, and `Install` and `Uninstall` return freshly inspected post-operation snapshots. UserCA does not cache snapshots, observe files, publish revisions, bootstrap authority material on open, or expose storage paths and trust-store records.
+
+UserCA exposes only `usable` and `not-usable`; missing, invalid, expired, untrusted, mismatched, incomplete, and cleanup conditions remain private facts. Renewal due is an independent result field, assessment failure returns an error rather than an unknown state, and Gateway-owned `mutating` status is not a UserCA state. A usable snapshot returns defensive generic TLS certificate and signer material plus expiry and renewal due, without exporting raw PEM, fingerprints, storage paths, or an authority type.
+
+Install and uninstall return separate immutable result types exposing only `Current` and `Changed`. `Changed` describes the user-visible installation, repair, renewal, or removal rather than private cleanup activity. UserCA exposes only `ErrApprovalDenied` for caller classification; inspection infrastructure failure and incomplete uninstall return ordinary errors.
+
+Gateway holds command admission through UserCA mutation, fresh snapshot return, and the short Gateway Runtime adoption or deactivation step. It releases that admission before any slow work in another feature. When runtime adoption changes the desired PAC URL Version, Gateway submits a non-blocking Managed PAC reconciliation request; the UserCA command does not wait for that request and PAC failure cannot turn a successful UserCA operation into partial CA success.
+
+UserCA mutation remains authoritative if later Gateway Runtime adoption or deactivation fails. Gateway returns an operation-specific partial-success result rather than rolling back trust state. A later idempotent install reuses the usable UserCA and retries runtime recovery without replacing authority identity.
+
+Install and uninstall privately recompute cleanup need from the Active fingerprint marker, owned local authority generations, and owned certificates in the OS trust store. Post-rotation cleanup is retried by the next install or uninstall before another authority may be added; cleanup failure does not become Gateway status. Uninstall succeeds only after every owned authority is removed.
+
+Install never guesses Active identity from local generations or OS trust. It repairs a valid marker-identified authority in place, rotates a renewal-due Active authority, or removes and verifies all ambiguous owned residue before creating a fresh Candidate. Inability to establish that clean precondition fails before another root is added.
+
+UserCA uninstall has no consent concept. Gateway evaluates live HTTPS consequences and returns its operation-specific consent-required result before admitting mutation. An accepted uninstall deactivates runtime HTTPS before removing UserCA. If removal fails or remains partial, HTTPS stays inactive; retrying uninstall continues removal, and only a later explicit install may establish usable state and recover runtime HTTPS.
+
+Once admitted, UserCA mutation is owner-owned. Request cancellation and client disconnection stop waiting for the result but do not cancel the operation. Graceful process termination closes traffic, rejects new admission, and waits for the operation. Abrupt failure relies on immutable generations and the Active fingerprint marker for recovery by the next install or uninstall.
+
+UserCA renewal remains explicit because replacing the trusted authority mutates OS trust and may require approval. Renewal due and runtime expiry instruct the user to run install. Per-Host Leaf Certificates may renew automatically inside one immutable HTTPS Generation because they require no trust-store mutation; their expiry is capped by the Active UserCA expiry and their cache is discarded when the generation changes.
+
+Gateway Runtime latches the UserCA Snapshot admitted by start or returned by install or uninstall. Status through an existing owner reports that snapshot without re-reading external trust changes; ownerless status inspects freshly under Gateway Ownership. Gateway derives effective expiry from the snapshot and its injected clock. A request boundary detecting expiry atomically removes the active HTTPS Generation, tunnels directly, and reports that explicit install is required without affecting established connections.

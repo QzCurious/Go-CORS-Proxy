@@ -14,11 +14,9 @@ import (
 	"syscall"
 
 	"github.com/QzCurious/seamless-cors/internal/gateway"
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
-var ErrPACReplacementConsentDeclined = errors.New("PAC replacement consent declined")
+var ErrManagedPACConsentDeclined = errors.New("Managed PAC consent declined")
 
 type startCommand func(context.Context, gateway.StartHooks) (gateway.StartResult, error)
 
@@ -40,8 +38,8 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	stdout = writerOrDiscard(stdout)
 	liveWarnings := &liveHTTPSWarningRenderer{stdout: stdout}
 	hooks := gateway.StartHooks{
-		ConfirmPACReplacement: func(ctx context.Context, detail gateway.PACReplacementConsentDetail) (bool, error) {
-			return confirmPACReplacementConsent(ctx, stdin, stdout, &detail)
+		ConfirmManagedPAC: func(ctx context.Context, detail gateway.ManagedPACConsentDetail) (bool, error) {
+			return confirmManagedPACConsent(ctx, stdin, stdout, &detail)
 		},
 		Started: func(result gateway.StartResult) {
 			renderStartResultWithoutHTTPSWarnings(stdout, result)
@@ -59,14 +57,20 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	if result.Kind == gateway.StartResultOwnerTransition {
 		return fmt.Errorf("Gateway Ownership is transitioning; retry start")
 	}
-	if result.Kind == gateway.StartResultPACReplacementDeclined {
-		return ErrPACReplacementConsentDeclined
+	if result.Kind == gateway.StartResultConsentDeclined {
+		return ErrManagedPACConsentDeclined
 	}
 	if result.Kind == gateway.StartResultCleanupFailed {
 		return fmt.Errorf("gateway start cleanup failed: %s", cleanupFailureText(result.CleanupFailures))
 	}
 	if result.Kind == gateway.StartResultStartAlreadyMutating {
 		return fmt.Errorf("CA operation in progress; retry start")
+	}
+	if result.Kind == gateway.StartResultNoManageablePACServices {
+		return fmt.Errorf("gateway start failed: no manageable PAC services")
+	}
+	if result.Kind == gateway.StartResultManagedPACInstallationFailed {
+		return fmt.Errorf("gateway start failed: %s", result.Diagnostic)
 	}
 	return err
 }
@@ -157,15 +161,14 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 	stdout = writerOrDiscard(stdout)
 	result, err := command(ctx)
 	if err != nil {
-		if errors.Is(err, userca.ErrApprovalDenied) {
+		if errors.Is(err, gateway.ErrUserCAApprovalDenied) {
 			fmt.Fprintln(stdout, "Certificate trust was not approved.")
 			fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
 		}
 		return err
 	}
 	renderInstallResult(stdout, result)
-	if result.Kind == gateway.InstallResultRuntimeAdoptionFailed ||
-		result.Kind == gateway.InstallResultPACRefreshFailed {
+	if result.Kind == gateway.InstallResultRuntimeAdoptionFailed {
 		return fmt.Errorf("Installed User CA is usable, but Gateway recovery is incomplete")
 	}
 	return nil
@@ -210,46 +213,17 @@ func uninstallCAWithCommand(ctx context.Context, stdin io.Reader, stdout io.Writ
 		}
 	}
 	renderUninstallResult(stdout, result)
-	if result.Kind == gateway.UninstallResultPACRefreshFailed {
-		return fmt.Errorf("Installed User CA was removed, but Managed PAC refresh failed")
-	}
 	return nil
 }
 
-type pacReplacementConsentRequest struct {
-	ManagedPAC      bool
-	CurrentPACState []managedpac.ServiceSnapshot
-}
-
-func (r pacReplacementConsentRequest) needed() bool {
-	return r.ManagedPAC
-}
-
-func promptForPACReplacementConsentRequest(ctx context.Context, stdin io.Reader, stdout io.Writer, req pacReplacementConsentRequest) error {
-	if !req.needed() {
-		return nil
-	}
-	detail := &gateway.PACReplacementConsentDetail{
-		CurrentPACState: pacStatesForPrompt(req.CurrentPACState),
-		CleanupMode:     gateway.CleanupModeNoPACRestoration,
-	}
-	ok, err := confirmPACReplacementConsent(ctx, stdin, stdout, detail)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return ErrPACReplacementConsentDeclined
-	}
-	return nil
-}
-
-func confirmPACReplacementConsent(ctx context.Context, stdin io.Reader, stdout io.Writer, detail *gateway.PACReplacementConsentDetail) (bool, error) {
+func confirmManagedPACConsent(ctx context.Context, stdin io.Reader, stdout io.Writer, detail *gateway.ManagedPACConsentDetail) (bool, error) {
 	if detail == nil {
 		return true, nil
 	}
-	fmt.Fprintln(stdout, "PAC Replacement Consent required before seamless-cors changes current-user OS-managed PAC state.")
+	fmt.Fprintln(stdout, "Managed PAC Consent is required before seamless-cors changes current-user OS-managed PAC state.")
 	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "seamless-cors will replace existing managed PAC state for this run.")
+	fmt.Fprintln(stdout, "seamless-cors will manage the proposed services for this gateway run.")
+	fmt.Fprintln(stdout, "Foreign PAC settings are excluded and will not be changed.")
 	fmt.Fprintln(stdout, "Gateway Footprint Cleanup removes seamless-cors-owned managed PAC settings without restoring previous PAC state.")
 	fmt.Fprintln(stdout, "Current managed PAC state:")
 	for _, state := range detail.CurrentPACState {
@@ -257,11 +231,11 @@ func confirmPACReplacementConsent(ctx context.Context, stdin io.Reader, stdout i
 		if url == "" {
 			url = "(empty)"
 		}
-		agreement := "included in Managed PAC Service Set"
-		if state.ReplacementConsentRequired {
-			agreement = "replacement consent required"
+		agreement := "excluded (foreign PAC state)"
+		if state.Manageable {
+			agreement = "proposed for Managed PAC Service Set"
 		}
-		fmt.Fprintf(stdout, "  %s: %s -> seamless-cors owned (%s; enabled=%t url=%s)\n", state.ServiceName, state.Ownership, agreement, state.Enabled, url)
+		fmt.Fprintf(stdout, "  %s: %s (%s; enabled=%t url=%s)\n", state.ServiceName, state.Ownership, agreement, state.Enabled, url)
 	}
 	fmt.Fprintln(stdout)
 	fmt.Fprint(stdout, "Proceed? [y/N] ")
@@ -270,7 +244,7 @@ func confirmPACReplacementConsent(ctx context.Context, stdin io.Reader, stdout i
 		return false, err
 	}
 	if !ok {
-		fmt.Fprintln(stdout, "Gateway Activation canceled; any completed UserCA changes are retained.")
+		fmt.Fprintln(stdout, "Gateway Activation canceled.")
 		return false, nil
 	}
 	fmt.Fprintln(stdout)
@@ -310,31 +284,6 @@ func readYes(ctx context.Context, stdin io.Reader) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-func pacStatesForPrompt(states []managedpac.ServiceSnapshot) []gateway.ManagedPACServiceState {
-	out := make([]gateway.ManagedPACServiceState, 0, len(states))
-	for _, state := range states {
-		out = append(out, gateway.ManagedPACServiceState{
-			ServiceName:                state.ServiceName,
-			Enabled:                    state.Enabled,
-			URL:                        state.PACURL,
-			Ownership:                  pacOwnershipForPrompt(state.PACURL),
-			ReplacementConsentRequired: pacOwnershipForPrompt(state.PACURL) == gateway.PACOwnershipForeign,
-		})
-	}
-	return out
-}
-
-func pacOwnershipForPrompt(raw string) gateway.PACOwnership {
-	switch managedpac.OwnershipForURL(raw) {
-	case managedpac.OwnershipEmpty:
-		return gateway.PACOwnershipEmpty
-	case managedpac.OwnershipOwned:
-		return gateway.PACOwnershipOwned
-	default:
-		return gateway.PACOwnershipForeign
-	}
-}
-
 func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 	renderStartResultWithHTTPSWarnings(stdout, result, true)
 }
@@ -359,12 +308,24 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 					fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Guidance.ManagedPACServices, ", "))
 				}
 			}
+			renderManagedPACWarnings(stdout, result.Guidance.ManagedPACWarnings)
 			renderUpstreamListWarnings(stdout, result.Guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
 	case gateway.StartResultCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors start cleanup failed")
+		renderManagedPACWarnings(stdout, result.ManagedPACWarnings)
+	case gateway.StartResultNoManageablePACServices:
+		fmt.Fprintln(stdout, "seamless-cors could not start: no manageable PAC services")
+		if result.ManagedPACConsent != nil {
+			for _, state := range result.ManagedPACConsent.CurrentPACState {
+				fmt.Fprintf(stdout, "managed-pac-service: %s (%s)\n", state.ServiceName, state.Ownership)
+			}
+		}
+	case gateway.StartResultManagedPACInstallationFailed:
+		fmt.Fprintln(stdout, "seamless-cors could not start: Managed PAC installation failed")
+		renderManagedPACWarnings(stdout, result.ManagedPACWarnings)
 	}
 }
 
@@ -429,9 +390,6 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	case gateway.InstallResultRuntimeAdoptionFailed:
 		fmt.Fprintln(stdout, "Installed User CA installed, but the running Gateway could not adopt it.")
 		renderHTTPSWarnings(stdout, result.Warnings)
-	case gateway.InstallResultPACRefreshFailed:
-		fmt.Fprintln(stdout, "Installed User CA installed, but Managed PAC refresh failed.")
-		renderHTTPSWarnings(stdout, result.Warnings)
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
@@ -446,9 +404,6 @@ func renderUninstallResult(stdout io.Writer, result gateway.UninstallResult) {
 		fmt.Fprintln(stdout, "Installed User CA is already absent.")
 	case gateway.UninstallResultConsentRequired:
 		fmt.Fprintln(stdout, "Installed User CA uninstall requires confirmation.")
-	case gateway.UninstallResultPACRefreshFailed:
-		fmt.Fprintln(stdout, "Installed User CA uninstalled, but Managed PAC refresh failed.")
-		renderHTTPSWarnings(stdout, result.Warnings)
 	}
 }
 
@@ -477,7 +432,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		fmt.Fprintf(stdout, "upstream-list: %s\n", result.Runtime.UpstreamListPath)
 		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
 		renderUpstreamListWarnings(stdout, result.Runtime.UpstreamListWarnings)
-		if result.Kind == gateway.GatewayStatusRunning {
+		if result.Runtime.ManagedPACActive {
 			fmt.Fprintln(stdout, "managed-pac: active")
 		} else {
 			fmt.Fprintln(stdout, "managed-pac: inactive")
@@ -485,6 +440,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		if len(result.Runtime.ManagedPACServices) > 0 {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
 		}
+		renderManagedPACWarnings(stdout, result.Runtime.ManagedPACWarnings)
 		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSInterception))
 		renderHTTPSWarnings(stdout, result.Runtime.HTTPSWarnings)
 	}
@@ -517,6 +473,16 @@ func renderHTTPSWarnings(stdout io.Writer, warnings []gateway.HTTPSWarningDetail
 		if warning.Action != "" {
 			fmt.Fprintf(stdout, "action: %s\n", warning.Action)
 		}
+	}
+}
+
+func renderManagedPACWarnings(stdout io.Writer, warnings []gateway.ManagedPACWarningDetail) {
+	for _, warning := range warnings {
+		if warning.ServiceName == "" {
+			fmt.Fprintf(stdout, "managed-pac-warning: %s\n", warning.Diagnostic)
+			continue
+		}
+		fmt.Fprintf(stdout, "managed-pac-warning: %s: %s\n", warning.ServiceName, warning.Diagnostic)
 	}
 }
 

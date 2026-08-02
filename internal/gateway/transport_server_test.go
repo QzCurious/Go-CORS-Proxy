@@ -79,8 +79,8 @@ func TestStartAllowsEmptyBody(t *testing.T) {
 	if !handler.startCalled {
 		t.Fatal("command handler ExecuteStart was not called")
 	}
-	if handler.startRequest.PACReplacementConsent != nil {
-		t.Fatalf("start request pac replacement consent = %#v, want nil", handler.startRequest.PACReplacementConsent)
+	if handler.startRequest.ManagedPACConsent != nil {
+		t.Fatalf("start request Managed PAC Consent = %#v, want nil", handler.startRequest.ManagedPACConsent)
 	}
 }
 

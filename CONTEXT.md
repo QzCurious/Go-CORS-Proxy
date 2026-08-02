@@ -12,6 +12,14 @@ _Avoid_: generic proxy, CORS middleware
 The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands for CLI and HTTP control surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing.
 _Avoid_: Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
 
+**Gateway Feature Orchestration**:
+A rule that only the Gateway Module orders and combines facts and mutations across Live Configuration, UserCA, Managed PAC, and Gateway Runtime; feature modules never call one another. Gateway may establish result ordering without waiting for an independent feature mutation to settle.
+_Avoid_: cross-feature import, feature-owned orchestration, shared feature lock, ordering-means-waiting
+
+**Independent Feature Serialization**:
+A concurrency rule where each feature module serializes only its own mutations while Gateway Runtime briefly orders its in-memory state changes. Slow work in Live Configuration, UserCA, or Managed PAC does not hold another feature's lock.
+_Avoid_: cross-feature mutex, global lifecycle lock, UserCA-blocked configuration, PAC-blocked UserCA mutation
+
 **Surface-Neutral Command Result**:
 A Gateway Module operation result that describes successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting.
 _Avoid_: CLI output, HTTP response model, stringly command result, terminal error text
@@ -41,7 +49,7 @@ A command behavior where the command becomes the Gateway Owner and starts the Ga
 _Avoid_: implicit gateway start, daemonized start, hidden lifecycle activation, stale-cache cleanup, OS PAC repair
 
 **Router-Hosted Start**:
-An HTTP start behavior where CLI or another client calls `POST /start` against an existing Gateway Owner, renders PAC Replacement Consent when the result requires it, and retries with accepted consent to activate Gateway Runtime without creating a competing gateway process. The existing owner remains foreground, and an already-active runtime returns an idempotent start result.
+An HTTP start behavior where CLI or another client calls `POST /start` against an existing Gateway Owner, renders Managed PAC Consent when the result requires it, and retries with accepted consent to activate Gateway Runtime without creating a competing gateway process. The existing owner remains foreground, and an already-active runtime returns an idempotent start result.
 _Avoid_: start plan, terminal prompt in serve, duplicate router start, serve-blocked start, split-brain gateway
 
 **Start-Hosted Router**:
@@ -144,8 +152,8 @@ _Avoid_: traffic-triggered trust mutation, automatic root replacement, silent CA
 A CA lifecycle rule where a valid Active UserCA is reused, its missing trust or local permissions are repaired in place, and renewal-due authority rotates through an overlapping Candidate without interrupting active HTTPS. When the Active marker is absent, invalid, or does not identify valid material, install removes every ambiguous owned authority and verifies cleanup before creating a fresh Candidate rather than guessing an Active identity.
 _Avoid_: newest-authority inference, unmarked authority adoption, adding a root beside ambiguous residue, proxy-failure-triggered replacement, destructive pre-candidate renewal, trusting invalid material, start-time repair
 
-**CA Ensure**:
-The trust-mutating operation behind the explicit UserCA install command, requesting platform approval only when trust must be added or replaced. Gateway start assesses HTTPS Readiness without invoking CA Ensure.
+**UserCA Installation**:
+The explicit UserCA operation that installs, repairs, or renews the current user's seamless-cors authority and requests platform approval only when trust must be added or replaced. Gateway start assesses HTTPS Readiness without invoking UserCA Installation.
 _Avoid_: start-time CA installation, activation-owned CA setup, repeated trust prompt, implicit trust repair
 
 **Owner-Owned CA Mutation**:
@@ -153,7 +161,7 @@ An admitted install or uninstall belongs to the Gateway Owner and settles indepe
 _Avoid_: request-owned mutation, disconnect cancellation, stop-cancelled CA command, caller-managed commit boundary
 
 **Gateway-Owned CA Lifecycle**:
-A lifecycle rule where install, UserCA Rotation, and uninstall execute through an existing Gateway Owner or a discoverable Transient Gateway Owner published before ownerless work. Gateway Ownership is the sole cross-process serialization authority, while the owner coordinates live runtime consequences and serializes CA mutation internally.
+A lifecycle rule where install, UserCA Rotation, and uninstall route through an existing Gateway Owner or a discoverable Transient Gateway Owner published before ownerless work. Gateway Ownership provides cross-process routing and discovery, UserCA privately serializes its own mutations, and Gateway coordinates the short runtime adoption or deactivation consequence without blocking other features.
 _Avoid_: ownerless CA mutation, undiscoverable ownership holder, separate CA Mutation Lease, direct UserCA command execution, caller-managed CA locking
 
 **Transient Gateway Owner**:
@@ -161,7 +169,7 @@ A discoverable Gateway Owner published before ownerless CA lifecycle work. It ex
 _Avoid_: promotable CA owner, install-owned Gateway Runtime, private one-shot lease holder, hidden CA process, background daemon, undiscoverable owner
 
 **Fail-Fast CA Mutation Admission**:
-A Gateway Owner admission rule where install and uninstall route through an available owner but are rejected for explicit retry when another complete CA command is already admitted or Owner Ending has begun. Admission spans UserCA mutation, runtime adoption or deactivation, Managed PAC refresh, and the command result; status remains available as `userca: mutating`, stop waits for admitted work, and no queue is maintained.
+A UserCA serialization rule where install and uninstall are rejected for explicit retry when another UserCA mutation is already admitted. Gateway maps that condition to `userca: mutating`, holds command admission only through the short runtime adoption or deactivation consequence, and never waits for independent Managed PAC Reconciliation; status remains available, stop waits for admitted work, and no queue is maintained.
 _Avoid_: owner-exists-means-busy, queued CA mutation, concurrent CA mutation, blocked status
 
 **Ownership-Protected Status Assessment**:
@@ -233,7 +241,7 @@ An HTTPS state where HTTPS Intent exists while HTTPS Readiness is not ready. Tru
 _Avoid_: blocked gateway, failed gateway start, implicit UserCA installation
 
 **HTTPS Warning**:
-A typed, surface-neutral current diagnostic owned by the Gateway Module and exposed independently from HTTPS Intent and HTTPS Readiness so multiple conditions may coexist. Stable kinds cover unmet intent, unusable UserCA state, renewal due, interception failure, and PAC refresh failure; front ends render them for users and cleared warnings are not retained as history.
+A typed, surface-neutral current diagnostic owned by the Gateway Module and exposed independently from HTTPS Intent and HTTPS Readiness so multiple conditions may coexist. Stable kinds cover unmet intent, unusable UserCA state, renewal due, and interception failure; Managed PAC failures use Managed PAC Warnings instead, front ends render both current sets, and cleared warnings are not retained as history.
 _Avoid_: terminal warning text, warning history, single CA warning string, readiness encoded as prose, mutually exclusive diagnostics, silent degraded HTTPS
 
 **Live HTTPS Warning Delivery**:
@@ -297,7 +305,7 @@ The public Gateway Module start flow that verifies ownership, performs early own
 _Avoid_: start-time CA installation, public raw activation, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
-The internal operation that assesses PAC Replacement Consent, begins serving Gateway Runtime with its assessed HTTPS Readiness, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, Upstream List validation, readiness assessment, or traffic-before-PAC ordering.
+The internal operation that assesses Managed PAC Consent, begins serving Gateway Runtime with its assessed HTTPS Readiness, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, Upstream List validation, readiness assessment, or traffic-before-PAC ordering.
 _Avoid_: public activation command, CA installation, CA Trust Consent, lifecycle activation, runtime startup, command rendering, lifecycle orchestration package
 
 **Automatic Listeners**:
@@ -360,29 +368,49 @@ _Avoid_: cleanup-needed boolean, assumed-clean inspection failure, suppressed cl
 The stable loopback HTTP PAC URL shape whose path ends in `seamless-cors.pac`, proving a current managed PAC setting belongs to seamless-cors without depending on a run-specific port.
 _Avoid_: managed PAC footprint, run-specific PAC identity, port-based ownership, full-URL ownership, non-loopback PAC ownership
 
-**Managed PAC Service Set**:
-The network services selected during Gateway Activation for PAC Routing installation, PAC refresh, and Managed PAC Lease checks throughout that Gateway Owner run. A selected service remains a member while temporarily absent, and services first appearing after selection are ignored until a later Gateway Activation.
-_Avoid_: live service discovery for expansion, current service list, implicit service expansion, removal-on-disappearance, plan-time service lock
+**Complete Managed PAC Uninstall**:
+An idempotent Managed PAC operation that closes reconciliation admission, ends pending work, removes every currently marker-owned PAC setting regardless of enabled status or PAC URL Version, and reports success only after no marker-owned setting remains. Foreign PAC state is always preserved; late requests are discarded until a later successful Managed PAC Installation reopens admission.
+_Avoid_: enabled-only cleanup, exact-URL cleanup, service-set cleanup, previous-state restoration, partial uninstall success
 
-**Managed PAC Session**:
-A Gateway Activation-scoped behavior that installs PAC Routing for at least one visible member of the Managed PAC Service Set, tracks the current PAC URL Version and attempted PAC URL Version during refresh, and evaluates Managed PAC Lease while the Gateway Owner is live. Temporarily absent selected services remain members, but Gateway Activation fails if installation reaches no selected service; Gateway Footprint Cleanup remains responsible for marker-based PAC removal.
-_Avoid_: runtime PAC state, PAC helper, cleanup owner, platform PAC wrapper, implicit refresh state
+**Managed PAC Service Set**:
+The network services classified as manageable during Gateway Activation and collectively accepted by the user for PAC Routing installation and later Managed PAC Reconciliation. Initially foreign services remain outside the set, while membership becomes fixed after acceptance: selected services remain members through later absence or drift, and excluded or newly appearing services wait until another start.
+_Avoid_: all visible services, initially foreign service, currently controlled service subset, live service discovery for expansion, implicit service expansion, removal-on-disappearance, removal-on-drift
+
+**Managed PAC Installation**:
+A Gateway Activation mutation that attempts the desired PAC URL on every currently manageable visible member of the accepted Managed PAC Service Set and succeeds when at least one service is updated. The accepted set remains fixed even when a member becomes absent or foreign before mutation, while per-service exceptions produce Managed PAC Warnings and reaching no service fails activation.
+_Avoid_: all-or-nothing PAC installation, successful zero-service activation, failure-narrowed service set, silent partial installation
+
+**Managed PAC Runtime State**:
+A Gateway Runtime's latched record of the fixed Managed PAC Service Set and current desired PAC URL Version after Managed PAC installation. Its absence means the runtime has no active Managed PAC configuration; it retains no consent state and is not a live observation of operating-system proxy settings.
+_Avoid_: Managed PAC Session, Managed PAC lease state, live PAC snapshot, attempted PAC URL
+
+**Managed PAC Active**:
+A status fact derived from the presence of Managed PAC Runtime State, meaning the Gateway Runtime retains a fixed reconciliation scope and desired PAC URL. It does not claim that every selected service is currently controlled; Managed PAC Warnings report per-service exceptions, including when every service has drifted.
+_Avoid_: all-services-controlled, live OS PAC verification, warning-free Managed PAC, Managed PAC lease held
 
 **Managed PAC Mutation Sequence**:
-An owner-local ordering rule where PAC installation, refresh, lease reconciliation, and reattachment execute one at a time for a Managed PAC Session. Cancellation closes the sequence and waits for the current mutation before Gateway Footprint Cleanup, preventing any PAC write after cleanup.
-_Avoid_: concurrent PAC writes, refresh-cleanup race, post-stop PAC install, global lifecycle mutex
+Managed PAC's private ordering rule where installation, reconciliation, and uninstall execute one at a time independently from Live Configuration and UserCA serialization. A newer reconciliation request preempts older work and converges to the newest PAC URL Version, while uninstall cancels and discards pending reconciliation, waits only until the current writer is quiescent, then removes and verifies all marker-owned PAC state so no write can occur after cleanup.
+_Avoid_: caller-owned PAC lock, operation-success wait, concurrent PAC writes, refresh-cleanup race, post-stop PAC install, uninstall racing an old writer, global lifecycle mutex
 
-**Managed PAC Lease**:
-A Gateway Owner's ownership rule that treats the installed seamless-cors Managed PAC URL as live state for visible services in the Managed PAC Service Set, reconciled at explicit lifecycle, PAC refresh, and status boundaries rather than continuously. Temporarily absent selected services do not lose the lease, newly visible unselected services remain outside it, owned reappearing services are reattached, and empty or foreign reappearing services lose the lease.
-_Avoid_: foreign PAC cleanup, silent proxy escape, best-effort PAC ownership, missing-service failure, implicit service expansion, continuous OS proxy polling, idle lease watcher
+**Managed PAC Reconciliation**:
+A PAC update behavior that independently evaluates each visible member of the fixed Managed PAC Service Set: marker-owned and empty settings receive the current PAC URL, foreign settings are preserved with a warning, and temporarily absent services wait for a later update. Reconciliation does not inspect or expand to services outside the fixed set.
+_Avoid_: Managed PAC lease check, all-or-nothing refresh, idle watcher, new-service adoption, foreign PAC replacement, missing-service failure
 
-**Managed PAC Reattachment**:
-A boundary-driven Managed PAC Session behavior where a visible selected service carrying any seamless-cors Managed PAC Ownership Marker is rewritten to the session's current PAC URL and enabled. Temporarily absent services wait for a later boundary; empty or foreign PAC state is not repaired and instead causes Managed PAC Lease Lost.
-_Avoid_: idle watcher, new-service adoption, foreign PAC replacement, empty-state takeover, exact-old-URL rejection, missing-service failure
+**Managed PAC Reconciliation Request**:
+An explicit non-blocking, one-shot handoff made by Gateway whenever Gateway Runtime changes its desired PAC URL Version, asking Managed PAC to reconcile that URL across the fixed Managed PAC Service Set. Managed PAC preempts superseded work, converges to the newest request, and reports only that request's completion and warning snapshot without a watcher, timer, or dependency on Live Configuration or UserCA operation completion.
+_Avoid_: post-uninstall PAC write, PAC watcher, reconciliation timer, synchronous PAC consequence, UserCA-owned PAC refresh, Live-Configuration-owned PAC write
 
-**Managed PAC Lease Lost**:
-A user-facing fatal runtime condition where the gateway reports `managed-pac-lease-lost` when a visible selected service has empty or foreign PAC state, then gives restart or cleanup guidance without taking over or restoring that state.
-_Avoid_: raw lease error, silent exit, forced PAC restoration, ambiguous runtime failure
+**Managed PAC Drift**:
+A nonfatal condition where a visible member of the fixed Managed PAC Service Set carries foreign PAC state during Managed PAC Reconciliation. The foreign setting is preserved, the Gateway Runtime continues, and a Managed PAC Warning reports that seamless-cors no longer controls that service.
+_Avoid_: Managed PAC Lease Lost, consent-stale warning, fatal PAC drift, forced PAC restoration, foreign PAC takeover, silent proxy escape
+
+**Managed PAC Update Failure**:
+A nonfatal condition where Managed PAC Reconciliation is authorized to update an owned or empty selected service but its platform write fails. The Gateway Runtime retains its desired PAC URL Version, reports a Managed PAC Warning for that service, and retries at the next reconciliation.
+_Avoid_: fatal PAC refresh, PAC URL rollback, whole-runtime failure, silent partial update
+
+**Managed PAC Warning**:
+A typed, surface-neutral current diagnostic that identifies each visible service affected by Managed PAC Drift or Managed PAC Update Failure independently from HTTPS Warnings. Gateway Runtime replaces the warning snapshot after each Managed PAC Reconciliation, drops prior warnings for services now absent, and exposes the current snapshot through Start Guidance and status.
+_Avoid_: superseded reconciliation warning, HTTPS Warning, terminal PAC error, warning history, untyped PAC warning, silent per-service drift
 
 **CA Ownership Marker**:
 The strict seamless-cors-owned current-user CA trust identity used to identify Installed User CA trust for CA lifecycle management.
@@ -401,7 +429,7 @@ A start-only behavior where the fixed Upstream List is created automatically whe
 _Avoid_: init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after PAC consent has succeeded, Gateway Runtime is serving, and Managed PAC installation has reached at least one selected service. It points to the Upstream List, HTTPS Readiness, warnings, and managed state instead of runtime listener endpoints.
+A start-time user-facing output behavior shown only after PAC consent has succeeded, Gateway Runtime is serving, and Managed PAC Installation has reached at least one selected service. It points to the Upstream List, HTTPS Readiness, current HTTPS and Managed PAC Warnings, and managed state instead of runtime listener endpoints.
 _Avoid_: pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -413,8 +441,8 @@ An idempotent start result where executing start against an active Gateway Runti
 _Avoid_: duplicate runtime activation, start failure for active runtime, second owner
 
 **Execute-Time Start Assessment**:
-A start execution rule where every `ExecuteStart` attempt computes current PAC Replacement Consent conditions before mutating, returning a structured consent-required result when supplied confirmation is missing, refers to different foreign PAC state, or is otherwise no longer sufficient.
-_Avoid_: start plan, prior-result authorization, mutation-before-assessment
+A start execution rule where an initial `ExecuteStart` attempt inspects every visible network service and returns Managed PAC Consent Detail before mutating. An accepted retry fixes the agreed manageable service set; members that become absent or foreign remain selected but are skipped with Managed PAC Warnings, while excluded and newly appearing services do not join.
+_Avoid_: start plan, repeated consent loop, mutation-before-assessment, consent-time service expansion
 
 **Single-Flight Start**:
 A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through Upstream List loading, HTTPS Readiness assessment, PAC assessment, Gateway Activation, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
@@ -428,37 +456,37 @@ _Avoid_: stop-busy result, start mutex wait, cleanup-before-cancellation, post-s
 A surface-neutral expected start outcome returned to the original start caller after stop preemption reaches a safe boundary without treating cancellation as an infrastructure failure.
 _Avoid_: context-canceled error, started result, stop failure
 
-**PAC Replacement Consent Detail**:
-A surface-neutral description of every service in the proposed Managed PAC Service Set, explicitly identifying every foreign PAC entry covered by one collective agreement, together with the PAC Replacement Consent Fingerprint and no-restoration cleanup behavior.
-_Avoid_: service-selection UI, lifecycle consent detail, prompt text, OS trust approval payload, start plan token
+**Managed PAC Consent Detail**:
+A surface-neutral description of every visible network service, identifying which services are manageable and therefore proposed for the fixed Managed PAC Service Set, together with the Managed PAC Consent Fingerprint and no-restoration cleanup behavior. Foreign services are shown as excluded rather than offered for replacement.
+_Avoid_: service-selection UI, foreign PAC authorization, lifecycle consent detail, prompt text, OS trust approval payload, start plan token
 
-**PAC Replacement Consent Fingerprint**:
-A stable identity derived from the sorted network-service name and foreign PAC URL pairs that PAC Replacement Consent would authorize Gateway Activation to overwrite. Enabled flags, owned or empty PAC entries, and source ordering do not affect this identity.
-_Avoid_: start plan token, full PAC state hash, enabled-state authorization, generic consent flag
+**Managed PAC Consent Fingerprint**:
+A stable identity derived only from the sorted names in the proposed manageable service set shown in Managed PAC Consent Detail. An accepted retry echoes those names and the fingerprint so Gateway can validate and fix the collectively agreed set without retaining pending consent state.
+_Avoid_: PAC URL authorization, full PAC state hash, enabled-state authorization, source ordering, generic consent flag, start plan token
 
-**PAC Replacement Consent**:
-State-bound, all-or-nothing user confirmation required when gateway start would overwrite one or more non-owned configured PAC URLs in the proposed Managed PAC Service Set, returned by an initial Gateway Activation attempt and reassessed on a consent-bearing retry before mutation. Consent collectively covers every identified foreign entry and applies only while that foreign PAC state matches what was shown; declining aborts Gateway Activation rather than narrowing the service set.
-_Avoid_: per-service selection, partial activation, consent for empty or owned PAC state, generic replacement consent, silent proxy replacement, proxy chaining, broad proxy takeover
+**Managed PAC Consent**:
+A collective user confirmation required before each new Gateway Runtime activation manages a nonempty proposed set of manageable network services. Accepting fixes that proposed set for the runtime, declining aborts activation, and foreign services remain excluded rather than being replaced; an empty proposed set produces No Manageable PAC Services without prompting.
+_Avoid_: PAC Replacement Consent, per-service selection, foreign PAC takeover, implicit system PAC mutation, reusable consent
+
+**No Manageable PAC Services**:
+A terminal start outcome where every visible network service is foreign or no manageable service is visible, so Gateway presents the inspected service detail without requesting Managed PAC Consent or starting Gateway Runtime. A direct start process exits because no managed routing can be provided, while a router-hosted attempt leaves its explicitly requested router-only Gateway Owner alive.
+_Avoid_: empty Managed PAC consent, zero-service runtime, foreign service takeover, successful inactive start
 
 **Independent PAC Lifecycle**:
-A lifecycle boundary where PAC Replacement Consent and PAC Routing setup follow gateway start independently of whether the Upstream List currently has active entries.
+A lifecycle boundary where Managed PAC Consent and PAC Routing setup follow gateway start independently of whether the Upstream List currently has active entries.
 _Avoid_: domain-gated PAC setup, delayed proxy ownership, route-count-based lifecycle
 
 **CA Trust Consent**:
 A platform approval moment required before adding or replacing Installed User CA trust for HTTPS interception, with gateway context shown only when the platform requires approval.
-_Avoid_: implicit CA trust, repeated consent for unchanged trust, app-only trust prompt, PAC Replacement Consent Detail
+_Avoid_: implicit CA trust, repeated consent for unchanged trust, app-only trust prompt, Managed PAC Consent Detail
 
 **Independent CA Lifecycle**:
 A lifecycle boundary where CA Trust Consent and Installed User CA mutation occur only through explicit CA Lifecycle Commands rather than gateway start or the Upstream List. Gateway Runtime may be updated as a consequence, while runtime stop does not cancel admitted CA work and owner exit waits for that work to settle.
 _Avoid_: start-time CA trust, stop-cancelled CA command, intent-triggered installation, route-dependent trust setup
 
 **Start Sequence Order**:
-A startup lifecycle order where Gateway Footprint Cleanup and Upstream List validation precede PAC Replacement Consent assessment; HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; Gateway Runtime begins serving before Managed PAC installation; and Start Guidance follows successful installation on at least one selected service.
+A startup lifecycle order where Gateway Footprint Cleanup and Upstream List validation precede Managed PAC Consent assessment; HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; Gateway Runtime begins serving before Managed PAC installation; and Start Guidance follows successful installation on at least one selected service.
 _Avoid_: start-time CA installation, PAC-before-runtime serving, PAC-first start, cleanup-after-approval, start guidance before PAC installation
-
-**All-Service PAC Management**:
-A Managed System Proxy behavior where Gateway Activation selects every network service the supported platform adapter manages at activation time, so PAC Routing is consistent across the Managed PAC Service Set for that Gateway Owner run.
-_Avoid_: active-service-only PAC, partial network setup, silent service expansion
 
 **Minimal Command Surface**:
 The user-facing command model where normal operation is limited to starting, stopping, and viewing gateway status while runtime behavior follows Live Configuration.
@@ -489,8 +517,8 @@ A confirmed UserCA uninstall behavior whose linearization point atomically chang
 _Avoid_: stop-required uninstall, gateway shutdown, handshake drain, new handshake after revocation begins, readiness rollback after partial removal, Upstream List mutation
 
 **Partial CA Command Success**:
-A partial CA Lifecycle Command outcome where UserCA mutation remains complete but Gateway Runtime adoption or Managed PAC refresh fails. The Gateway reports the failed consequence for retry without rolling back, replacing, or disguising the durable UserCA result.
-_Avoid_: CA rollback after Gateway failure, unnecessary CA replacement, false full success, hidden partial success
+A partial CA Lifecycle Command outcome where UserCA mutation remains complete but Gateway Runtime adoption or deactivation fails. Independent Managed PAC Reconciliation does not delay or redefine the CA result; the Gateway reports the failed runtime consequence without rolling back, replacing, or disguising the durable UserCA result.
+_Avoid_: Managed PAC failure as CA result, CA rollback after Gateway failure, unnecessary CA replacement, false full success, hidden partial success
 
 **Upstream-Independent CA Uninstall**:
 A CA lifecycle command boundary where removing the Installed User CA does not modify the Upstream List.
@@ -517,7 +545,7 @@ A CA Lifecycle Command behavior where work is sent to an existing Gateway Owner 
 _Avoid_: bypassing owner command authority, ownerless local mutation, separate CA Mutation Lease, separate readiness endpoint, blanket active-runtime rejection
 
 **Gateway Footprint Cleanup**:
-An idempotent, ownership-aware lifecycle behavior that removes only stale or intentionally released seamless-cors-owned managed PAC and Gateway State Cache subjects while leaving Installed User CA state untouched. Direct start holds the Gateway Ownership Lease while removing stale cache and owned PAC, router-hosted start removes owned PAC while preserving its live owner cache, and stop removes both when ending ownership.
+A lifecycle behavior that asks Managed PAC to uninstall stale or intentionally released marker-owned PAC state and independently removes the appropriate Gateway State Cache while leaving Installed User CA state untouched. Direct start holds the Gateway Ownership Lease while cleaning stale cache and PAC state, router-hosted start preserves its live owner cache, and stop removes both when ending ownership.
 _Avoid_: unconditional cache removal, live-owner eviction, runtime cleanup, status cleanup, serve-start cleanup, broad cleanup, CA removal, restore-based cleanup
 
 **No PAC Restoration**:
@@ -734,7 +762,7 @@ Developer: "Can I avoid changing my system proxy settings?"
 
 QA engineer: "No, the gateway uses Managed System Proxy so application requests keep their original URLs."
 
-Developer: "What if I decline the PAC Replacement Consent prompt?"
+Developer: "What if I decline the Managed PAC Consent prompt?"
 
 QA engineer: "Start stops without changing machine proxy settings because there is no manual proxy fallback."
 
@@ -844,7 +872,7 @@ QA engineer: "Gateway Footprint Cleanup removes leftover seamless-cors-owned man
 
 Developer: "What if I already use a corporate proxy?"
 
-QA engineer: "PAC Replacement Consent shows the current managed PAC state and asks before replacing existing PAC settings for this run."
+QA engineer: "Managed PAC Consent shows every visible service, excludes foreign PAC settings, and asks before managing the remaining proposed service set for this run."
 
 Developer: "What do I need to configure before starting?"
 

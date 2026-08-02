@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/version"
 )
 
@@ -80,34 +79,6 @@ func TestRunPrintsStartCommandErrors(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, wantErr.Error()) {
 		t.Fatalf("stderr = %q", got)
-	}
-}
-
-func TestRunPrintsManagedPACLeaseLostGuidance(t *testing.T) {
-	var stderr bytes.Buffer
-
-	err := run([]string{"start"}, io.Discard, &stderr, commandHandlers{
-		start: func(io.Writer, io.Writer) error {
-			return managedpac.ErrManagedPACLeaseLost
-		},
-	})
-
-	if !errors.Is(err, managedpac.ErrManagedPACLeaseLost) {
-		t.Fatalf("run error = %v", err)
-	}
-	got := stderr.String()
-	for _, want := range []string{
-		"error: managed-pac-lease-lost",
-		"managed PAC setting was changed outside the gateway",
-		"`seamless-cors start`",
-		"`seamless-cors stop`",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("stderr missing %q:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, "managed PAC lease lost\n") {
-		t.Fatalf("stderr contains raw lease error:\n%s", got)
 	}
 }
 

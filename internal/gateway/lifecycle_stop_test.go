@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
@@ -43,7 +41,7 @@ func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
 
 func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	settings := &lifecycleTestSystemSettings{
-		states: []managedpac.ServiceSnapshot{{
+		states: []testPACState{{
 			ServiceName: "Wi-Fi",
 			PACURL:      "http://127.0.0.1/seamless-cors.pac",
 			Enabled:     true,
@@ -91,16 +89,19 @@ type blockingCleanupSettings struct {
 	releaseCleanup <-chan struct{}
 }
 
-func (*blockingCleanupSettings) Apply(context.Context, string, []string) (managedpac.ApplyResult, error) {
-	return managedpac.ApplyResult{}, nil
+func (*blockingCleanupSettings) Inspect(context.Context) (managedPACSnapshot, error) {
+	return managedPACSnapshot{}, nil
 }
 
-func (f *blockingCleanupSettings) Snapshot(context.Context) ([]managedpac.ServiceSnapshot, error) {
+func (*blockingCleanupSettings) Install(context.Context, []string, string) (managedPACInstallResult, error) {
+	return managedPACInstallResult{}, nil
+}
+
+func (*blockingCleanupSettings) RequestReconcile(managedPACRuntimeState, string, func(managedPACReconcileResult)) {
+}
+
+func (f *blockingCleanupSettings) Uninstall(context.Context) error {
 	close(f.cleanupEntered)
 	<-f.releaseCleanup
-	return nil, nil
-}
-
-func (*blockingCleanupSettings) ClearIfUnchanged(context.Context, []managedpac.ServiceSnapshot) error {
 	return nil
 }

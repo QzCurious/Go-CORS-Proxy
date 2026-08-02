@@ -24,7 +24,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.PACReplacementConsent == nil || !request.PACReplacementConsent.Accepted || request.PACReplacementConsent.Fingerprint != "foreign-state-v1" {
+		if request.ManagedPACConsent == nil || request.ManagedPACConsent.Fingerprint != "services-v1" || len(request.ManagedPACConsent.ServiceNames) != 1 || request.ManagedPACConsent.ServiceNames[0] != "Wi-Fi" {
 			t.Fatalf("request = %#v", request)
 		}
 		_ = json.NewEncoder(w).Encode(StartResult{Kind: StartResultStarted})
@@ -36,7 +36,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		Token:            "owner-token",
 	})
 	result, err := client.Start(context.Background(), StartRequest{
-		PACReplacementConsent: &PACReplacementConsentInput{Accepted: true, Fingerprint: "foreign-state-v1"},
+		ManagedPACConsent: &ManagedPACConsentInput{ServiceNames: []string{"Wi-Fi"}, Fingerprint: "services-v1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +77,19 @@ func TestStatusReportsHTTPFailure(t *testing.T) {
 	})
 	if _, err := client.Status(context.Background()); err == nil {
 		t.Fatal("expected status error")
+	}
+}
+
+func TestInstallPreservesUserCAApprovalDenialClassification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, ErrUserCAApprovalDenied.Error(), http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
+
+	_, err := client.Install(context.Background())
+	if !errors.Is(err, ErrUserCAApprovalDenied) {
+		t.Fatalf("install error = %v", err)
 	}
 }
 

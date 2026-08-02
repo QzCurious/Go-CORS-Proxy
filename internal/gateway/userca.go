@@ -3,10 +3,14 @@ package gateway
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
+
+var ErrUserCAApprovalDenied = errors.New("UserCA trust approval denied")
 
 type userCASnapshot struct {
 	usable      bool
@@ -53,6 +57,9 @@ func (a systemUserCA) Inspect(ctx context.Context) (userCASnapshot, error) {
 func (a systemUserCA) Install(ctx context.Context) (userCAInstallResult, error) {
 	result, err := a.module.Install(ctx)
 	if err != nil {
+		if errors.Is(err, userca.ErrApprovalDenied) {
+			return userCAInstallResult{}, fmt.Errorf("%w: %v", ErrUserCAApprovalDenied, err)
+		}
 		return userCAInstallResult{}, err
 	}
 	return userCAInstallResult{

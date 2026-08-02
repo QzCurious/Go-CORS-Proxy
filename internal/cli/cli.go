@@ -1,12 +1,10 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"strings"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/version"
 )
 
@@ -99,12 +97,6 @@ func rejectUnexpectedArgs(stderr io.Writer, command string, args []string) error
 
 func reportCommandError(stderr io.Writer, err error) error {
 	if err != nil {
-		if errors.Is(err, managedpac.ErrManagedPACLeaseLost) {
-			fmt.Fprintln(stderr, "error: managed-pac-lease-lost")
-			fmt.Fprintln(stderr, "seamless-cors stopped because its managed PAC setting was changed outside the gateway.")
-			fmt.Fprintln(stderr, "Run `seamless-cors start` to install managed PAC routing again, or `seamless-cors stop` to clean up any remaining seamless-cors state.")
-			return err
-		}
 		fmt.Fprintln(stderr, err)
 	}
 	return err

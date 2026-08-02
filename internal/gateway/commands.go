@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 // StartRouterHosted runs the Start Sequence through an existing router-only owner.
@@ -24,16 +22,16 @@ func StartRouterHosted(ctx context.Context, request StartRequest) (StartResult, 
 // Stop discovers and stops the live owner, or cleans durable gateway state
 // locally when no owner can be reached.
 func Stop(ctx context.Context) (StopResult, error) {
-	return stop(ctx, managedpac.NewSystemSettings())
+	return stop(ctx, openSystemManagedPAC())
 }
 
-func stop(ctx context.Context, settings managedpac.SystemSettings) (StopResult, error) {
+func stop(ctx context.Context, pac managedPACModule) (StopResult, error) {
 	target, err := discover()
 	if err != nil {
 		return StopResult{}, err
 	}
 	if target.kind != targetActive {
-		failures, err := cleanRuntime(ctx, settings)
+		failures, err := cleanRuntime(ctx, pac)
 		if err != nil {
 			return StopResult{}, err
 		}
@@ -57,10 +55,10 @@ func stop(ctx context.Context, settings managedpac.SystemSettings) (StopResult, 
 // GatewayStatus returns live owner status when available and otherwise
 // inspects local durable state.
 func Status(ctx context.Context) (StatusResult, error) {
-	return status(ctx, managedpac.NewSystemSettings(), nil)
+	return status(ctx, openSystemManagedPAC(), nil)
 }
 
-func status(ctx context.Context, settings managedpac.SystemSettings, ca userCAModule) (StatusResult, error) {
+func status(ctx context.Context, pac managedPACModule, ca userCAModule) (StatusResult, error) {
 	target, err := discover()
 	if err != nil {
 		return StatusResult{}, err
@@ -93,7 +91,7 @@ func status(ctx context.Context, settings managedpac.SystemSettings, ca userCAMo
 		return StatusResult{}, fmt.Errorf("%w; retry status", errOwnerTransition)
 	}
 	defer lease.Release()
-	lifecycle, err := newLifecycle(settings, ca, coord, "")
+	lifecycle, err := newLifecycle(pac, ca, coord, "")
 	if err != nil {
 		return StatusResult{}, err
 	}
@@ -193,7 +191,7 @@ func runTransient[T any](
 			err = errors.Join(err, lease.Release())
 		}
 	}()
-	owner, err := newTransientOwnerWithCoordinator(managedpac.NewSystemSettings(), ca, coord)
+	owner, err := newTransientOwnerWithCoordinator(openSystemManagedPAC(), ca, coord)
 	if err != nil {
 		return result, nil, err
 	}

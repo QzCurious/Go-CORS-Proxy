@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
@@ -18,7 +16,7 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
 		t.Fatal(err)
 	}
-	settings := &lifecycleTestSystemSettings{states: []managedpac.ServiceSnapshot{{
+	settings := &lifecycleTestSystemSettings{states: []testPACState{{
 		ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
 	}}}
 
@@ -134,7 +132,7 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	}
 	settings := &lifecycleTestSystemSettings{
 		clearErr: errors.New("pac denied"),
-		states: []managedpac.ServiceSnapshot{{
+		states: []testPACState{{
 			ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true,
 		}},
 	}

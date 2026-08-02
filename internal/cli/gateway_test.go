@@ -10,41 +10,42 @@ import (
 	"testing"
 
 	"github.com/QzCurious/seamless-cors/internal/gateway"
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
-func TestPACReplacementConsentPromptReportsManagedPACOnly(t *testing.T) {
+func TestManagedPACConsentPromptShowsProposedAndExcludedServices(t *testing.T) {
 	var out bytes.Buffer
-	err := promptForPACReplacementConsentRequest(context.Background(), bytes.NewBufferString("yes"), &out, pacReplacementConsentRequest{
-		ManagedPAC: true,
-		CurrentPACState: []managedpac.ServiceSnapshot{{
-			ServiceName: "Wi-Fi",
-			PACURL:      "http://corp.example/proxy.pac",
-			Enabled:     true,
-		}},
+	ok, err := confirmManagedPACConsent(context.Background(), bytes.NewBufferString("yes"), &out, &gateway.ManagedPACConsentDetail{
+		CurrentPACState: []gateway.ManagedPACServiceState{
+			{ServiceName: "Ethernet", Ownership: gateway.PACOwnershipEmpty, Manageable: true},
+			{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true, Ownership: gateway.PACOwnershipForeign},
+		},
+		ProposedServices: []string{"Ethernet"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"PAC Replacement Consent required", "foreign -> seamless-cors owned", "Proceed? [y/N]"} {
+	if !ok {
+		t.Fatal("consent was not accepted")
+	}
+	for _, want := range []string{"Managed PAC Consent is required", "proposed for Managed PAC Service Set", "excluded (foreign PAC state)", "Proceed? [y/N]"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("consent prompt missing %q:\n%s", want, out.String())
 		}
 	}
 }
 
-func TestPACReplacementConsentPromptDeclineCancels(t *testing.T) {
+func TestManagedPACConsentPromptDeclineCancels(t *testing.T) {
 	var out bytes.Buffer
-	err := promptForPACReplacementConsentRequest(context.Background(), bytes.NewBufferString("no"), &out, pacReplacementConsentRequest{ManagedPAC: true})
-	if !errors.Is(err, ErrPACReplacementConsentDeclined) {
-		t.Fatalf("prompt error = %v", err)
+	ok, err := confirmManagedPACConsent(context.Background(), bytes.NewBufferString("no"), &out, &gateway.ManagedPACConsentDetail{})
+	if err != nil || ok {
+		t.Fatalf("prompt result = %t, %v", ok, err)
 	}
 	if !strings.Contains(out.String(), "Gateway Activation canceled") {
 		t.Fatalf("prompt output = %q", out.String())
 	}
 }
 
-func TestPACReplacementConsentPromptReturnsWhenContextIsCancelled(t *testing.T) {
+func TestManagedPACConsentPromptReturnsWhenContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	input, output := io.Pipe()
 	defer input.Close()
@@ -52,7 +53,7 @@ func TestPACReplacementConsentPromptReturnsWhenContextIsCancelled(t *testing.T) 
 	var out bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		_, err := confirmPACReplacementConsent(ctx, input, &out, &gateway.PACReplacementConsentDetail{})
+		_, err := confirmManagedPACConsent(ctx, input, &out, &gateway.ManagedPACConsentDetail{})
 		done <- err
 	}()
 
@@ -98,6 +99,61 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
+	var out bytes.Buffer
+	result := gateway.StartResult{Kind: gateway.StartResultNoManageablePACServices}
+	err := startWithContextAndInput(context.Background(), nil, &out, func(_ context.Context, hooks gateway.StartHooks) (gateway.StartResult, error) {
+		hooks.Started(result)
+		return result, nil
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "no manageable PAC services") {
+		t.Fatalf("start error = %v", err)
+	}
+	if !strings.Contains(out.String(), "could not start") {
+		t.Fatalf("start output = %q", out.String())
+	}
+}
+
+func TestStartCommandReportsManagedPACInstallationWarnings(t *testing.T) {
+	var out bytes.Buffer
+	result := gateway.StartResult{
+		Kind:       gateway.StartResultManagedPACInstallationFailed,
+		Diagnostic: "managed PAC install updated no services",
+		ManagedPACWarnings: []gateway.ManagedPACWarningDetail{{
+			Kind:        gateway.ManagedPACWarningUpdateFailed,
+			ServiceName: "Wi-Fi",
+			Diagnostic:  "PAC write denied",
+		}},
+	}
+	err := startWithContextAndInput(context.Background(), nil, &out, func(_ context.Context, hooks gateway.StartHooks) (gateway.StartResult, error) {
+		hooks.Started(result)
+		return result, nil
+	})
+
+	if err == nil || !strings.Contains(err.Error(), result.Diagnostic) {
+		t.Fatalf("start error = %v", err)
+	}
+	if !strings.Contains(out.String(), "managed-pac-warning: Wi-Fi: PAC write denied") {
+		t.Fatalf("start output = %q", out.String())
+	}
+}
+
+func TestInstallReportsGatewayClassifiedApprovalDenial(t *testing.T) {
+	var out bytes.Buffer
+	err := installCAWithCommand(context.Background(), &out, func(context.Context) (gateway.InstallResult, error) {
+		return gateway.InstallResult{}, gateway.ErrUserCAApprovalDenied
+	})
+	if !errors.Is(err, gateway.ErrUserCAApprovalDenied) {
+		t.Fatalf("install error = %v", err)
+	}
+	for _, want := range []string{"Certificate trust was not approved.", "approve the system prompt"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("install output missing %q: %s", want, out.String())
 		}
 	}
 }
@@ -317,29 +373,21 @@ func TestUninstallConfirmsOnlyWhenHTTPSIsActive(t *testing.T) {
 	}
 }
 
-func TestUninstallReportsPartialPACRefreshFailure(t *testing.T) {
+func TestStartRendersManagedPACWarningsSeparately(t *testing.T) {
 	var out bytes.Buffer
-	err := uninstallCAWithCommand(context.Background(), strings.NewReader(""), &out, func(context.Context, gateway.UninstallRequest) (gateway.UninstallResult, error) {
-		return gateway.UninstallResult{
-			Kind: gateway.UninstallResultPACRefreshFailed,
-			Warnings: []gateway.HTTPSWarningDetail{{
-				Kind:       gateway.HTTPSWarningPACRefreshFailed,
-				Diagnostic: "HTTPS routing refresh failed.",
-				Action:     "Retry uninstall.",
+	renderStartResult(&out, gateway.StartResult{
+		Kind: gateway.StartResultStarted,
+		Guidance: &gateway.StartGuidanceDetail{
+			ManagedPACActive: true,
+			ManagedPACWarnings: []gateway.ManagedPACWarningDetail{{
+				Kind:        gateway.ManagedPACWarningDrift,
+				ServiceName: "Wi-Fi",
+				Diagnostic:  "foreign PAC state is active",
 			}},
-		}, nil
+		},
 	})
-	if err == nil {
-		t.Fatal("partial PAC refresh failure should return a command error")
-	}
-	for _, expected := range []string{
-		"Installed User CA uninstalled, but Managed PAC refresh failed.",
-		"warning: HTTPS routing refresh failed.",
-		"action: Retry uninstall.",
-	} {
-		if !strings.Contains(out.String(), expected) {
-			t.Fatalf("uninstall output = %q, want %q", out.String(), expected)
-		}
+	if !strings.Contains(out.String(), "managed-pac-warning: Wi-Fi: foreign PAC state is active") {
+		t.Fatalf("start output = %q", out.String())
 	}
 }
 

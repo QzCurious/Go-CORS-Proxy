@@ -3,7 +3,7 @@
 // current process or forwarded to an existing foreground owner.
 //
 // The implementation is organized by responsibility inside this package:
-// discovery owns the state-cache lease, transport provides authenticated local
+// discovery owns Gateway Ownership and its state cache, transport provides authenticated local
 // HTTP, foreground supervises process lifetime, lifecycle coordinates commands,
 // the start sequence governs activation, and traffic serves PAC and proxy
 // requests. Those are implementation details rather than caller-visible seams.

@@ -3,9 +3,9 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/QzCurious/seamless-cors/internal/liveconfig"
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 type startSequence struct {
@@ -16,7 +16,7 @@ type startSequence struct {
 // installation remains an explicit lifecycle command.
 func (s startSequence) Execute(ctx context.Context, request StartRequest) (StartResult, error) {
 	if !s.lifecycle.takeStartCleanupComplete() {
-		if failure := cleanManagedPAC(ctx, s.lifecycle.managedPACSettings); failure != nil {
+		if failure := cleanManagedPAC(ctx, s.lifecycle.managedPAC); failure != nil {
 			return StartResult{
 				Kind:            StartResultCleanupFailed,
 				CleanupFailures: []CleanupFailureDetail{*failure},
@@ -40,16 +40,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return StartResult{}, &StartError{Diagnostic: err.Error(), Cause: err}
 	}
 
-	assessment, err := managedpac.Assess(ctx, s.lifecycle.managedPACSettings)
-	if err != nil {
-		return postStartFailure(err)
-	}
-	detail := s.lifecycle.pacReplacementConsentDetail(assessment)
-	if assessment.ReplacementRequired && !acceptsPACState(request.PACReplacementConsent, detail.Fingerprint) {
-		return StartResult{
-			Kind:                  StartResultConsentRequired,
-			PACReplacementConsent: detail,
-		}, nil
+	acceptedServices, assessmentResult, err := s.acceptedManagedPACServices(ctx, request)
+	if err != nil || assessmentResult != nil {
+		if err != nil {
+			return postStartFailure(err)
+		}
+		return *assessmentResult, nil
 	}
 
 	engine, err := newRuntime(config, snapshot)
@@ -70,8 +66,9 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		done:   done,
 		phase:  runtimePhaseStarting,
 	}
-	// Assess and publish readiness under the CA admission gate so a concurrent
-	// install cannot complete between the assessment and runtime publication.
+
+	// UserCA inspection and publication share the CA admission gate so runtime
+	// never admits a snapshot from the middle of a UserCA mutation.
 	if !s.lifecycle.caAdmissionMu.TryLock() {
 		return StartResult{Kind: StartResultStartAlreadyMutating}, nil
 	}
@@ -91,8 +88,8 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return nil
 	}
 	publishErr := publishRuntime()
+	s.lifecycle.caAdmissionMu.Unlock()
 	if publishErr != nil {
-		s.lifecycle.caAdmissionMu.Unlock()
 		if ctx.Err() != nil {
 			return StartResult{Kind: StartResultStopCancelled}, nil
 		}
@@ -106,8 +103,6 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		s.lifecycle.mu.Unlock()
 		cancel()
 	}
-
-	s.lifecycle.caAdmissionMu.Unlock()
 
 	// Traffic listeners begin serving before OS PAC state can point at them.
 	ready := make(chan struct{})
@@ -137,66 +132,94 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	default:
 	}
 
-	session, err := managedpac.Prepare(s.lifecycle.managedPACSettings, assessment.ServiceSet, engine.PACURL())
+	pacInstall, err := s.lifecycle.managedPAC.Install(ctx, acceptedServices, engine.PACURL())
 	if err != nil {
 		withdraw()
-		return postStartFailure(err)
-	}
-	s.lifecycle.mu.Lock()
-	if s.lifecycle.runtime != active || ctx.Err() != nil {
-		s.lifecycle.mu.Unlock()
-		session.Close()
-		withdraw()
-		return StartResult{Kind: StartResultStopCancelled}, nil
-	}
-	active.pac = session
-	s.lifecycle.mu.Unlock()
-	pacStart, err := session.Install(ctx)
-	if err != nil {
-		withdraw()
+		warnings := managedPACWarningDetails(pacInstall.warnings)
 		if failure := s.cleanupFailedPACInstall(); failure != nil {
 			return StartResult{
-				Kind:            StartResultCleanupFailed,
-				CleanupFailures: []CleanupFailureDetail{*failure},
+				Kind:               StartResultCleanupFailed,
+				ManagedPACWarnings: warnings,
+				CleanupFailures:    []CleanupFailureDetail{*failure},
 			}, nil
 		}
-		return postStartFailure(err)
+		if ctx.Err() != nil {
+			return StartResult{Kind: StartResultStopCancelled}, nil
+		}
+		return StartResult{
+			Kind:               StartResultManagedPACInstallationFailed,
+			ManagedPACWarnings: warnings,
+			Diagnostic:         err.Error(),
+		}, nil
 	}
 
 	s.lifecycle.mu.Lock()
 	if s.lifecycle.runtime != active || ctx.Err() != nil {
 		s.lifecycle.mu.Unlock()
-		session.Close()
 		withdraw()
-		_ = s.cleanupFailedPACInstall()
+		_ = s.lifecycle.managedPAC.Uninstall(context.Background())
 		return StartResult{Kind: StartResultStopCancelled}, nil
+	}
+	active.managedPAC = &managedPACRuntime{
+		state:    pacInstall.state,
+		warnings: managedPACWarningDetails(pacInstall.warnings),
 	}
 	active.phase = runtimePhaseRunning
 	s.lifecycle.mu.Unlock()
 	cleanupEngine = false
 
-	go s.lifecycle.watchPACRefreshes(runCtx, active)
+	go s.lifecycle.watchPACReconciliationRequests(runCtx, active)
 	go s.lifecycle.watchHTTPSWarningUpdates(runCtx, active)
 
+	state := engine.snapshot()
 	return StartResult{
 		Kind: StartResultStarted,
 		Guidance: &StartGuidanceDetail{
 			UpstreamListPath:     snapshot.UpstreamListPath(),
 			ManagedPACActive:     true,
-			ManagedPACServices:   pacStart.InstalledServices,
-			HTTPSReadiness:       engine.snapshot().HTTPSReadiness,
-			HTTPSInterception:    engine.snapshot().HTTPSInterception,
-			HTTPSIntent:          engine.snapshot().HTTPSIntent,
-			HTTPSWarnings:        engine.snapshot().HTTPSWarnings,
+			ManagedPACServices:   append([]string(nil), pacInstall.state.services...),
+			ManagedPACWarnings:   managedPACWarningDetails(pacInstall.warnings),
+			HTTPSReadiness:       state.HTTPSReadiness,
+			HTTPSInterception:    state.HTTPSInterception,
+			HTTPSIntent:          state.HTTPSIntent,
+			HTTPSWarnings:        state.HTTPSWarnings,
 			UpstreamListWarnings: upstreamListWarningDetails(snapshot.UpstreamList().Warnings),
 		},
 	}, nil
 }
 
-func acceptsPACState(input *PACReplacementConsentInput, fingerprint PACConsentFingerprint) bool {
-	return input != nil && input.Accepted && input.Fingerprint == fingerprint
+func (s startSequence) acceptedManagedPACServices(ctx context.Context, request StartRequest) ([]string, *StartResult, error) {
+	if request.ManagedPACConsent != nil {
+		services := sortedUniqueServiceNames(request.ManagedPACConsent.ServiceNames)
+		if len(services) == 0 || request.ManagedPACConsent.Fingerprint != pacConsentFingerprint(services) {
+			return nil, nil, fmt.Errorf("Managed PAC Consent does not match its accepted service names")
+		}
+		return services, nil, nil
+	}
+
+	snapshot, err := s.lifecycle.managedPAC.Inspect(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	detail := s.lifecycle.managedPACConsentDetail(snapshot)
+	if len(detail.ProposedServices) == 0 {
+		return nil, &StartResult{
+			Kind:              StartResultNoManageablePACServices,
+			ManagedPACConsent: detail,
+		}, nil
+	}
+	return nil, &StartResult{
+		Kind:              StartResultConsentRequired,
+		ManagedPACConsent: detail,
+	}, nil
+}
+
+func sortedUniqueServiceNames(values []string) []string {
+	result := append([]string(nil), values...)
+	slices.Sort(result)
+	return slices.Compact(result)
 }
 
 func (s startSequence) cleanupFailedPACInstall() *CleanupFailureDetail {
-	return cleanManagedPAC(context.Background(), s.lifecycle.managedPACSettings)
+	return cleanManagedPAC(context.Background(), s.lifecycle.managedPAC)
 }

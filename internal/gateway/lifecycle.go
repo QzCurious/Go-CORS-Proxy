@@ -3,14 +3,12 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
@@ -23,15 +21,17 @@ var (
 type StartResultKind string
 
 const (
-	StartResultStarted                StartResultKind = "started"
-	StartResultAlreadyRunning         StartResultKind = "already-running"
-	StartResultOwnerAlreadyRunning    StartResultKind = "owner-already-running"
-	StartResultOwnerTransition        StartResultKind = "owner-transition"
-	StartResultConsentRequired        StartResultKind = "consent-required"
-	StartResultPACReplacementDeclined StartResultKind = "pac-replacement-declined"
-	StartResultStartAlreadyMutating   StartResultKind = "start-already-mutating"
-	StartResultStopCancelled          StartResultKind = "stop-cancelled"
-	StartResultCleanupFailed          StartResultKind = "cleanup-failed"
+	StartResultStarted                      StartResultKind = "started"
+	StartResultAlreadyRunning               StartResultKind = "already-running"
+	StartResultOwnerAlreadyRunning          StartResultKind = "owner-already-running"
+	StartResultOwnerTransition              StartResultKind = "owner-transition"
+	StartResultConsentRequired              StartResultKind = "managed-pac-consent-required"
+	StartResultConsentDeclined              StartResultKind = "managed-pac-consent-declined"
+	StartResultNoManageablePACServices      StartResultKind = "no-manageable-pac-services"
+	StartResultManagedPACInstallationFailed StartResultKind = "managed-pac-installation-failed"
+	StartResultStartAlreadyMutating         StartResultKind = "start-already-mutating"
+	StartResultStopCancelled                StartResultKind = "stop-cancelled"
+	StartResultCleanupFailed                StartResultKind = "cleanup-failed"
 )
 
 type StartError struct {
@@ -43,20 +43,23 @@ func (e *StartError) Error() string { return e.Diagnostic }
 func (e *StartError) Unwrap() error { return e.Cause }
 
 type StartRequest struct {
-	PACReplacementConsent *PACReplacementConsentInput `json:"pacReplacementConsent,omitempty"`
+	ManagedPACConsent *ManagedPACConsentInput `json:"managedPacConsent,omitempty"`
 }
 
 type StartResult struct {
-	Kind                  StartResultKind              `json:"kind"`
-	PACReplacementConsent *PACReplacementConsentDetail `json:"pacReplacementConsent,omitempty"`
-	Guidance              *StartGuidanceDetail         `json:"guidance,omitempty"`
-	CleanupFailures       []CleanupFailureDetail       `json:"cleanupFailures,omitempty"`
+	Kind               StartResultKind           `json:"kind"`
+	ManagedPACConsent  *ManagedPACConsentDetail  `json:"managedPacConsent,omitempty"`
+	ManagedPACWarnings []ManagedPACWarningDetail `json:"managedPacWarnings,omitempty"`
+	Diagnostic         string                    `json:"diagnostic,omitempty"`
+	Guidance           *StartGuidanceDetail      `json:"guidance,omitempty"`
+	CleanupFailures    []CleanupFailureDetail    `json:"cleanupFailures,omitempty"`
 }
 
-type PACReplacementConsentDetail struct {
-	CurrentPACState []ManagedPACServiceState `json:"currentPacState"`
-	CleanupMode     CleanupMode              `json:"cleanupMode"`
-	Fingerprint     PACConsentFingerprint    `json:"fingerprint"`
+type ManagedPACConsentDetail struct {
+	CurrentPACState  []ManagedPACServiceState `json:"currentPacState"`
+	ProposedServices []string                 `json:"proposedServices"`
+	CleanupMode      CleanupMode              `json:"cleanupMode"`
+	Fingerprint      PACConsentFingerprint    `json:"fingerprint"`
 }
 
 type CleanupMode string
@@ -64,11 +67,11 @@ type CleanupMode string
 const CleanupModeNoPACRestoration CleanupMode = "no-pac-restoration"
 
 type ManagedPACServiceState struct {
-	ServiceName                string       `json:"serviceName"`
-	Enabled                    bool         `json:"enabled"`
-	URL                        string       `json:"url"`
-	Ownership                  PACOwnership `json:"ownership"`
-	ReplacementConsentRequired bool         `json:"replacementConsentRequired"`
+	ServiceName string       `json:"serviceName"`
+	Enabled     bool         `json:"enabled"`
+	URL         string       `json:"url"`
+	Ownership   PACOwnership `json:"ownership"`
+	Manageable  bool         `json:"manageable"`
 }
 
 type PACOwnership string
@@ -79,9 +82,9 @@ const (
 	PACOwnershipForeign PACOwnership = "foreign"
 )
 
-type PACReplacementConsentInput struct {
-	Accepted    bool                  `json:"accepted"`
-	Fingerprint PACConsentFingerprint `json:"fingerprint"`
+type ManagedPACConsentInput struct {
+	ServiceNames []string              `json:"serviceNames"`
+	Fingerprint  PACConsentFingerprint `json:"fingerprint"`
 }
 
 type PACConsentFingerprint string
@@ -94,6 +97,7 @@ type StartGuidanceDetail struct {
 	HTTPSInterception    HTTPSInterceptionState      `json:"httpsInterception"`
 	HTTPSIntent          bool                        `json:"httpsIntent"`
 	HTTPSWarnings        []HTTPSWarningDetail        `json:"httpsWarnings,omitempty"`
+	ManagedPACWarnings   []ManagedPACWarningDetail   `json:"managedPacWarnings,omitempty"`
 	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
 }
 
@@ -147,7 +151,6 @@ const (
 	InstallResultInstalled             InstallResultKind = "installed"
 	InstallResultAlreadyUsable         InstallResultKind = "already-usable"
 	InstallResultRuntimeAdoptionFailed InstallResultKind = "installed-runtime-adoption-failed"
-	InstallResultPACRefreshFailed      InstallResultKind = "installed-pac-refresh-failed"
 )
 
 type InstallResult struct {
@@ -159,10 +162,9 @@ type InstallResult struct {
 type UninstallResultKind string
 
 const (
-	UninstallResultUninstalled      UninstallResultKind = "uninstalled"
-	UninstallResultAlreadyAbsent    UninstallResultKind = "already-absent"
-	UninstallResultConsentRequired  UninstallResultKind = "consent-required"
-	UninstallResultPACRefreshFailed UninstallResultKind = "uninstalled-pac-refresh-failed"
+	UninstallResultUninstalled     UninstallResultKind = "uninstalled"
+	UninstallResultAlreadyAbsent   UninstallResultKind = "already-absent"
+	UninstallResultConsentRequired UninstallResultKind = "consent-required"
 )
 
 type UninstallResult struct {
@@ -208,7 +210,9 @@ type RuntimeStatusDetail struct {
 	HTTPSInterception    HTTPSInterceptionState      `json:"httpsInterception"`
 	HTTPSIntent          bool                        `json:"httpsIntent"`
 	HTTPSWarnings        []HTTPSWarningDetail        `json:"httpsWarnings,omitempty"`
+	ManagedPACActive     bool                        `json:"managedPacActive"`
 	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
+	ManagedPACWarnings   []ManagedPACWarningDetail   `json:"managedPacWarnings,omitempty"`
 }
 
 type HTTPSReadinessStatus string
@@ -233,7 +237,6 @@ const (
 	HTTPSWarningReadinessUnavailable HTTPSWarningKind = "https-readiness-unavailable"
 	HTTPSWarningRenewalRecommended   HTTPSWarningKind = "userca-renewal-recommended"
 	HTTPSWarningInterceptionFailed   HTTPSWarningKind = "https-interception-failed"
-	HTTPSWarningPACRefreshFailed     HTTPSWarningKind = "https-pac-refresh-failed"
 	HTTPSWarningUninstallIncomplete  HTTPSWarningKind = "userca-uninstall-incomplete"
 )
 
@@ -241,6 +244,19 @@ type HTTPSWarningDetail struct {
 	Kind       HTTPSWarningKind `json:"kind"`
 	Diagnostic string           `json:"diagnostic"`
 	Action     string           `json:"action,omitempty"`
+}
+
+type ManagedPACWarningKind string
+
+const (
+	ManagedPACWarningDrift        ManagedPACWarningKind = "drift"
+	ManagedPACWarningUpdateFailed ManagedPACWarningKind = "update-failed"
+)
+
+type ManagedPACWarningDetail struct {
+	Kind        ManagedPACWarningKind `json:"kind"`
+	ServiceName string                `json:"serviceName,omitempty"`
+	Diagnostic  string                `json:"diagnostic"`
 }
 
 type CleanupStatusDetail struct {
@@ -278,8 +294,8 @@ const (
 type lifecycle struct {
 	mu                   sync.Mutex
 	caAdmissionMu        sync.Mutex
-	pacRefreshMu         sync.Mutex
-	managedPACSettings   managedpac.SystemSettings
+	managedPACRequestMu  sync.Mutex
+	managedPAC           managedPACModule
 	userCA               userCAModule
 	userCASnapshot       userCASnapshot
 	userCAAssessmentErr  error
@@ -300,11 +316,16 @@ type lifecycle struct {
 }
 
 type activeRuntime struct {
-	engine *trafficRuntime
-	pac    *managedpac.Session
-	cancel context.CancelFunc
-	done   chan error
-	phase  runtimePhase
+	engine     *trafficRuntime
+	managedPAC *managedPACRuntime
+	cancel     context.CancelFunc
+	done       chan error
+	phase      runtimePhase
+}
+
+type managedPACRuntime struct {
+	state    managedPACRuntimeState
+	warnings []ManagedPACWarningDetail
 }
 
 type runtimePhase string
@@ -314,16 +335,16 @@ const (
 	runtimePhaseRunning  runtimePhase = "running"
 )
 
-func newLifecycle(settings managedpac.SystemSettings, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
-	return newLifecycleState(settings, ca, coord, routerListen, true)
+func newLifecycle(pac managedPACModule, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
+	return newLifecycleState(pac, ca, coord, routerListen, true)
 }
 
-func newLifecycleUninspected(settings managedpac.SystemSettings, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
-	return newLifecycleState(settings, ca, coord, routerListen, false)
+func newLifecycleUninspected(pac managedPACModule, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
+	return newLifecycleState(pac, ca, coord, routerListen, false)
 }
 
 func newLifecycleState(
-	settings managedpac.SystemSettings,
+	pac managedPACModule,
 	ca userCAModule,
 	coord *coordinator,
 	routerListen string,
@@ -343,13 +364,16 @@ func newLifecycleState(
 			return nil, err
 		}
 	}
+	if pac == nil {
+		pac = openSystemManagedPAC()
+	}
 	var initial userCASnapshot
 	var assessmentErr error
 	if inspectUserCA {
 		initial, assessmentErr = ca.Inspect(context.Background())
 	}
 	return &lifecycle{
-		managedPACSettings:  settings,
+		managedPAC:          pac,
 		userCA:              ca,
 		userCASnapshot:      initial,
 		userCAAssessmentErr: assessmentErr,
@@ -456,9 +480,6 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 		startCancel()
 	}
 	if active != nil {
-		if active.pac != nil {
-			active.pac.Close()
-		}
 		if err := active.engine.CloseTraffic(); err != nil {
 			warnings = append(warnings, CommandWarning{Kind: CommandWarningRuntimeCloseFailed, Diagnostic: err.Error()})
 		}
@@ -467,6 +488,10 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	if startDone != nil {
 		<-startDone
 	}
+	var cleanupFailures []CleanupFailureDetail
+	if failure := cleanManagedPAC(ctx, f.managedPAC); failure != nil {
+		cleanupFailures = append(cleanupFailures, *failure)
+	}
 	// Stop closes traffic first, then waits for owner-owned CA work.
 	f.caAdmissionMu.Lock()
 	f.caAdmissionMu.Unlock()
@@ -474,7 +499,7 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
 		ownedCache = &ownerCache
 	}
-	cleanupFailures := cleanGatewayFootprint(ctx, f.managedPACSettings, f.coord, ownedCache)
+	cleanupFailures = append(cleanupFailures, cleanGatewayStateCache(f.coord, ownedCache, len(cleanupFailures) > 0)...)
 	if len(cleanupFailures) > 0 {
 		return StopResult{
 			Kind:            StopResultCleanupFailed,
@@ -494,10 +519,16 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	caAssessmentErr := f.userCAAssessmentErr
 	caMutating := f.caMutating
 	var phase runtimePhase
-	var pac *managedpac.Session
+	var managedPACActive bool
+	var managedPACServiceNames []string
+	var managedPACWarningSnapshot []ManagedPACWarningDetail
 	if active != nil {
 		phase = active.phase
-		pac = active.pac
+		if active.managedPAC != nil {
+			managedPACActive = true
+			managedPACServiceNames = append([]string(nil), active.managedPAC.state.services...)
+			managedPACWarningSnapshot = append([]ManagedPACWarningDetail(nil), active.managedPAC.warnings...)
+		}
 	}
 	f.mu.Unlock()
 	result := StatusResult{
@@ -513,12 +544,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		return result, nil
 	}
 	if active != nil {
-		if phase == runtimePhaseRunning {
-			if err := pac.RequireLease(ctx); err != nil {
-				f.reportFatalRuntimeError(active, err)
-				return StatusResult{}, err
-			}
-		} else {
+		if phase != runtimePhaseRunning {
 			result.Kind = GatewayStatusStarting
 		}
 		state := active.engine.snapshot()
@@ -536,7 +562,9 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			HTTPSInterception:    state.HTTPSInterception,
 			HTTPSIntent:          state.HTTPSIntent,
 			HTTPSWarnings:        state.HTTPSWarnings,
-			ManagedPACServices:   managedPACServices(pac),
+			ManagedPACActive:     managedPACActive,
+			ManagedPACServices:   managedPACServiceNames,
+			ManagedPACWarnings:   managedPACWarningSnapshot,
 		}
 		return result, nil
 	}
@@ -593,10 +621,6 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	}()
 	f.mu.Lock()
 	active := f.runtime
-	var pac *managedpac.Session
-	if active != nil {
-		pac = active.pac
-	}
 	f.mu.Unlock()
 	// Once admitted, CA work belongs to the owner rather than the request.
 	result, err := f.userCA.Install(context.Background())
@@ -610,7 +634,8 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	stillLive := f.runtime == active && active != nil
 	f.mu.Unlock()
 	if stillLive {
-		if _, recoveryErr := active.engine.RecoverHTTPS(current); recoveryErr != nil {
+		nextURL, recoveryErr := active.engine.RecoverHTTPS(current)
+		if recoveryErr != nil {
 			return InstallResult{
 				Kind:               InstallResultRuntimeAdoptionFailed,
 				InstalledCAExpires: current.expiresAt,
@@ -621,22 +646,8 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 				}},
 			}, nil
 		}
-	}
-	if stillLive {
-		if pac != nil {
-			if refreshErr := f.refreshPACToCurrent(context.Background(), active); refreshErr != nil {
-				active.engine.SetPACRefreshError(refreshErr)
-				return InstallResult{
-					Kind:               InstallResultPACRefreshFailed,
-					InstalledCAExpires: current.expiresAt,
-					Warnings: []HTTPSWarningDetail{{
-						Kind:       HTTPSWarningPACRefreshFailed,
-						Diagnostic: fmt.Sprintf("Installed User CA is usable, but HTTPS routing refresh failed: %v.", refreshErr),
-						Action:     "Run `seamless-cors install` again.",
-					}},
-				}, nil
-			}
-			active.engine.SetPACRefreshError(nil)
+		if nextURL != "" {
+			f.requestPACReconciliation(active, nextURL)
 		}
 	}
 	kind := InstallResultAlreadyUsable
@@ -693,9 +704,12 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 		f.mu.Unlock()
 		f.caAdmissionMu.Unlock()
 	}()
-	var pacRefreshErr error
+	var nextURL string
 	if active != nil {
-		active.engine.DeactivateHTTPS(userCASnapshot{})
+		nextURL = active.engine.DeactivateHTTPS(userCASnapshot{})
+		if nextURL != "" {
+			f.requestPACReconciliation(active, nextURL)
+		}
 	}
 	result, err := f.userCA.Uninstall(context.Background())
 	if err != nil {
@@ -712,22 +726,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	f.mu.Lock()
 	f.userCASnapshot = current
 	f.userCAAssessmentErr = nil
-	stillLive := f.runtime == active && active != nil
 	f.mu.Unlock()
-	if stillLive && active.pac != nil {
-		pacRefreshErr = f.refreshPACToCurrent(context.Background(), active)
-		active.engine.SetPACRefreshError(pacRefreshErr)
-	}
-	if pacRefreshErr != nil {
-		return UninstallResult{
-			Kind: UninstallResultPACRefreshFailed,
-			Warnings: []HTTPSWarningDetail{{
-				Kind:       HTTPSWarningPACRefreshFailed,
-				Diagnostic: fmt.Sprintf("HTTPS routing refresh failed: %v.", pacRefreshErr),
-				Action:     "Run `seamless-cors uninstall` again to reconcile routing.",
-			}},
-		}, nil
-	}
 	if !result.changed {
 		return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
 	}
@@ -740,17 +739,13 @@ func (f *lifecycle) uninstallConsentFingerprint(active *activeRuntime) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (f *lifecycle) watchPACRefreshes(ctx context.Context, active *activeRuntime) {
+func (f *lifecycle) watchPACReconciliationRequests(ctx context.Context, active *activeRuntime) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-active.engine.PACURLUpdates():
-			if err := f.refreshPACToCurrent(ctx, active); err != nil {
-				active.engine.SetPACRefreshError(err)
-				continue
-			}
-			active.engine.SetPACRefreshError(nil)
+		case nextURL := <-active.engine.PACURLUpdates():
+			f.requestPACReconciliation(active, nextURL)
 		}
 	}
 }
@@ -772,77 +767,79 @@ func (f *lifecycle) watchHTTPSWarningUpdates(ctx context.Context, active *active
 	}
 }
 
-func (f *lifecycle) refreshPACToCurrent(ctx context.Context, active *activeRuntime) error {
-	f.pacRefreshMu.Lock()
-	defer f.pacRefreshMu.Unlock()
-	if active.pac == nil {
-		return nil
-	}
-	nextURL := active.engine.PACURL()
-	if active.pac.CurrentURL() == nextURL {
-		return nil
-	}
-	return active.pac.Refresh(ctx, nextURL)
-}
+func (f *lifecycle) requestPACReconciliation(active *activeRuntime, nextURL string) {
+	f.managedPACRequestMu.Lock()
+	defer f.managedPACRequestMu.Unlock()
 
-func (f *lifecycle) reportFatalRuntimeError(active *activeRuntime, err error) {
 	f.mu.Lock()
-	if f.runtime == active {
-		active.cancel()
+	if f.runtime != active || active.managedPAC == nil {
+		f.mu.Unlock()
+		return
 	}
+	// Runtime changes can publish handoffs concurrently. Submit only a URL that
+	// is still current while this short Gateway ordering boundary is held.
+	if active.engine.PACURL() != nextURL {
+		f.mu.Unlock()
+		return
+	}
+	active.managedPAC.state.pacURL = nextURL
+	state := active.managedPAC.state
 	f.mu.Unlock()
-	select {
-	case f.fatal <- err:
-	default:
-	}
+	f.managedPAC.RequestReconcile(state, nextURL, func(result managedPACReconcileResult) {
+		f.mu.Lock()
+		if result.err == nil && f.runtime == active && active.managedPAC != nil && active.managedPAC.state.pacURL == nextURL {
+			active.managedPAC.warnings = managedPACWarningDetails(result.warnings)
+		}
+		f.mu.Unlock()
+	})
 }
 
-func (f *lifecycle) pacReplacementConsentDetail(assessment managedpac.Assessment) *PACReplacementConsentDetail {
-	out := make([]ManagedPACServiceState, 0, len(assessment.Services))
-	for _, state := range assessment.Services {
+func (f *lifecycle) managedPACConsentDetail(snapshot managedPACSnapshot) *ManagedPACConsentDetail {
+	out := make([]ManagedPACServiceState, 0, len(snapshot.services))
+	for _, state := range snapshot.services {
 		out = append(out, ManagedPACServiceState{
-			ServiceName:                state.ServiceName,
-			Enabled:                    state.Enabled,
-			URL:                        state.PACURL,
-			Ownership:                  pacOwnership(state.Ownership),
-			ReplacementConsentRequired: state.Ownership == managedpac.OwnershipForeign,
+			ServiceName: state.name,
+			Enabled:     state.enabled,
+			URL:         state.url,
+			Ownership:   pacOwnership(state.ownership),
+			Manageable:  state.manageable(),
 		})
 	}
-	return &PACReplacementConsentDetail{
-		CurrentPACState: out,
-		CleanupMode:     CleanupModeNoPACRestoration,
-		Fingerprint:     pacConsentFingerprint(assessment.Services),
+	proposed := snapshot.manageableServices()
+	return &ManagedPACConsentDetail{
+		CurrentPACState:  out,
+		ProposedServices: proposed,
+		CleanupMode:      CleanupModeNoPACRestoration,
+		Fingerprint:      pacConsentFingerprint(proposed),
 	}
 }
 
-func pacConsentFingerprint(states []managedpac.ServiceAssessment) PACConsentFingerprint {
+func pacConsentFingerprint(serviceNames []string) PACConsentFingerprint {
 	h := sha256.New()
-	var size [8]byte
-	for _, state := range states {
-		if state.Ownership != managedpac.OwnershipForeign {
-			continue
-		}
-		for _, value := range []string{state.ServiceName, state.PACURL} {
-			binary.BigEndian.PutUint64(size[:], uint64(len(value)))
-			_, _ = h.Write(size[:])
-			_, _ = h.Write([]byte(value))
-		}
+	for _, serviceName := range sortedUniqueServiceNames(serviceNames) {
+		_, _ = h.Write([]byte(serviceName))
+		_, _ = h.Write([]byte{0})
 	}
 	return PACConsentFingerprint(hex.EncodeToString(h.Sum(nil)))
 }
 
-func managedPACServices(pac *managedpac.Session) []string {
-	if pac == nil {
-		return nil
+func managedPACWarningDetails(warnings []managedPACWarning) []ManagedPACWarningDetail {
+	out := make([]ManagedPACWarningDetail, 0, len(warnings))
+	for _, warning := range warnings {
+		kind := ManagedPACWarningUpdateFailed
+		if warning.kind == managedPACWarningDrift {
+			kind = ManagedPACWarningDrift
+		}
+		out = append(out, ManagedPACWarningDetail{Kind: kind, ServiceName: warning.serviceName, Diagnostic: warning.diagnostic})
 	}
-	return pac.Services()
+	return out
 }
 
-func pacOwnership(ownership managedpac.Ownership) PACOwnership {
+func pacOwnership(ownership managedPACOwnership) PACOwnership {
 	switch ownership {
-	case managedpac.OwnershipEmpty:
+	case managedPACOwnershipEmpty:
 		return PACOwnershipEmpty
-	case managedpac.OwnershipOwned:
+	case managedPACOwnershipOwned:
 		return PACOwnershipOwned
 	default:
 		return PACOwnershipForeign
@@ -850,7 +847,7 @@ func pacOwnership(ownership managedpac.Ownership) PACOwnership {
 }
 
 func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
-	return inspectGatewayFootprint(ctx, f.managedPACSettings, f.coord, stale, runtimeActive, ownerCache)
+	return inspectGatewayFootprint(ctx, f.managedPAC, f.coord, stale, runtimeActive, ownerCache)
 }
 
 func installedCAStatus(snapshot userCASnapshot, assessmentErr error, mutating bool) InstalledCAStatusDetail {

@@ -63,6 +63,24 @@ func TestDarwinSystemSettingsReportsAppliedServicesBeforeFailure(t *testing.T) {
 	}
 }
 
+func TestDarwinSystemSettingsIncludesDisabledVisibleServices(t *testing.T) {
+	runner := &fakeRunner{runFunc: func(_ string, args ...string) ([]byte, error) {
+		if args[0] == "-listallnetworkservices" {
+			return []byte("An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n*Disabled VPN\n"), nil
+		}
+		return nil, nil
+	}}
+	adapter := &darwinSystemSettings{runner: runner}
+
+	services, err := adapter.listServices(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(services, ","); got != "Wi-Fi,Disabled VPN" {
+		t.Fatalf("visible services = %q", got)
+	}
+}
+
 func TestDarwinSystemSettingsInstallsPACDirectlyWithSetAutoProxyURL(t *testing.T) {
 	runner := &fakeRunner{}
 	adapter := &darwinSystemSettings{runner: runner}
@@ -83,11 +101,11 @@ func TestDarwinSystemSettingsInstallsPACDirectlyWithSetAutoProxyURL(t *testing.T
 	}
 }
 
-func TestDarwinSystemSettingsClearsOnlyMatchingPACState(t *testing.T) {
+func TestDarwinSystemSettingsPreservesForeignPACState(t *testing.T) {
 	runner := &fakeRunner{}
 	adapter := &darwinSystemSettings{runner: runner}
 
-	if err := adapter.ClearIfUnchanged(context.Background(), []ServiceSnapshot{{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}}); err != nil {
+	if err := adapter.ClearOwned(context.Background(), []string{"Wi-Fi"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -97,30 +115,25 @@ func TestDarwinSystemSettingsClearsOnlyMatchingPACState(t *testing.T) {
 	}
 }
 
-func TestDarwinSystemSettingsClearsMatchingPACStateAcrossServices(t *testing.T) {
+func TestDarwinSystemSettingsClearsMarkerOwnedStateAcrossServices(t *testing.T) {
 	runner := &fakeRunner{
 		autoProxyOut: []byte("URL: http://127.0.0.1:52144/nested/seamless-cors.pac\nEnabled: Yes\n"),
 	}
 	adapter := &darwinSystemSettings{runner: runner}
 
-	expected := []ServiceSnapshot{
-		{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:52144/nested/seamless-cors.pac", Enabled: true},
-		{ServiceName: "Thunderbolt Bridge", PACURL: "http://127.0.0.1:52144/nested/seamless-cors.pac", Enabled: true},
-	}
-	if err := adapter.ClearIfUnchanged(context.Background(), expected); err != nil {
+	if err := adapter.ClearOwned(context.Background(), []string{"Wi-Fi", "Thunderbolt Bridge"}); err != nil {
 		t.Fatal(err)
 	}
 
 	joined := strings.Join(runner.calls, "\n")
 	for _, want := range []string{
+		"networksetup -setautoproxyurl Wi-Fi ",
 		"networksetup -setautoproxystate Wi-Fi off",
+		"networksetup -setautoproxyurl Thunderbolt Bridge ",
 		"networksetup -setautoproxystate Thunderbolt Bridge off",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing call %q in:\n%s", want, joined)
 		}
-	}
-	if strings.Contains(joined, "-setautoproxyurl") {
-		t.Fatalf("cleanup should not attempt to blank PAC URLs:\n%s", joined)
 	}
 }

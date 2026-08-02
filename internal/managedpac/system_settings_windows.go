@@ -32,15 +32,15 @@ func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte,
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-func newSystemSettings() SystemSettings {
+func newSystemSettings() systemSettings {
 	return &windowsSystemSettings{runner: execRunner{}, notify: notifyInternetSettingsChanged}
 }
 
-var _ SystemSettings = (*windowsSystemSettings)(nil)
+var _ systemSettings = (*windowsSystemSettings)(nil)
 
-func (s *windowsSystemSettings) Apply(ctx context.Context, pacURL string, serviceNames []string) (ApplyResult, error) {
+func (s *windowsSystemSettings) Apply(ctx context.Context, pacURL string, serviceNames []string) (applyResult, error) {
 	if !containsString(serviceNames, windowsPACServiceName) {
-		return ApplyResult{}, nil
+		return applyResult{}, nil
 	}
 	script := fmt.Sprintf(`
 $key = %s
@@ -48,15 +48,15 @@ New-Item -Path $key -Force | Out-Null
 New-ItemProperty -Path $key -Name AutoConfigURL -PropertyType String -Value %s -Force | Out-Null
 `, psQuote(windowsInternetSettingsKey), psQuote(pacURL))
 	if _, err := s.powershell(ctx, script); err != nil {
-		return ApplyResult{}, err
+		return applyResult{}, err
 	}
 	if err := s.notifyInternetSettingsChanged(); err != nil {
-		return ApplyResult{}, err
+		return applyResult{}, err
 	}
-	return ApplyResult{AppliedServices: []string{windowsPACServiceName}}, nil
+	return applyResult{AppliedServices: []string{windowsPACServiceName}}, nil
 }
 
-func (s *windowsSystemSettings) Snapshot(ctx context.Context) ([]ServiceSnapshot, error) {
+func (s *windowsSystemSettings) Snapshot(ctx context.Context) ([]serviceSnapshot, error) {
 	script := fmt.Sprintf(`
 $key = %s
 $value = ''
@@ -74,29 +74,22 @@ if ($null -ne $prop -and $null -ne $prop.AutoConfigURL) {
 	if err != nil {
 		return nil, err
 	}
-	var snapshot ServiceSnapshot
+	var snapshot serviceSnapshot
 	if err := json.Unmarshal(bytes.TrimSpace(out), &snapshot); err != nil {
 		return nil, fmt.Errorf("parse Windows PAC state: %w", err)
 	}
-	return []ServiceSnapshot{snapshot}, nil
+	return []serviceSnapshot{snapshot}, nil
 }
 
-func (s *windowsSystemSettings) ClearIfUnchanged(ctx context.Context, expected []ServiceSnapshot) error {
+func (s *windowsSystemSettings) ClearOwned(ctx context.Context, serviceNames []string) error {
+	if !containsString(serviceNames, windowsPACServiceName) {
+		return nil
+	}
 	snapshots, err := s.Snapshot(ctx)
 	if err != nil {
 		return err
 	}
-	if len(snapshots) != 1 {
-		return nil
-	}
-	matched := false
-	for _, snapshot := range expected {
-		if snapshot == snapshots[0] {
-			matched = true
-			break
-		}
-	}
-	if !matched {
+	if len(snapshots) != 1 || !isOwnedURL(snapshots[0].PACURL) {
 		return nil
 	}
 	script := fmt.Sprintf(`
@@ -122,15 +115,6 @@ func (s *windowsSystemSettings) notifyInternetSettingsChanged() error {
 		return nil
 	}
 	return s.notify()
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func psQuote(value string) string {

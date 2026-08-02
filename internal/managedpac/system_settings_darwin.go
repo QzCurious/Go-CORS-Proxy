@@ -24,14 +24,14 @@ func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte,
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-func newSystemSettings() SystemSettings {
+func newSystemSettings() systemSettings {
 	return &darwinSystemSettings{runner: execRunner{}}
 }
 
-var _ SystemSettings = (*darwinSystemSettings)(nil)
+var _ systemSettings = (*darwinSystemSettings)(nil)
 
-func (s *darwinSystemSettings) Apply(ctx context.Context, pacURL string, serviceNames []string) (ApplyResult, error) {
-	result := ApplyResult{AppliedServices: make([]string, 0, len(serviceNames))}
+func (s *darwinSystemSettings) Apply(ctx context.Context, pacURL string, serviceNames []string) (applyResult, error) {
+	result := applyResult{AppliedServices: make([]string, 0, len(serviceNames))}
 	for _, serviceName := range serviceNames {
 		out, err := s.networksetup(ctx, "-setautoproxyurl", serviceName, pacURL)
 		if err != nil && isMissingNetworkService(out, err) {
@@ -45,12 +45,12 @@ func (s *darwinSystemSettings) Apply(ctx context.Context, pacURL string, service
 	return result, nil
 }
 
-func (s *darwinSystemSettings) Snapshot(ctx context.Context) ([]ServiceSnapshot, error) {
+func (s *darwinSystemSettings) Snapshot(ctx context.Context) ([]serviceSnapshot, error) {
 	serviceNames, err := s.listServices(ctx)
 	if err != nil {
 		return nil, err
 	}
-	snapshots := make([]ServiceSnapshot, 0, len(serviceNames))
+	snapshots := make([]serviceSnapshot, 0, len(serviceNames))
 	for _, serviceName := range serviceNames {
 		snapshot, err := s.getAutoProxy(ctx, serviceName)
 		if err != nil {
@@ -61,21 +61,29 @@ func (s *darwinSystemSettings) Snapshot(ctx context.Context) ([]ServiceSnapshot,
 	return snapshots, nil
 }
 
-func (s *darwinSystemSettings) ClearIfUnchanged(ctx context.Context, expected []ServiceSnapshot) error {
-	currentSnapshots, err := s.Snapshot(ctx)
-	if err != nil {
-		return err
-	}
-	current := make(map[string]ServiceSnapshot, len(currentSnapshots))
-	for _, snapshot := range currentSnapshots {
-		current[snapshot.ServiceName] = snapshot
-	}
+func (s *darwinSystemSettings) ClearOwned(ctx context.Context, serviceNames []string) error {
 	var firstErr error
-	for _, snapshot := range expected {
-		if actual, ok := current[snapshot.ServiceName]; !ok || actual != snapshot {
+	for _, serviceName := range serviceNames {
+		current, err := s.getAutoProxy(ctx, serviceName)
+		if err != nil && isMissingNetworkService(nil, err) {
 			continue
 		}
-		if _, err := s.networksetup(ctx, "-setautoproxystate", snapshot.ServiceName, "off"); err != nil && firstErr == nil {
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !isOwnedURL(current.PACURL) {
+			continue
+		}
+		if _, err := s.networksetup(ctx, "-setautoproxyurl", serviceName, ""); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if _, err := s.networksetup(ctx, "-setautoproxystate", serviceName, "off"); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -90,7 +98,11 @@ func (s *darwinSystemSettings) listServices(ctx context.Context) ([]string, erro
 	var serviceNames []string
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "An asterisk") || strings.HasPrefix(line, "*") {
+		if line == "" || strings.HasPrefix(line, "An asterisk") {
+			continue
+		}
+		line = strings.TrimSpace(strings.TrimPrefix(line, "*"))
+		if line == "" {
 			continue
 		}
 		serviceNames = append(serviceNames, line)
@@ -98,12 +110,12 @@ func (s *darwinSystemSettings) listServices(ctx context.Context) ([]string, erro
 	return serviceNames, nil
 }
 
-func (s *darwinSystemSettings) getAutoProxy(ctx context.Context, serviceName string) (ServiceSnapshot, error) {
+func (s *darwinSystemSettings) getAutoProxy(ctx context.Context, serviceName string) (serviceSnapshot, error) {
 	out, err := s.networksetup(ctx, "-getautoproxyurl", serviceName)
 	if err != nil {
-		return ServiceSnapshot{}, err
+		return serviceSnapshot{}, err
 	}
-	snapshot := ServiceSnapshot{ServiceName: serviceName}
+	snapshot := serviceSnapshot{ServiceName: serviceName}
 	for _, line := range strings.Split(string(out), "\n") {
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {

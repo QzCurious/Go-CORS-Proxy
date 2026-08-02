@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"io"
 	"net/http"
 	"strings"
@@ -124,10 +123,7 @@ func (c *client) callJSON(ctx context.Context, method, path string, body any, ou
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
 		text := strings.TrimSpace(string(data))
-		if strings.Contains(text, managedpac.ErrManagedPACLeaseLost.Error()) {
-			return managedpac.ErrManagedPACLeaseLost
-		}
-		for _, coordinationErr := range []error{errCAOperationInProgress, errGatewayOwnerEnding, errOwnerTransition} {
+		for _, coordinationErr := range []error{errCAOperationInProgress, errGatewayOwnerEnding, errOwnerTransition, ErrUserCAApprovalDenied} {
 			if strings.Contains(text, coordinationErr.Error()) {
 				return coordinationErr
 			}

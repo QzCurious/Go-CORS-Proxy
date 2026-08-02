@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -369,6 +370,53 @@ func TestSnapshotRecordsInspectionTimeWhileLaterInspectUsesCurrentFacts(t *testi
 		t.Fatal("fresh inspection did not observe expiry")
 	}
 }
+
+func TestUserCAMutationIsSingleFlightAndFailFast(t *testing.T) {
+	store := &blockingTrustStore{entered: make(chan struct{}), release: make(chan struct{})}
+	ca := openAt(t.TempDir(), store, time.Now)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := ca.Install(context.Background())
+		firstDone <- err
+	}()
+	<-store.entered
+
+	if _, err := ca.Uninstall(context.Background()); !errors.Is(err, errMutationInProgress) {
+		t.Fatalf("competing mutation error = %v", err)
+	}
+	close(store.release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type blockingTrustStore struct {
+	mu      sync.Mutex
+	records []trustedCertificate
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingTrustStore) TrustedCertificates(context.Context) ([]trustedCertificate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]trustedCertificate(nil), s.records...), nil
+}
+
+func (s *blockingTrustStore) Trust(_ context.Context, certificatePEM []byte) error {
+	close(s.entered)
+	<-s.release
+	fingerprint, err := sha1Fingerprint(certificatePEM)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.records = append(s.records, trustedCertificate{Fingerprint: fingerprint, CertificatePEM: append([]byte(nil), certificatePEM...)})
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *blockingTrustStore) Remove(context.Context, []string) error { return nil }
 
 type fakeTrustStore struct {
 	records      []trustedCertificate

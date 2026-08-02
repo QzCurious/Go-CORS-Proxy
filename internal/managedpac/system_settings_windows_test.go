@@ -56,11 +56,7 @@ func TestWindowsSystemSettingsPreservesChangedPAC(t *testing.T) {
 	runner := &fakeWindowsRunner{out: []byte(`{"ServiceName":"Windows Current User","PACURL":"http://corp.example/proxy.pac","Enabled":true}`)}
 	settings := &windowsSystemSettings{runner: runner, notify: func() error { return nil }}
 
-	err := settings.ClearIfUnchanged(context.Background(), []ServiceSnapshot{{
-		ServiceName: windowsPACServiceName,
-		PACURL:      "http://127.0.0.1/seamless-cors.pac",
-		Enabled:     true,
-	}})
+	err := settings.ClearOwned(context.Background(), []string{windowsPACServiceName})
 	if err != nil {
 		t.Fatal(err)
 	}
