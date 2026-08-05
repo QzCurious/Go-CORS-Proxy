@@ -200,15 +200,16 @@ type ManagedPACConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidance struct {
-	UpstreamListPath     string                      `json:"upstreamListPath"`
-	ManagedPACActive     bool                        `json:"managedPacActive"`
-	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
-	HTTPSReadiness       HTTPSReadinessStatus        `json:"httpsReadiness"`
-	HTTPSInterception    HTTPSInterceptionState      `json:"httpsInterception"`
-	HTTPSIntent          bool                        `json:"httpsIntent"`
-	HTTPSWarnings        []HTTPSWarningDetail        `json:"httpsWarnings,omitempty"`
-	ManagedPACWarnings   []ManagedPACWarningDetail   `json:"managedPacWarnings,omitempty"`
-	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
+	UpstreamListPath       string                        `json:"upstreamListPath"`
+	ManagedPACActive       bool                          `json:"managedPacActive"`
+	ManagedPACServices     []string                      `json:"managedPacServices,omitempty"`
+	HTTPSReadiness         HTTPSReadinessStatus          `json:"httpsReadiness"`
+	HTTPSInterception      HTTPSInterceptionState        `json:"httpsInterception"`
+	HTTPSIntent            bool                          `json:"httpsIntent"`
+	HTTPSWarnings          []HTTPSWarningDetail          `json:"httpsWarnings,omitempty"`
+	ManagedPACWarnings     []ManagedPACWarningDetail     `json:"managedPacWarnings,omitempty"`
+	UpstreamListWarnings   []UpstreamListWarningDetail   `json:"upstreamListWarnings,omitempty"`
+	UpstreamListDiagnostic *UpstreamListDiagnosticDetail `json:"upstreamListDiagnostic,omitempty"`
 }
 
 // StartGuidanceDetail is retained as a representation-oriented alias for
@@ -218,6 +219,11 @@ type StartGuidanceDetail = StartGuidance
 type UpstreamListWarningDetail struct {
 	Line       int    `json:"line"`
 	Text       string `json:"text"`
+	Diagnostic string `json:"diagnostic"`
+}
+
+type UpstreamListDiagnosticDetail struct {
+	Kind       string `json:"kind"`
 	Diagnostic string `json:"diagnostic"`
 }
 
@@ -367,18 +373,19 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen          string                      `json:"proxyListen"`
-	PACListen            string                      `json:"pacListen"`
-	UpstreamListPath     string                      `json:"upstreamListPath"`
-	UpstreamCount        int                         `json:"upstreamCount"`
-	UpstreamListWarnings []UpstreamListWarningDetail `json:"upstreamListWarnings,omitempty"`
-	HTTPSReadiness       HTTPSReadinessStatus        `json:"httpsReadiness"`
-	HTTPSInterception    HTTPSInterceptionState      `json:"httpsInterception"`
-	HTTPSIntent          bool                        `json:"httpsIntent"`
-	HTTPSWarnings        []HTTPSWarningDetail        `json:"httpsWarnings,omitempty"`
-	ManagedPACActive     bool                        `json:"managedPacActive"`
-	ManagedPACServices   []string                    `json:"managedPacServices,omitempty"`
-	ManagedPACWarnings   []ManagedPACWarningDetail   `json:"managedPacWarnings,omitempty"`
+	ProxyListen            string                        `json:"proxyListen"`
+	PACListen              string                        `json:"pacListen"`
+	UpstreamListPath       string                        `json:"upstreamListPath"`
+	UpstreamCount          int                           `json:"upstreamCount"`
+	UpstreamListWarnings   []UpstreamListWarningDetail   `json:"upstreamListWarnings,omitempty"`
+	UpstreamListDiagnostic *UpstreamListDiagnosticDetail `json:"upstreamListDiagnostic,omitempty"`
+	HTTPSReadiness         HTTPSReadinessStatus          `json:"httpsReadiness"`
+	HTTPSInterception      HTTPSInterceptionState        `json:"httpsInterception"`
+	HTTPSIntent            bool                          `json:"httpsIntent"`
+	HTTPSWarnings          []HTTPSWarningDetail          `json:"httpsWarnings,omitempty"`
+	ManagedPACActive       bool                          `json:"managedPacActive"`
+	ManagedPACServices     []string                      `json:"managedPacServices,omitempty"`
+	ManagedPACWarnings     []ManagedPACWarningDetail     `json:"managedPacWarnings,omitempty"`
 }
 
 type HTTPSReadinessStatus string
@@ -460,7 +467,6 @@ const (
 type lifecycle struct {
 	mu                   sync.Mutex
 	caAdmissionMu        sync.Mutex
-	managedPACRequestMu  sync.Mutex
 	managedPAC           managedPACModule
 	userCA               userCAModule
 	userCASnapshot       userca.Snapshot
@@ -722,18 +728,19 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
-			ProxyListen:          state.ProxyListen,
-			PACListen:            state.PACListen,
-			UpstreamListPath:     state.UpstreamList,
-			UpstreamCount:        state.UpstreamCount,
-			UpstreamListWarnings: state.UpstreamListWarnings,
-			HTTPSReadiness:       state.HTTPSReadiness,
-			HTTPSInterception:    state.HTTPSInterception,
-			HTTPSIntent:          state.HTTPSIntent,
-			HTTPSWarnings:        state.HTTPSWarnings,
-			ManagedPACActive:     managedPACActive,
-			ManagedPACServices:   managedPACServiceNames,
-			ManagedPACWarnings:   managedPACWarningSnapshot,
+			ProxyListen:            state.ProxyListen,
+			PACListen:              state.PACListen,
+			UpstreamListPath:       state.UpstreamList,
+			UpstreamCount:          state.UpstreamCount,
+			UpstreamListWarnings:   state.UpstreamListWarnings,
+			UpstreamListDiagnostic: state.UpstreamListDiagnostic,
+			HTTPSReadiness:         state.HTTPSReadiness,
+			HTTPSInterception:      state.HTTPSInterception,
+			HTTPSIntent:            state.HTTPSIntent,
+			HTTPSWarnings:          state.HTTPSWarnings,
+			ManagedPACActive:       managedPACActive,
+			ManagedPACServices:     managedPACServiceNames,
+			ManagedPACWarnings:     managedPACWarningSnapshot,
 		}
 		return result, nil
 	}
@@ -756,6 +763,26 @@ func upstreamListWarningDetails(warnings []upstreamlist.Warning) []UpstreamListW
 		})
 	}
 	return details
+}
+
+func upstreamListDiagnosticDetail(diagnostic *upstreamlist.Diagnostic) *UpstreamListDiagnosticDetail {
+	if diagnostic == nil {
+		return nil
+	}
+	kind := "unknown"
+	switch diagnostic.Kind {
+	case upstreamlist.DiagnosticInvalidSource:
+		kind = "invalid-source"
+	case upstreamlist.DiagnosticSourceUnavailable:
+		kind = "source-unavailable"
+	case upstreamlist.DiagnosticObservationStopped:
+		kind = "observation-stopped"
+	}
+	detail := &UpstreamListDiagnosticDetail{Kind: kind}
+	if diagnostic.Err != nil {
+		detail.Diagnostic = diagnostic.Err.Error()
+	}
+	return detail
 }
 
 func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
@@ -911,26 +938,20 @@ func (f *lifecycle) uninstallConsentFingerprint(active *activeRuntime) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// watchRuntimeChanges consumes coalesced current-state invalidations from the
-// runtime. Each notification is followed by one immutable snapshot read; the
-// snapshot revisions ensure that replacing a pending routing notification with
-// a warning notification cannot lose either concern.
+// watchRuntimeChanges consumes the runtime's coalesced status invalidations and
+// complete desired PAC snapshots. Desired states are latest-value snapshots;
+// status notifications only prompt consumers to read the current immutable
+// runtime state.
 func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRuntime, baseline runtimeState) {
-	lastRoutingRevision := baseline.RoutingRevision
 	lastWarningsRevision := baseline.HTTPSWarningsRevision
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case desired := <-active.engine.DesiredStates():
+			f.managedPAC.PublishDesiredState(desired)
 		case kind := <-active.engine.RuntimeChanges():
 			state := active.engine.snapshot()
-			consumeRouting := func() {
-				if state.RoutingRevision == lastRoutingRevision {
-					return
-				}
-				lastRoutingRevision = state.RoutingRevision
-				f.requestPACReconciliation(active, state.PACURL)
-			}
 			consumeWarnings := func() {
 				if state.HTTPSWarningsRevision == lastWarningsRevision {
 					return
@@ -944,16 +965,15 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 					publish(append([]HTTPSWarningDetail(nil), state.HTTPSWarnings...))
 				}
 			}
-			// Process the indicated concern first. Then inspect the other
-			// revision too because the one-slot channel may have coalesced
-			// consecutive invalidations of different kinds.
 			switch kind {
-			case RoutingChanged:
-				consumeRouting()
-				consumeWarnings()
 			case HTTPSWarningsChanged:
 				consumeWarnings()
-				consumeRouting()
+			case RuntimeStatusChanged:
+				// Status consumers read the complete Gateway snapshot. No
+				// revision is needed to distinguish a source diagnostic. The
+				// warning check also preserves an HTTPS warning invalidation
+				// that was coalesced by this generic status notification.
+				consumeWarnings()
 			default:
 				// Unknown kinds are ignored; the scoped vocabulary is private
 				// to Gateway Runtime and this keeps a malformed notification
@@ -961,33 +981,6 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 			}
 		}
 	}
-}
-
-func (f *lifecycle) requestPACReconciliation(active *activeRuntime, nextURL string) {
-	f.managedPACRequestMu.Lock()
-	defer f.managedPACRequestMu.Unlock()
-
-	f.mu.Lock()
-	if f.runtime != active || active.managedPAC == nil {
-		f.mu.Unlock()
-		return
-	}
-	// Runtime changes can publish handoffs concurrently. Submit only a URL that
-	// is still current while this short Gateway ordering boundary is held.
-	if active.engine.PACURL() != nextURL {
-		f.mu.Unlock()
-		return
-	}
-	active.managedPAC.state = managedpac.NewRuntimeState(active.managedPAC.state.ServiceNames(), nextURL)
-	state := active.managedPAC.state
-	f.mu.Unlock()
-	f.managedPAC.RequestReconcile(state, nextURL, func(result managedpac.ReconcileResult) {
-		f.mu.Lock()
-		if result.Err() == nil && f.runtime == active && active.managedPAC != nil && active.managedPAC.state.PACURL() == nextURL {
-			active.managedPAC.warnings = managedPACWarningDetails(result.Warnings())
-		}
-		f.mu.Unlock()
-	})
 }
 
 func (f *lifecycle) managedPACConsentDetail(snapshot managedpac.Snapshot) *ManagedPACConsentDetail {

@@ -96,12 +96,11 @@ func (*blockingCleanupSettings) Inspect(context.Context) (managedpac.Snapshot, e
 	return managedpac.Snapshot{}, nil
 }
 
-func (*blockingCleanupSettings) Install(context.Context, []string, string) (managedpac.InstallResult, error) {
+func (*blockingCleanupSettings) InstallDesired(context.Context, []string, managedpac.DesiredState) (managedpac.InstallResult, error) {
 	return managedpac.InstallResult{}, nil
 }
 
-func (*blockingCleanupSettings) RequestReconcile(managedpac.RuntimeState, string, func(managedpac.ReconcileResult)) {
-}
+func (*blockingCleanupSettings) PublishDesiredState(managedpac.DesiredState) {}
 
 func (f *blockingCleanupSettings) Uninstall(context.Context) error {
 	close(f.cleanupEntered)

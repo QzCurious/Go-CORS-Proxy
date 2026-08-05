@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 type fakeSettings struct {
@@ -102,273 +105,6 @@ func TestInspectClassifiesOnlyEmptyAndOwnedServicesAsManageable(t *testing.T) {
 	}
 }
 
-func TestInstallKeepsFixedSetAndUpdatesEligibleSubset(t *testing.T) {
-	settings := &fakeSettings{
-		states: []serviceSnapshot{
-			{ServiceName: "Ethernet"},
-			{ServiceName: "Wi-Fi", PACURL: "http://corp.example/proxy.pac", Enabled: true},
-			{ServiceName: "New VPN"},
-		},
-	}
-	module := openWithSettings(settings)
-
-	result, err := module.Install(context.Background(), []string{"Missing", "Wi-Fi", "Ethernet"}, "http://127.0.0.1/seamless-cors.pac?v=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := result.State().ServiceNames(), []string{"Ethernet", "Missing", "Wi-Fi"}; !slices.Equal(got, want) {
-		t.Fatalf("fixed set = %v, want %v", got, want)
-	}
-	if got, want := result.InstalledServices(), []string{"Ethernet"}; !slices.Equal(got, want) {
-		t.Fatalf("installed = %v, want %v", got, want)
-	}
-	warnings := result.Warnings()
-	if len(warnings) != 1 || warnings[0].Kind != WarningDrift || warnings[0].ServiceName != "Wi-Fi" {
-		t.Fatalf("warnings = %#v", warnings)
-	}
-	if len(settings.writes) != 1 || settings.writes[0][:8] != "Ethernet" {
-		t.Fatalf("writes = %v", settings.writes)
-	}
-}
-
-func TestInstallFailsAfterReachingNoSelectedService(t *testing.T) {
-	module := openWithSettings(&fakeSettings{states: []serviceSnapshot{{
-		ServiceName: "Wi-Fi", PACURL: "http://corp.example/proxy.pac", Enabled: true,
-	}}})
-
-	result, err := module.Install(context.Background(), []string{"Wi-Fi", "Missing"}, "http://127.0.0.1/seamless-cors.pac?v=1")
-	if !errors.Is(err, errNoServicesInstalled) {
-		t.Fatalf("install error = %v", err)
-	}
-	if len(result.Warnings()) != 1 || result.Warnings()[0].Kind != WarningDrift {
-		t.Fatalf("warnings = %#v", result.Warnings())
-	}
-}
-
-func TestReconcilePreservesForeignAndIgnoresAbsentAndUnselectedServices(t *testing.T) {
-	settings := &fakeSettings{states: []serviceSnapshot{
-		{ServiceName: "Ethernet", PACURL: "http://localhost:8000/seamless-cors.pac?v=1", Enabled: false},
-		{ServiceName: "Wi-Fi"},
-		{ServiceName: "New VPN"},
-	}}
-	module := openWithSettings(settings)
-	installed, err := module.Install(context.Background(), []string{"Ethernet", "Wi-Fi", "Missing"}, "http://127.0.0.1/seamless-cors.pac?v=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.mu.Lock()
-	settings.states[1] = serviceSnapshot{ServiceName: "Wi-Fi", PACURL: "http://corp.example/proxy.pac", Enabled: true}
-	settings.writes = nil
-	settings.mu.Unlock()
-
-	done := make(chan ReconcileResult, 1)
-	module.RequestReconcile(installed.State(), "http://127.0.0.1/seamless-cors.pac?v=2", func(result ReconcileResult) { done <- result })
-	result := receive(t, done)
-
-	if len(result.Warnings()) != 1 || result.Warnings()[0].ServiceName != "Wi-Fi" || result.Warnings()[0].Kind != WarningDrift {
-		t.Fatalf("warnings = %#v", result.Warnings())
-	}
-	settings.mu.Lock()
-	writes := append([]string(nil), settings.writes...)
-	states := append([]serviceSnapshot(nil), settings.states...)
-	settings.mu.Unlock()
-	if len(writes) != 1 || writes[0] != "Ethernet=http://127.0.0.1/seamless-cors.pac?v=2" {
-		t.Fatalf("writes = %v", writes)
-	}
-	if states[1].PACURL != "http://corp.example/proxy.pac" || states[2].PACURL != "" {
-		t.Fatalf("foreign or unselected state changed: %#v", states)
-	}
-}
-
-func TestNewReconcileRequestPreemptsOlderCompletion(t *testing.T) {
-	settings := &fakeSettings{
-		states: []serviceSnapshot{{ServiceName: "Wi-Fi"}},
-	}
-	module := openWithSettings(settings)
-	installed, err := module.Install(context.Background(), []string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.applyStarted = make(chan string, 4)
-	settings.applyRelease = make(chan struct{})
-	firstDone := make(chan ReconcileResult, 1)
-	latestDone := make(chan ReconcileResult, 1)
-	module.RequestReconcile(installed.State(), "http://127.0.0.1/seamless-cors.pac?v=2", func(result ReconcileResult) { firstDone <- result })
-	<-settings.applyStarted
-	module.RequestReconcile(installed.State(), "http://127.0.0.1/seamless-cors.pac?v=3", func(result ReconcileResult) { latestDone <- result })
-	close(settings.applyRelease)
-	receive(t, latestDone)
-	select {
-	case <-firstDone:
-		t.Fatal("superseded reconciliation published a completion")
-	default:
-	}
-	settings.mu.Lock()
-	writes := append([]string(nil), settings.writes...)
-	settings.mu.Unlock()
-	if got := writes[len(writes)-1]; got != "Wi-Fi=http://127.0.0.1/seamless-cors.pac?v=3" {
-		t.Fatalf("latest write = %q", got)
-	}
-}
-
-func TestReconcileInspectionFailureReturnsErrorWithoutFabricatingWarning(t *testing.T) {
-	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	installed, err := module.Install(context.Background(), []string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.mu.Lock()
-	settings.snapshotErr = errors.New("inspection denied")
-	settings.mu.Unlock()
-
-	done := make(chan ReconcileResult, 1)
-	module.RequestReconcile(installed.State(), "http://127.0.0.1/seamless-cors.pac?v=2", func(result ReconcileResult) { done <- result })
-	result := receive(t, done)
-
-	if result.Err() == nil || len(result.Warnings()) != 0 {
-		t.Fatalf("reconcile result = error %v, warnings %#v", result.Err(), result.Warnings())
-	}
-}
-
-func TestUninstallRemovesDisabledAndChangedOwnedStateAndRejectsLateReconcile(t *testing.T) {
-	settings := &fakeSettings{states: []serviceSnapshot{
-		{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1/seamless-cors.pac?v=1", Enabled: false},
-		{ServiceName: "Ethernet", PACURL: "http://localhost:9000/seamless-cors.pac?v=9", Enabled: true},
-		{ServiceName: "VPN", PACURL: "http://corp.example/proxy.pac", Enabled: true},
-	}}
-	module := openWithSettings(settings)
-	module.mu.Lock()
-	module.accepting = true
-	module.mu.Unlock()
-	state := RuntimeState{serviceNames: []string{"Wi-Fi", "Ethernet"}, pacURL: "old"}
-
-	if err := module.Uninstall(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	completed := make(chan ReconcileResult, 1)
-	module.RequestReconcile(state, "http://127.0.0.1/seamless-cors.pac?v=10", func(result ReconcileResult) { completed <- result })
-	time.Sleep(20 * time.Millisecond)
-	select {
-	case <-completed:
-		t.Fatal("late reconciliation completed after uninstall")
-	default:
-	}
-	settings.mu.Lock()
-	states := append([]serviceSnapshot(nil), settings.states...)
-	settings.mu.Unlock()
-	if states[0].PACURL != "" || states[1].PACURL != "" || states[2].PACURL != "http://corp.example/proxy.pac" {
-		t.Fatalf("states after uninstall = %#v", states)
-	}
-}
-
-func TestUninstallWaitsForWriterThenPreventsEveryLaterWrite(t *testing.T) {
-	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	installed, err := module.Install(context.Background(), []string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.applyStarted = make(chan string, 2)
-	settings.applyRelease = make(chan struct{})
-	settings.ignoreCancel = true
-	module.RequestReconcile(installed.State(), "http://127.0.0.1/seamless-cors.pac?v=2", nil)
-	<-settings.applyStarted
-
-	uninstallDone := make(chan error, 1)
-	go func() { uninstallDone <- module.Uninstall(context.Background()) }()
-	deadline := time.Now().Add(time.Second)
-	for {
-		module.mu.Lock()
-		accepting := module.accepting
-		module.mu.Unlock()
-		if !accepting {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("uninstall did not close reconciliation admission")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	module.RequestReconcile(installed.State(), "http://127.0.0.1/seamless-cors.pac?v=3", nil)
-	select {
-	case err := <-uninstallDone:
-		t.Fatalf("uninstall returned before writer quiesced: %v", err)
-	default:
-	}
-	close(settings.applyRelease)
-	if err := receive(t, uninstallDone); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(20 * time.Millisecond)
-
-	settings.mu.Lock()
-	writes := append([]string(nil), settings.writes...)
-	state := settings.states[0]
-	settings.mu.Unlock()
-	if len(writes) != 2 || writes[1] != "Wi-Fi=http://127.0.0.1/seamless-cors.pac?v=2" {
-		t.Fatalf("writes = %v", writes)
-	}
-	if state.PACURL != "" || state.Enabled {
-		t.Fatalf("state after uninstall = %#v", state)
-	}
-}
-
-func TestUninstallClosureWinsOverOlderConcurrentInstall(t *testing.T) {
-	settings := &fakeSettings{
-		states:       []serviceSnapshot{{ServiceName: "Wi-Fi"}},
-		applyStarted: make(chan string, 1),
-		applyRelease: make(chan struct{}),
-		ignoreCancel: true,
-	}
-	module := openWithSettings(settings)
-	installDone := make(chan error, 1)
-	go func() {
-		_, err := module.Install(context.Background(), []string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=1")
-		installDone <- err
-	}()
-	<-settings.applyStarted
-
-	uninstallDone := make(chan error, 1)
-	go func() { uninstallDone <- module.Uninstall(context.Background()) }()
-	deadline := time.Now().Add(time.Second)
-	for {
-		module.mu.Lock()
-		generation := module.generation
-		module.mu.Unlock()
-		if generation >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("uninstall did not close reconciliation admission")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	close(settings.applyRelease)
-	if err := receive(t, installDone); err != nil {
-		t.Fatal(err)
-	}
-	if err := receive(t, uninstallDone); err != nil {
-		t.Fatal(err)
-	}
-
-	completed := make(chan ReconcileResult, 1)
-	module.RequestReconcile(RuntimeState{serviceNames: []string{"Wi-Fi"}}, "http://127.0.0.1/seamless-cors.pac?v=2", func(result ReconcileResult) {
-		completed <- result
-	})
-	select {
-	case <-completed:
-		t.Fatal("reconciliation was admitted after uninstall closed a concurrent install")
-	case <-time.After(20 * time.Millisecond):
-	}
-	settings.mu.Lock()
-	state := settings.states[0]
-	settings.mu.Unlock()
-	if state.PACURL != "" || state.Enabled {
-		t.Fatalf("state after uninstall = %#v", state)
-	}
-}
-
 func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 	tests := map[string]bool{
 		"http://127.0.0.1:8079/seamless-cors.pac":        true,
@@ -386,14 +122,165 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 	}
 }
 
-func receive[T any](t *testing.T, ch <-chan T) T {
-	t.Helper()
-	select {
-	case value := <-ch:
-		return value
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for result")
-		var zero T
-		return zero
+func TestDesiredStateRendersCompletePACAndSuppressesEffectiveNoOp(t *testing.T) {
+	list := mustDesiredList(t, "api.example.test\n")
+	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	module := openWithSettings(settings)
+	desired := NewDesiredState(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
+	_, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, desired)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if got := module.PublicationGeneration(); got != 1 {
+		t.Fatalf("initial publication generation = %d, want 1", got)
+	}
+	settings.mu.Lock()
+	initialWrites := append([]string(nil), settings.writes...)
+	settings.mu.Unlock()
+
+	module.PublishDesiredState(desired)
+	time.Sleep(50 * time.Millisecond)
+	if got := module.PublicationGeneration(); got != 1 {
+		t.Fatalf("effective no-op advanced generation to %d", got)
+	}
+	settings.mu.Lock()
+	defer settings.mu.Unlock()
+	if !slices.Equal(settings.writes, initialWrites) {
+		t.Fatalf("effective no-op published writes: %v", settings.writes)
+	}
+	if !strings.Contains(settings.writes[0], "v=1") {
+		t.Fatalf("initial publication URL = %q", settings.writes[0])
+	}
+}
+
+func TestDesiredStateChangeAdvancesGenerationBeforePublication(t *testing.T) {
+	first := mustDesiredList(t, "api.example.test\n")
+	second := mustDesiredList(t, "other.example.test\n")
+	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	module := openWithSettings(settings)
+	if _, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, NewDesiredState(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+		t.Fatal(err)
+	}
+	module.PublishDesiredState(NewDesiredState(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	waitForWrite(t, settings, "v=2")
+	if got := module.PublicationGeneration(); got != 2 {
+		t.Fatalf("publication generation = %d, want 2", got)
+	}
+}
+
+func TestInitialDesiredPublicationFailureIsRetriedWithoutReturningGatewayError(t *testing.T) {
+	list := mustDesiredList(t, "api.example.test\n")
+	settings := &fakeSettings{
+		states:      []serviceSnapshot{{ServiceName: "Wi-Fi"}},
+		applyErrors: map[string]error{"Wi-Fi": errors.New("write denied")},
+	}
+	module := openWithSettings(settings)
+	desired := NewDesiredState(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
+	result, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.InstalledServices()) != 0 {
+		t.Fatalf("initial installed services = %v, want none", result.InstalledServices())
+	}
+
+	waitForGeneration(t, module, 2)
+	settings.mu.Lock()
+	settings.applyErrors = nil
+	settings.mu.Unlock()
+	waitForWrite(t, settings, "seamless-cors.pac?v=")
+}
+
+func TestPartialDesiredPublicationFailureIsRetried(t *testing.T) {
+	first := mustDesiredList(t, "api.example.test\n")
+	second := mustDesiredList(t, "other.example.test\n")
+	settings := &fakeSettings{states: []serviceSnapshot{
+		{ServiceName: "Ethernet"},
+		{ServiceName: "Wi-Fi"},
+	}}
+	module := openWithSettings(settings)
+	if _, err := module.InstallDesired(context.Background(), []string{"Ethernet", "Wi-Fi"}, NewDesiredState(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+		t.Fatal(err)
+	}
+
+	settings.mu.Lock()
+	settings.applyErrors = map[string]error{"Ethernet": errors.New("write denied")}
+	settings.mu.Unlock()
+	module.PublishDesiredState(NewDesiredState(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	waitForGeneration(t, module, 2)
+
+	settings.mu.Lock()
+	settings.applyErrors = nil
+	settings.mu.Unlock()
+	waitForWrite(t, settings, "Ethernet=http://127.0.0.1:8081/seamless-cors.pac?v=3")
+}
+
+func TestFailedDesiredPublicationConsumesGenerationAndRetriesLatestState(t *testing.T) {
+	first := mustDesiredList(t, "api.example.test\n")
+	second := mustDesiredList(t, "second.example.test\n")
+	third := mustDesiredList(t, "third.example.test\n")
+	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	module := openWithSettings(settings)
+	if _, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, NewDesiredState(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+		t.Fatal(err)
+	}
+	settings.mu.Lock()
+	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
+	settings.mu.Unlock()
+	module.PublishDesiredState(NewDesiredState(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	waitForGeneration(t, module, 2)
+
+	settings.mu.Lock()
+	settings.applyErrors = nil
+	settings.mu.Unlock()
+	module.PublishDesiredState(NewDesiredState(third, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	waitForGeneration(t, module, 3)
+	waitForWrite(t, settings, "v=3")
+	settings.mu.Lock()
+	writes := append([]string(nil), settings.writes...)
+	settings.mu.Unlock()
+	if len(writes) < 2 {
+		t.Fatalf("writes after retry = %v", writes)
+	}
+	if got := module.PublicationGeneration(); got < 3 {
+		t.Fatalf("retry did not consume a new generation: %d", got)
+	}
+}
+
+func mustDesiredList(t *testing.T, contents string) upstreamlist.UpstreamList {
+	t.Helper()
+	list, err := upstreamlist.Decode([]byte(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return list
+}
+
+func waitForWrite(t *testing.T, settings *fakeSettings, fragment string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		settings.mu.Lock()
+		for _, write := range settings.writes {
+			if strings.Contains(write, fragment) {
+				settings.mu.Unlock()
+				return
+			}
+		}
+		settings.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for write %q", fragment)
+}
+
+func waitForGeneration(t *testing.T, module *ManagedPAC, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if module.PublicationGeneration() >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("publication generation did not reach %d", want)
 }

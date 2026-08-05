@@ -13,11 +13,11 @@ The single internal module that owns start, serve, stop, status, and Installed U
 _Avoid_: surface-owned outcome, CLI result classification, HTTP-defined command semantics, Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
 
 **Gateway Feature Orchestration**:
-A rule that only the Gateway Module orders and combines facts and mutations across Live Configuration, UserCA, Managed PAC, and Gateway Runtime; feature modules never call one another. Gateway may establish result ordering without waiting for an independent feature mutation to settle.
+A rule that only the Gateway Module orders and combines facts and mutations across the Upstream List Source, UserCA, Managed PAC, and Gateway Runtime; feature modules never call one another. Gateway may establish result ordering without waiting for an independent feature mutation to settle.
 _Avoid_: cross-feature import, feature-owned orchestration, shared feature lock, ordering-means-waiting
 
 **Independent Feature Serialization**:
-A concurrency rule where each feature module serializes only its own mutations while Gateway Runtime briefly orders its in-memory state changes. Slow work in Live Configuration, UserCA, or Managed PAC does not hold another feature's lock.
+A concurrency rule where each feature module serializes only its own mutations while Gateway Runtime briefly orders its in-memory state changes. Slow work in the Upstream List Source, UserCA, or Managed PAC does not hold another feature's lock.
 _Avoid_: cross-feature mutex, global lifecycle lock, UserCA-blocked configuration, PAC-blocked UserCA mutation
 
 **Surface-Neutral Command Result**:
@@ -48,8 +48,12 @@ _Avoid_: HTTP response leak, non-success-means-error, message-parsing client, co
 The module that holds the Gateway Ownership Lease and publishes Gateway Router discovery state for a long-running ownerless `serve` or `start` command or transient ownerless CA work. Once published, start, CA Lifecycle Commands, status, and stop address that owner, while competing serve fails.
 _Avoid_: daemon supervisor, client command, detached runtime owner, terminal command renderer
 
+**Gateway Host**:
+The process-bootstrap role that establishes and keeps a Gateway Owner available independently of whether Gateway Runtime is activated. An ownerless start combines Gateway Hosting with the Start operation, Router-Only Serve hosts without starting, and an HTTP control surface can only address an already-hosted owner.
+_Avoid_: CLI-owned Start semantics, implicit serve command, HTTP process bootstrap, Gateway Runtime
+
 **Gateway Runtime**:
-The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, live configuration, runtime close behavior, and fatal runtime error reporting without installing or unsetting OS PAC state.
+The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, the watched Upstream List Source, runtime close behavior, and fatal runtime error reporting without installing or unsetting OS PAC state.
 _Avoid_: lifecycle facade, command router, OS proxy manager, cleanup owner
 
 **Router-Only Serve**:
@@ -89,7 +93,7 @@ A PAC Routing behavior where matched HTTPS traffic is routed through the gateway
 _Avoid_: routing unrepaired HTTPS, unnecessary HTTPS proxying
 
 **Generated PAC**:
-A runtime proxy auto-configuration artifact derived from Live Configuration and the Upstream List, not edited directly by the user.
+A runtime proxy auto-configuration artifact derived from the Upstream List Source and complete Managed PAC desired state, not edited directly by the user.
 _Avoid_: user-authored PAC, manual PAC rules
 
 **PAC Route Set**:
@@ -100,9 +104,9 @@ _Avoid_: hand-built JavaScript rules, duplicated Upstream List parsing, PAC-owne
 A local HTTP endpoint served by the gateway that returns the current Generated PAC.
 _Avoid_: file PAC, static PAC file
 
-**PAC URL Version**:
-A runtime-selected identity on the PAC Endpoint, usually carried by an owned URL query version, that changes when PAC Routing clients must fetch a newer Generated PAC while still preserving the seamless-cors Managed PAC Ownership Marker.
-_Avoid_: port rotation, foreign cache-busting parameter, PAC file version, browser cache workaround
+**Managed PAC Publication URL**:
+An owned PAC Endpoint identity carrying Managed PAC's publication generation in its URL query so PAC clients fetch a newer Generated PAC while the seamless-cors Managed PAC Ownership Marker remains stable.
+_Avoid_: Gateway PAC version, routing revision, port rotation, foreign cache-busting parameter, PAC file version, browser cache workaround
 
 **Gateway Distribution**:
 The installable form of seamless-cors for a specific operating system and CPU architecture.
@@ -292,17 +296,17 @@ _Avoid_: readiness-only activation, separate active boolean, Config File HTTPS t
 A lifecycle rule where ready HTTPS Readiness allows HTTPS Interception State to become active without a separate configuration toggle. HTTPS Intent makes inactive interception caused by missing readiness warning-worthy, but does not install, repair, or substitute for UserCA capability.
 _Avoid_: Explicit Trusted HTTPS, Config File HTTPS toggle, intent-as-capability, silent trust installation
 
-**Live Configuration**:
-A gateway module and code boundary that exclusively owns observing and reading the user-editable Upstream List and exposing its validated semantic meaning at startup and when it changes. Valid Upstream List changes apply without requiring the user to restart or reload the browser or gateway.
-_Avoid_: external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, runtime-only reload, manual reload, restart requirement, stale configuration, separate config package
+**Upstream List Source**:
+The watched file-backed semantic source that bootstraps the user-managed Upstream List supplied by Gateway, validates and decodes it on first Current, then observes its parent directory and publishes complete latest-value Upstream List States. It retains the newest valid semantic list after runtime source failures and reports structured degraded diagnostics without choosing the application's path policy.
+_Avoid_: legacy configuration abstraction, external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, event history, source-content fingerprint, configurable application default
 
-**Live Configuration Snapshot**:
-The validated immutable current Upstream List value exposed by Live Configuration, including diagnostic source metadata without interpreting HTTPS Readiness or other consumer capabilities. Its identity is based on parsed meaning rather than source-file representation, and change delivery may coalesce unconsumed intermediate snapshots in favor of the latest value.
-_Avoid_: configuration event history, raw file content, file-change event, content fingerprint, watcher notification
+**Upstream List State**:
+An immutable complete snapshot containing the newest valid Upstream List and an optional Upstream List Source diagnostic. Source representation, comments, whitespace, and equivalent normalized ordering are not state identity; unconsumed intermediate snapshots may be replaced by a newer state.
+_Avoid_: configuration event history, raw file content, file-change event, delta, command replay, watcher notification
 
-**Upstream List Entries Revision**:
-A run-local, non-persistent monotonic identity exposed with Live Configuration, beginning with the initial validated Upstream List Entries and advancing only when the normalized, deduplicated entry set changes. It allows consumers to apply the newest coalesced routing input without treating representation-only edits as routing changes.
-_Avoid_: persisted Upstream List revision, Upstream List file revision, PAC content comparison, source-content fingerprint
+**Upstream List Source Diagnostic**:
+A structured runtime condition identifying invalid source content, temporarily unavailable or unsafe source state, or observation shutdown. The source retains last-known-good routing while Gateway stores and presents the current diagnostic; recovery publishes a healthy state even when the list itself is unchanged.
+_Avoid_: fatal runtime source error, stale-list discard, silent unreadable source, Gateway-owned file validation
 
 **Gateway Control Command**:
 A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, UserCA install, and UserCA uninstall.
@@ -333,7 +337,7 @@ The gateway module behind the Proxy Listener that owns CORS repair, Local Prefli
 _Avoid_: Upstream List admission module, PAC Routing module, generic proxy
 
 **Home Config Directory**:
-The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Live Configuration owns configuration sources within it, while Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
+The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Gateway owns the Upstream List path policy and supplies the cleaned absolute path, while the Upstream List Source owns only file bootstrap and observation; Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
 _Avoid_: platform-native app config directory
 
 **Runtime State Directory**:
@@ -377,7 +381,7 @@ The stable loopback HTTP PAC URL shape whose path ends in `seamless-cors.pac`, p
 _Avoid_: managed PAC footprint, run-specific PAC identity, port-based ownership, full-URL ownership, non-loopback PAC ownership
 
 **Complete Managed PAC Uninstall**:
-An idempotent Managed PAC operation that closes reconciliation admission, ends pending work, removes every currently marker-owned PAC setting regardless of enabled status or PAC URL Version, and reports success only after no marker-owned setting remains. Foreign PAC state is always preserved; late requests are discarded until a later successful Managed PAC Installation reopens admission.
+An idempotent Managed PAC operation that closes reconciliation admission, ends pending work, removes every currently marker-owned PAC setting regardless of enabled status or publication generation, and reports success only after no marker-owned setting remains. Foreign PAC state is always preserved; late desired states are discarded until a later successful Managed PAC Installation reopens admission.
 _Avoid_: enabled-only cleanup, exact-URL cleanup, service-set cleanup, previous-state restoration, partial uninstall success
 
 **Managed PAC Service Set**:
@@ -385,11 +389,11 @@ The network services classified as manageable during Gateway Activation and coll
 _Avoid_: all visible services, initially foreign service, currently controlled service subset, live service discovery for expansion, implicit service expansion, removal-on-disappearance, removal-on-drift
 
 **Managed PAC Installation**:
-A Gateway Activation mutation that attempts the desired PAC URL on every currently manageable visible member of the accepted Managed PAC Service Set and succeeds when at least one service is updated. The accepted set remains fixed even when a member becomes absent or foreign before mutation, while per-service exceptions produce Managed PAC Warnings and reaching no service fails activation.
-_Avoid_: all-or-nothing PAC installation, successful zero-service activation, failure-narrowed service set, silent partial installation
+A Gateway Activation mutation that attempts the desired PAC URL on every currently manageable visible member of the accepted Managed PAC Service Set. The accepted set remains fixed even when a member becomes absent or foreign before mutation; per-service exceptions produce Managed PAC Warnings, and a failed initial publication remains an internal Managed PAC condition that is retried while Gateway Runtime continues serving.
+_Avoid_: all-or-nothing PAC installation, failure-narrowed service set, silent partial installation, Gateway termination on transient PAC publication failure
 
 **Managed PAC Runtime State**:
-A Gateway Runtime's latched record of the fixed Managed PAC Service Set and current desired PAC URL Version after Managed PAC installation. Its absence means the runtime has no active Managed PAC configuration; it retains no consent state and is not a live observation of operating-system proxy settings.
+A Gateway Runtime's latched record of the fixed Managed PAC Service Set and the latest Managed PAC publication URL after Managed PAC installation. Its absence means the runtime has no active Managed PAC configuration; it retains no consent state and is not a live observation of operating-system proxy settings.
 _Avoid_: Managed PAC Session, Managed PAC lease state, live PAC snapshot, attempted PAC URL
 
 **Managed PAC Active**:
@@ -397,7 +401,7 @@ A status fact derived from the presence of Managed PAC Runtime State, meaning th
 _Avoid_: all-services-controlled, live OS PAC verification, warning-free Managed PAC, Managed PAC lease held
 
 **Managed PAC Mutation Sequence**:
-Managed PAC's private ordering rule where installation, reconciliation, and uninstall execute one at a time independently from Live Configuration and UserCA serialization. A newer reconciliation request preempts older work and converges to the newest PAC URL Version, while uninstall cancels and discards pending reconciliation, waits only until the current writer is quiescent, then removes and verifies all marker-owned PAC state so no write can occur after cleanup.
+Managed PAC's private ordering rule where installation, desired-state reconciliation, and uninstall execute one at a time independently from the Upstream List Source and UserCA serialization. A newer complete desired state replaces older pending state without interrupting an active publication attempt; effective no-ops are suppressed, failed attempts retain the last successfully published PAC and retry the newest state, and uninstall waits for the current writer before removing and verifying all marker-owned PAC state.
 _Avoid_: caller-owned PAC lock, operation-success wait, concurrent PAC writes, refresh-cleanup race, post-stop PAC install, uninstall racing an old writer, global lifecycle mutex
 
 **Managed PAC Reconciliation**:
@@ -405,15 +409,19 @@ A PAC update behavior that independently evaluates each visible member of the fi
 _Avoid_: Managed PAC lease check, all-or-nothing refresh, idle watcher, new-service adoption, foreign PAC replacement, missing-service failure
 
 **Managed PAC Reconciliation Request**:
-An explicit non-blocking, one-shot handoff made by Gateway whenever Gateway Runtime changes its desired PAC URL Version, asking Managed PAC to reconcile that URL across the fixed Managed PAC Service Set. Managed PAC preempts superseded work, converges to the newest request, and reports only that request's completion and warning snapshot without a watcher, timer, or dependency on Live Configuration or UserCA operation completion.
-_Avoid_: post-uninstall PAC write, PAC watcher, reconciliation timer, synchronous PAC consequence, UserCA-owned PAC refresh, Live-Configuration-owned PAC write
+The complete latest-value snapshot published by Gateway to Managed PAC, containing every input required to derive the current effective PAC, including the Upstream List and HTTPS Interception state. Managed PAC owns effective-PAC comparison, publication generation, serial platform attempts, and retry; Gateway does not replay PAC commands or decide effective equality.
+_Avoid_: PAC URL command, delta, event history, post-uninstall PAC write, PAC watcher, Gateway-owned PAC generation, UserCA-owned PAC refresh
+
+**Managed PAC Publication Generation**:
+The Managed PAC-owned monotonic generation allocated before each new effective PAC publication attempt. A failed attempt consumes its generation, so gaps are valid; retries allocate a new generation and use the newest complete desired state.
+_Avoid_: Gateway PAC version, routing revision, rollback generation, transaction sequence, reclaimed failed version
 
 **Managed PAC Drift**:
 A nonfatal condition where a visible member of the fixed Managed PAC Service Set carries foreign PAC state during Managed PAC Reconciliation. The foreign setting is preserved, the Gateway Runtime continues, and a Managed PAC Warning reports that seamless-cors no longer controls that service.
 _Avoid_: Managed PAC Lease Lost, consent-stale warning, fatal PAC drift, forced PAC restoration, foreign PAC takeover, silent proxy escape
 
 **Managed PAC Update Failure**:
-A nonfatal condition where Managed PAC Reconciliation is authorized to update an owned or empty selected service but its platform write fails. The Gateway Runtime retains its desired PAC URL Version, reports a Managed PAC Warning for that service, and retries at the next reconciliation.
+A nonfatal condition where Managed PAC Reconciliation is authorized to update an owned or empty selected service but its platform write fails. Managed PAC retains the last successfully published PAC, keeps the newest desired state, consumes the failed publication generation, and retries internally.
 _Avoid_: fatal PAC refresh, PAC URL rollback, whole-runtime failure, silent partial update
 
 **Managed PAC Warning**:
@@ -437,7 +445,7 @@ A start-only behavior where the fixed Upstream List is created automatically whe
 _Avoid_: init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after PAC consent has succeeded, Gateway Runtime is serving, and Managed PAC Installation has reached at least one selected service. It points to the Upstream List, HTTPS Readiness, current HTTPS and Managed PAC Warnings, and managed state instead of runtime listener endpoints.
+A start-time user-facing output behavior shown only after PAC consent has succeeded and Gateway Runtime is serving. Managed PAC publication warnings are included when available, while transient initial publication failure remains internal and is retried. It points to the Upstream List, HTTPS Readiness, current HTTPS and Managed PAC Warnings, and managed state instead of runtime listener endpoints.
 _Avoid_: pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -493,11 +501,11 @@ A lifecycle boundary where CA Trust Consent and Installed User CA mutation occur
 _Avoid_: start-time CA trust, stop-cancelled CA command, intent-triggered installation, route-dependent trust setup
 
 **Start Sequence Order**:
-A startup lifecycle order where Gateway Footprint Cleanup and Upstream List validation precede Managed PAC Consent assessment; HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; Gateway Runtime begins serving before Managed PAC installation; and Start Guidance follows successful installation on at least one selected service.
+A startup lifecycle order where Gateway Footprint Cleanup and Upstream List validation precede Managed PAC Consent assessment; HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; Gateway Runtime begins serving before Managed PAC installation; and Managed PAC owns retries when the initial publication is not healthy.
 _Avoid_: start-time CA installation, PAC-before-runtime serving, PAC-first start, cleanup-after-approval, start guidance before PAC installation
 
 **Minimal Command Surface**:
-The user-facing command model where normal operation is limited to starting, stopping, and viewing gateway status while runtime behavior follows Live Configuration.
+The user-facing command model where normal operation is limited to starting, stopping, and viewing gateway status while runtime behavior follows the Upstream List Source.
 _Avoid_: command-heavy configuration, flag-driven operation
 
 **CA Lifecycle Commands**:
@@ -589,7 +597,7 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Upstream List**:
-The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Live Configuration reads and observes this ordinary-file source, whose live change observation is supported only on a local filesystem.
+The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Gateway resolves and supplies the cleaned absolute path; Upstream List Source reads and observes this ordinary-file source on the local filesystem.
 _Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
 **Upstream List Comment**:
@@ -601,12 +609,12 @@ A valid Upstream List state with no active entries, including a file that contai
 _Avoid_: startup failure for no active entries, proxy-all fallback
 
 **Upstream List Warning**:
-A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing publish a new Live Configuration Snapshot for successful startup and runtime status rather than asynchronous notification; they do not advance Upstream List Entries Revision unless the valid entry set also changes.
-_Avoid_: silent invalid entry, fatal line error, transient log warning, asynchronous warning event, routing revision warning
+A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing publish a new Upstream List State for successful startup and runtime status; warning-only changes do not publish a new Managed PAC desired input.
+_Avoid_: silent invalid entry, fatal line error, transient log warning, command replay, routing revision warning
 
 **Fatal Upstream List Error**:
-A live configuration behavior where a missing, unreadable, or structurally undecodable Upstream List reports the source problem, performs Gateway Footprint Cleanup, and stops the gateway. Individual invalid lines are Upstream List Warnings rather than fatal errors.
-_Avoid_: stale valid routing, unreadable-as-empty, silent source failure
+A last-known-good Upstream List Source behavior where a missing, unreadable, unsafe, or structurally undecodable Upstream List retains the newest valid list, publishes a structured degraded diagnostic after confirmation, and continues observing. Initial failure still stops Gateway startup; recovery publishes a healthy Upstream List State. Individual invalid lines are Upstream List Warnings rather than source-level errors.
+_Avoid_: stale valid routing discard, unreadable-as-empty, silent source failure, startup fallback to invalid state
 
 **Upstream List Entry**:
 A normalized routing value decoded by the Upstream List module as either a Host Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
@@ -633,8 +641,8 @@ The explicit Host Selector meaning that selects an exact hostname, exactly one l
 _Avoid_: wildcard-bearing hostname, consumer-parsed wildcard
 
 **Upstream List Routing Policy**:
-A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the Live Configuration Snapshot rather than the snapshot itself.
-_Avoid_: whole Live Configuration Snapshot dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Upstream List validation
+A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the current Upstream List State rather than a source representation.
+_Avoid_: whole Upstream List State dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Upstream List validation
 
 **Line-Level Upstream Validation**:
 An Upstream List behavior where each line is validated independently so valid Upstream List Entries are applied while invalid lines are ignored and reported precisely as Upstream List Warnings.
@@ -760,11 +768,11 @@ QA engineer: "Trust-Aware PAC Routing sends them through the gateway only while 
 
 Developer: "Do I need to maintain the PAC file?"
 
-QA engineer: "No, Generated PAC is derived from Live Configuration and the Upstream List."
+QA engineer: "No, Generated PAC is derived from the Upstream List Source and the complete Managed PAC desired state."
 
 Developer: "How do Upstream List changes reach the operating system proxy?"
 
-QA engineer: "The PAC Endpoint serves the current Generated PAC, and the gateway refreshes the owned PAC URL Version when supported PAC clients need a new URL to observe the update."
+QA engineer: "The PAC Endpoint serves the current Generated PAC, and Managed PAC advances its publication generation when clients need a new URL to observe an effective update."
 
 Developer: "Can I avoid changing my system proxy settings?"
 
@@ -804,7 +812,7 @@ QA engineer: "Every supported platform needs a managed PAC adapter; platforms wi
 
 Developer: "After I update the Upstream List, do I need to restart the gateway?"
 
-QA engineer: "No, Live Configuration applies the newest values to incoming requests."
+QA engineer: "No, Gateway applies the newest Upstream List State to runtime routing and publishes a complete desired PAC snapshot."
 
 Developer: "What happens if I save an invalid config file while the gateway is running?"
 

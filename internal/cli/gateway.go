@@ -346,6 +346,7 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
+			renderUpstreamListDiagnostic(stdout, guidance.UpstreamListDiagnostic)
 			renderUpstreamListWarnings(stdout, guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
@@ -475,6 +476,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		}
 		fmt.Fprintf(stdout, "upstream-list: %s\n", result.Runtime.UpstreamListPath)
 		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
+		renderUpstreamListDiagnostic(stdout, result.Runtime.UpstreamListDiagnostic)
 		renderUpstreamListWarnings(stdout, result.Runtime.UpstreamListWarnings)
 		if result.Runtime.ManagedPACActive {
 			fmt.Fprintln(stdout, "managed-pac: active")
@@ -540,6 +542,13 @@ func renderUpstreamListWarnings(stdout io.Writer, warnings []gateway.UpstreamLis
 			warning.Diagnostic,
 		)
 	}
+}
+
+func renderUpstreamListDiagnostic(stdout io.Writer, diagnostic *gateway.UpstreamListDiagnosticDetail) {
+	if diagnostic == nil {
+		return
+	}
+	fmt.Fprintf(stdout, "warning: upstream-list %s: %s\n", diagnostic.Kind, diagnostic.Diagnostic)
 }
 
 func cleanupFailureText(failures []gateway.CleanupFailureDetail) string {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/QzCurious/seamless-cors/internal/liveconfig"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 type startSequence struct {
@@ -21,11 +21,15 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		}
 	}
 
-	config, err := liveconfig.Create()
+	upstreamListPath, err := defaultUpstreamListPath()
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := config.Snapshot()
+	upstreamListSource, err := upstreamlist.New(upstreamListPath)
+	if err != nil {
+		return nil, err
+	}
+	initialUpstreamList, err := upstreamListSource.Current()
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +49,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return assessmentResult, nil
 	}
 
-	engine, err := newRuntime(config, snapshot)
+	engine, err := newRuntime(upstreamListPath, upstreamListSource, initialUpstreamList)
 	if err != nil {
 		return postStartFailure(err)
 	}
@@ -129,12 +133,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	default:
 	}
 
-	// Capture the runtime revision at the PAC installation boundary. Runtime
-	// changes may occur while the feature-owned installation is in progress;
-	// the unified watcher uses this baseline to reconcile any newer snapshot
-	// once activation has installed its fixed service set.
-	pacInstallBaseline := engine.snapshot()
-	pacInstall, err := s.lifecycle.managedPAC.Install(ctx, acceptedServices, pacInstallBaseline.PACURL)
+	// Capture the complete desired PAC input at the installation boundary.
+	// Runtime changes may occur while feature-owned installation is in progress;
+	// the latest-value desired-state channel retains the newest snapshot for
+	// reconciliation once activation has installed its fixed service set.
+	pacInstallBaseline := engine.currentDesiredState()
+	pacInstall, err := s.lifecycle.managedPAC.InstallDesired(ctx, acceptedServices, pacInstallBaseline)
 	if err != nil {
 		withdraw()
 		warnings := managedPACWarningDetails(pacInstall.Warnings())
@@ -165,11 +169,11 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	s.lifecycle.mu.Unlock()
 	cleanupEngine = false
 
-	go s.lifecycle.watchRuntimeChanges(runCtx, active, pacInstallBaseline)
+	go s.lifecycle.watchRuntimeChanges(runCtx, active, engine.snapshot())
 
 	state := engine.snapshot()
 	return Started{Guidance: StartGuidance{
-		UpstreamListPath:     snapshot.UpstreamListPath(),
+		UpstreamListPath:     upstreamListPath,
 		ManagedPACActive:     true,
 		ManagedPACServices:   pacInstall.State().ServiceNames(),
 		ManagedPACWarnings:   managedPACWarningDetails(pacInstall.Warnings()),
@@ -177,7 +181,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		HTTPSInterception:    state.HTTPSInterception,
 		HTTPSIntent:          state.HTTPSIntent,
 		HTTPSWarnings:        state.HTTPSWarnings,
-		UpstreamListWarnings: upstreamListWarningDetails(snapshot.UpstreamList().Warnings()),
+		UpstreamListWarnings: upstreamListWarningDetails(initialUpstreamList.Warnings()),
 	}}, nil
 }
 

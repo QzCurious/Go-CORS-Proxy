@@ -11,22 +11,22 @@ import (
 const footprintFileName = "seamless-cors.pac"
 
 // PACURL constructs the stable Managed PAC URL for a PAC listener endpoint
-// (for example, "127.0.0.1:49152") and a run-local URL version. The marker
+// (for example, "127.0.0.1:49152") and a run-local publication generation. The marker
 // path is owned here so Gateway does not need to know the footprint filename.
-func PACURL(pacListen string, version uint64) string {
+func PACURL(pacListen string, generation uint64) string {
 	u := url.URL{
 		Scheme: "http",
 		Host:   pacListen,
 		Path:   "/" + footprintFileName,
 	}
 	query := u.Query()
-	query.Set("v", strconv.FormatUint(version, 10))
+	query.Set("v", strconv.FormatUint(generation, 10))
 	u.RawQuery = query.Encode()
 	return u.String()
 }
 
 // IsOwnedURL recognizes the stable loopback HTTP Managed PAC ownership marker.
-// Ports, query versions, and any path prefix are intentionally ignored; the
+// Ports, query generations, and any path prefix are intentionally ignored; the
 // URL is owned when its final path component is the marker filename.
 func IsOwnedURL(raw string) bool {
 	u, err := url.Parse(strings.TrimSpace(raw))

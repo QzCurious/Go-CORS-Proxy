@@ -100,6 +100,11 @@ func NewUpstreamList(entries Entries, warnings []Warning) UpstreamList {
 	}
 }
 
+// Clone returns an independent immutable Upstream List value.
+func (u UpstreamList) Clone() UpstreamList {
+	return NewUpstreamList(u.entries, u.warnings)
+}
+
 // Entries returns the active normalized routing entries.
 func (u UpstreamList) Entries() Entries {
 	return NewEntries(u.entries.hostSelectors, u.entries.originSelectors)
@@ -125,6 +130,25 @@ func (u UpstreamList) HTTPSIntent() bool {
 // selector sets. Source ordering and warnings do not affect entry identity.
 func SameEntries(left, right UpstreamList) bool {
 	return left.entries.Same(right.entries)
+}
+
+// Same reports whether two Upstream Lists have the same normalized entries
+// and warnings. Source representation is not part of semantic identity.
+func Same(left, right UpstreamList) bool {
+	if !SameEntries(left, right) {
+		return false
+	}
+	leftWarnings := left.Warnings()
+	rightWarnings := right.Warnings()
+	if len(leftWarnings) != len(rightWarnings) {
+		return false
+	}
+	for index := range leftWarnings {
+		if leftWarnings[index] != rightWarnings[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func sameHostSelectors(left, right []HostSelector) bool {

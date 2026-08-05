@@ -59,6 +59,13 @@ func (r *Routing) Apply(entries upstreamlist.Entries, trustedHTTPS bool) bool {
 	return true
 }
 
+// Render derives the complete effective PAC for semantic routing input. The
+// caller supplies the proxy endpoint because PAC Routing does not own the
+// runtime listener.
+func Render(proxyListen string, entries upstreamlist.Entries, trustedHTTPS bool) string {
+	return render(proxyListen, deriveRouteSet(entries, trustedHTTPS))
+}
+
 // Handler returns the dynamic HTTP handler owned by PAC Routing.
 func (r *Routing) Handler() http.Handler {
 	r.mu.RLock()

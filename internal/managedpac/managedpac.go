@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-)
+	"time"
 
-var errNoServicesInstalled = errors.New("managed PAC install updated no services")
+	"github.com/QzCurious/seamless-cors/internal/latestvalue"
+	"github.com/QzCurious/seamless-cors/internal/pacrouting"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
+)
 
 type Ownership string
 
@@ -118,50 +121,74 @@ func (r InstallResult) Warnings() []Warning {
 	return append([]Warning(nil), r.warnings...)
 }
 
-type ReconcileResult struct {
-	warnings []Warning
-	err      error
+// DesiredState is the complete Gateway input needed to derive the current
+// Generated PAC. It is a snapshot, not a command or a delta.
+type DesiredState struct {
+	UpstreamList      upstreamlist.UpstreamList
+	HTTPSInterception bool
+	ProxyListen       string
+	PACListen         string
 }
 
-// NewReconcileResult returns an immutable Managed PAC reconciliation result.
-func NewReconcileResult(warnings []Warning, err error) ReconcileResult {
-	return ReconcileResult{warnings: append([]Warning(nil), warnings...), err: err}
+// NewDesiredState constructs an immutable desired-state snapshot.
+func NewDesiredState(list upstreamlist.UpstreamList, httpsInterception bool, proxyListen, pacListen string) DesiredState {
+	return DesiredState{
+		UpstreamList:      list,
+		HTTPSInterception: httpsInterception,
+		ProxyListen:       proxyListen,
+		PACListen:         pacListen,
+	}
 }
 
-func (r ReconcileResult) Warnings() []Warning {
-	return append([]Warning(nil), r.warnings...)
+type effectivePAC struct {
+	body      string
+	pacListen string
 }
 
-func (r ReconcileResult) Err() error { return r.err }
-
-type reconcileRequest struct {
-	generation uint64
-	state      RuntimeState
-	pacURL     string
-	complete   func(ReconcileResult)
+func deriveEffectivePAC(state DesiredState) effectivePAC {
+	return effectivePAC{
+		body:      pacrouting.Render(state.ProxyListen, state.UpstreamList.Entries(), state.HTTPSInterception),
+		pacListen: state.PACListen,
+	}
 }
 
-// ManagedPAC owns platform PAC inspection, mutation serialization, request
-// preemption, and complete marker-based teardown behind one semantic interface.
+func (p effectivePAC) same(other *effectivePAC) bool {
+	return other != nil && p.body == other.body && p.pacListen == other.pacListen
+}
+
+// ManagedPAC owns effective PAC derivation, publication generation,
+// latest-value desired-state reconciliation, platform PAC mutation, and
+// complete marker-based teardown.
 type ManagedPAC struct {
 	settings systemSettings
 
 	opMu sync.Mutex
 	mu   sync.Mutex
 
-	accepting    bool
-	generation   uint64
-	pending      *reconcileRequest
-	activeCancel context.CancelFunc
-	worker       bool
+	accepting           bool
+	admissionGeneration uint64
+	activeCancel        context.CancelFunc
+
+	desiredStates         chan DesiredState
+	desiredWorkerDone     chan struct{}
+	desiredWorkerStop     chan struct{}
+	latestDesiredState    *DesiredState
+	lastPublishedPAC      *effectivePAC
+	publicationGeneration uint64
+	serviceNames          []string
 }
+
+const desiredPublicationRetry = 100 * time.Millisecond
 
 func Open() *ManagedPAC {
 	return openWithSettings(newSystemSettings())
 }
 
 func openWithSettings(settings systemSettings) *ManagedPAC {
-	return &ManagedPAC{settings: settings}
+	return &ManagedPAC{
+		settings:      settings,
+		desiredStates: make(chan DesiredState, 1),
+	}
 }
 
 func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
@@ -192,106 +219,202 @@ func ownershipForURL(raw string) Ownership {
 	return OwnershipForeign
 }
 
-func (m *ManagedPAC) Install(ctx context.Context, serviceNames []string, pacURL string) (InstallResult, error) {
+// InstallDesired performs the initial publication for a complete desired PAC
+// state. Its generated URL is owned by Managed PAC's publication generation.
+func (m *ManagedPAC) InstallDesired(ctx context.Context, serviceNames []string, desired DesiredState) (InstallResult, error) {
 	selected := sortedUniqueStrings(serviceNames)
 	if len(selected) == 0 {
 		return InstallResult{}, fmt.Errorf("managed PAC service set is empty")
 	}
 
-	admissionGeneration := m.closeReconciliationAdmission()
+	admissionGeneration, workerDone := m.closeReconciliationAdmission()
+	if workerDone != nil {
+		<-workerDone
+	}
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 
-	snapshot, err := m.Inspect(ctx)
-	if err != nil {
-		return InstallResult{}, err
-	}
-	installed, warnings := m.applyEligible(ctx, snapshot, selected, pacURL)
+	effective := deriveEffectivePAC(desired)
+	m.mu.Lock()
+	m.publicationGeneration++
+	generation := m.publicationGeneration
+	// A new activation must publish even when the previous activation used an
+	// equivalent PAC: uninstall may have removed the old platform setting.
+	m.lastPublishedPAC = nil
+	m.mu.Unlock()
+	pacURL := PACURL(desired.PACListen, generation)
+
+	installed, warnings, publicationErr := m.attemptPublication(ctx, selected, pacURL)
 	state := NewRuntimeState(selected, pacURL)
 	result := NewInstallResult(state, installed, warnings)
-	if len(installed) == 0 {
-		return result, errNoServicesInstalled
-	}
 
 	m.mu.Lock()
-	if m.generation == admissionGeneration {
+	m.latestDesiredState = &desired
+	m.serviceNames = append([]string(nil), selected...)
+	latestvalue.Publish(m.desiredStates, desired)
+	if publicationErr == nil {
+		m.lastPublishedPAC = &effective
+	}
+	if m.admissionGeneration == admissionGeneration {
 		m.accepting = true
 	}
+	startWorker := m.accepting && m.desiredWorkerDone == nil
+	var workerDoneToStart chan struct{}
+	var workerStopToStart chan struct{}
+	if startWorker {
+		workerDoneToStart, workerStopToStart = m.startDesiredWorkerLocked()
+	}
 	m.mu.Unlock()
+	if workerDoneToStart != nil {
+		go m.runDesiredReconciliation(workerDoneToStart, workerStopToStart)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	// Initial publication failures are retained inside Managed PAC and retried
+	// by its desired-state worker. Gateway can continue serving its runtime.
 	return result, nil
 }
 
-// RequestReconcile records the latest desired PAC URL and returns immediately.
-// Only the latest request is allowed to publish a completion.
-func (m *ManagedPAC) RequestReconcile(state RuntimeState, pacURL string, complete func(ReconcileResult)) {
+// PublishDesiredState records the newest complete desired PAC input and
+// returns immediately. Managed PAC serializes and retries publication in its
+// own worker.
+func (m *ManagedPAC) PublishDesiredState(desired DesiredState) {
 	m.mu.Lock()
 	if !m.accepting {
 		m.mu.Unlock()
 		return
 	}
-	m.generation++
-	if m.activeCancel != nil {
-		m.activeCancel()
-	}
-	m.pending = &reconcileRequest{
-		generation: m.generation,
-		state:      cloneRuntimeState(state),
-		pacURL:     pacURL,
-		complete:   complete,
-	}
-	if m.worker {
+	m.latestDesiredState = &desired
+	latestvalue.Publish(m.desiredStates, desired)
+	if m.desiredWorkerDone != nil {
 		m.mu.Unlock()
 		return
 	}
-	m.worker = true
+	workerDone, workerStop := m.startDesiredWorkerLocked()
 	m.mu.Unlock()
-	go m.runReconciliation()
+	go m.runDesiredReconciliation(workerDone, workerStop)
 }
 
-func (m *ManagedPAC) runReconciliation() {
-	for {
+// PublicationGeneration returns the last generation allocated for a PAC
+// publication attempt. Failed attempts intentionally consume generations.
+func (m *ManagedPAC) PublicationGeneration() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.publicationGeneration
+}
+
+func (m *ManagedPAC) startDesiredWorkerLocked() (chan struct{}, chan struct{}) {
+	done := make(chan struct{})
+	stop := make(chan struct{})
+	m.desiredWorkerDone = done
+	m.desiredWorkerStop = stop
+	return done, stop
+}
+
+func (m *ManagedPAC) runDesiredReconciliation(done chan struct{}, stop <-chan struct{}) {
+	var retry *time.Timer
+	var retryC <-chan time.Time
+	defer func() {
+		if retry != nil {
+			retry.Stop()
+		}
 		m.mu.Lock()
-		request := m.pending
-		m.pending = nil
-		if request == nil {
-			m.worker = false
-			m.mu.Unlock()
+		if m.desiredWorkerDone == done {
+			m.desiredWorkerDone = nil
+		}
+		m.mu.Unlock()
+		close(done)
+	}()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-m.desiredStates:
+			succeeded := m.reconcileLatestDesiredState()
+			if succeeded {
+				if retry != nil {
+					retry.Stop()
+				}
+				retry = nil
+				retryC = nil
+			} else {
+				retry, retryC = resetRetryTimer(retry)
+			}
+		case <-retryC:
+			retry = nil
+			retryC = nil
+			if m.reconcileLatestDesiredState() {
+				continue
+			}
+			retry, retryC = resetRetryTimer(retry)
+		}
+
+		m.mu.Lock()
+		accepting := m.accepting
+		m.mu.Unlock()
+		if !accepting {
 			return
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		m.activeCancel = cancel
-		m.mu.Unlock()
-
-		m.opMu.Lock()
-		m.mu.Lock()
-		current := m.accepting && request.generation == m.generation
-		m.mu.Unlock()
-		var result ReconcileResult
-		if current {
-			result = m.reconcile(ctx, request.state, request.pacURL)
-		}
-		m.opMu.Unlock()
-		cancel()
-
-		m.mu.Lock()
-		if request.generation == m.generation {
-			m.activeCancel = nil
-		}
-		latest := m.accepting && request.generation == m.generation
-		m.mu.Unlock()
-		if latest && request.complete != nil {
-			request.complete(result)
-		}
 	}
 }
 
-func (m *ManagedPAC) reconcile(ctx context.Context, state RuntimeState, pacURL string) ReconcileResult {
+func resetRetryTimer(previous *time.Timer) (*time.Timer, <-chan time.Time) {
+	if previous != nil {
+		previous.Stop()
+	}
+	timer := time.NewTimer(desiredPublicationRetry)
+	return timer, timer.C
+}
+
+func (m *ManagedPAC) reconcileLatestDesiredState() bool {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+
+	m.mu.Lock()
+	if !m.accepting || m.latestDesiredState == nil {
+		m.mu.Unlock()
+		return true
+	}
+	desired := *m.latestDesiredState
+	serviceNames := append([]string(nil), m.serviceNames...)
+	effective := deriveEffectivePAC(desired)
+	if effective.same(m.lastPublishedPAC) {
+		m.mu.Unlock()
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	m.publicationGeneration++
+	generation := m.publicationGeneration
+	m.activeCancel = cancel
+	m.mu.Unlock()
+	pacURL := PACURL(desired.PACListen, generation)
+	_, _, err := m.attemptPublication(ctx, serviceNames, pacURL)
+	cancel()
+
+	m.mu.Lock()
+	m.activeCancel = nil
+	if err == nil {
+		m.lastPublishedPAC = &effective
+	}
+	m.mu.Unlock()
+	return err == nil
+}
+
+func (m *ManagedPAC) attemptPublication(ctx context.Context, serviceNames []string, pacURL string) ([]string, []Warning, error) {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return NewReconcileResult(nil, err)
+		return nil, nil, err
 	}
-	_, warnings := m.applyEligible(ctx, snapshot, state.serviceNames, pacURL)
-	return NewReconcileResult(warnings, nil)
+	installed, warnings := m.applyEligible(ctx, snapshot, serviceNames, pacURL)
+	for _, warning := range warnings {
+		if warning.Kind == WarningUpdateFailed {
+			return installed, warnings, errors.New("managed PAC publication failed")
+		}
+	}
+	return installed, warnings, nil
 }
 
 func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selected []string, pacURL string) ([]string, []Warning) {
@@ -331,7 +454,10 @@ func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selec
 // Uninstall closes reconciliation admission before waiting for the current
 // writer, then removes all currently marker-owned settings and verifies absence.
 func (m *ManagedPAC) Uninstall(ctx context.Context) error {
-	m.closeReconciliationAdmission()
+	_, workerDone := m.closeReconciliationAdmission()
+	if workerDone != nil {
+		<-workerDone
+	}
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 
@@ -362,16 +488,19 @@ func (m *ManagedPAC) Uninstall(ctx context.Context) error {
 	return clearErr
 }
 
-func (m *ManagedPAC) closeReconciliationAdmission() uint64 {
+func (m *ManagedPAC) closeReconciliationAdmission() (uint64, <-chan struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.accepting = false
-	m.generation++
-	m.pending = nil
+	m.admissionGeneration++
+	if m.desiredWorkerStop != nil {
+		close(m.desiredWorkerStop)
+		m.desiredWorkerStop = nil
+	}
 	if m.activeCancel != nil {
 		m.activeCancel()
 	}
-	return m.generation
+	return m.admissionGeneration, m.desiredWorkerDone
 }
 
 func cloneRuntimeState(state RuntimeState) RuntimeState {

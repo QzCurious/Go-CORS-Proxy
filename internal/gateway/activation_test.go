@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -150,7 +149,7 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 	}
 }
 
-func TestInstallUsesOnlyUserCAAndDoesNotBootstrapLiveConfiguration(t *testing.T) {
+func TestInstallUsesOnlyUserCAAndDoesNotBootstrapUpstreamList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ca := &fakeUserCA{
@@ -173,13 +172,13 @@ func TestInstallUsesOnlyUserCAAndDoesNotBootstrapLiveConfiguration(t *testing.T)
 		t.Fatalf("UserCA install calls = %d", ca.installCalls)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".seamless-cors", "upstreams.txt")); !os.IsNotExist(err) {
-		t.Fatalf("install touched Live Configuration: %v", err)
+		t.Fatalf("install touched Upstream List source: %v", err)
 	}
 }
 
 func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
-	config, snapshot, _ := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(config, snapshot)
+	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,8 +205,8 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 }
 
 func TestInstallReturnsPartialSuccessWhenRuntimeCannotAdopt(t *testing.T) {
-	config, snapshot, _ := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(config, snapshot)
+	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,116 +232,6 @@ func TestInstallReturnsPartialSuccessWhenRuntimeCannotAdopt(t *testing.T) {
 	}
 	if result.Kind != InstallResultRuntimeAdoptionFailed || !lifecycle.userCASnapshot.Usable() {
 		t.Fatalf("partial install result = %#v latched = %#v", result, lifecycle.userCASnapshot)
-	}
-}
-
-func TestManagedPACReconciliationUpdatesLatchedWarningsWithoutLosingFixedSet(t *testing.T) {
-	config, snapshot, _ := createTrafficConfig(t, "api.example.test\n")
-	engine, err := newRuntime(config, snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	settings := &lifecycleTestSystemSettings{
-		reconcileWarnings: []managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Wi-Fi", Diagnostic: "foreign PAC state is active"}},
-	}
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := &activeRuntime{
-		engine: engine,
-		phase:  runtimePhaseRunning,
-		managedPAC: &managedPACRuntime{state: managedpac.NewRuntimeState(
-			[]string{"Wi-Fi"},
-			"http://127.0.0.1/seamless-cors.pac?v=1",
-		)},
-	}
-	lifecycle.runtime = active
-	engine.mu.Lock()
-	engine.pacVersion = 2
-	nextURL := engine.pacURL(2)
-	engine.mu.Unlock()
-
-	lifecycle.requestPACReconciliation(active, nextURL)
-	status, err := lifecycle.Status(context.Background(), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Runtime == nil || !status.Runtime.ManagedPACActive || len(status.Runtime.ManagedPACServices) != 1 || status.Runtime.ManagedPACServices[0] != "Wi-Fi" {
-		t.Fatalf("Managed PAC runtime status = %#v", status.Runtime)
-	}
-	if len(status.Runtime.ManagedPACWarnings) != 1 || status.Runtime.ManagedPACWarnings[0].Kind != ManagedPACWarningDrift {
-		t.Fatalf("Managed PAC warnings = %#v", status.Runtime.ManagedPACWarnings)
-	}
-}
-
-func TestManagedPACReconciliationSuppressesStaleRuntimeURL(t *testing.T) {
-	config, snapshot, _ := createTrafficConfig(t, "api.example.test\n")
-	engine, err := newRuntime(config, snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	settings := &lifecycleTestSystemSettings{}
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := &activeRuntime{
-		engine:     engine,
-		phase:      runtimePhaseRunning,
-		managedPAC: &managedPACRuntime{state: managedpac.NewRuntimeState([]string{"Wi-Fi"}, engine.pacURL(1))},
-	}
-	lifecycle.runtime = active
-	engine.mu.Lock()
-	engine.pacVersion = 3
-	staleURL := engine.pacURL(2)
-	latestURL := engine.pacURL(3)
-	engine.mu.Unlock()
-
-	lifecycle.requestPACReconciliation(active, staleURL)
-	lifecycle.requestPACReconciliation(active, latestURL)
-
-	if got, want := settings.requestedURLs, []string{latestURL}; !slices.Equal(got, want) {
-		t.Fatalf("reconciliation requests = %v, want %v", got, want)
-	}
-}
-
-func TestManagedPACReconciliationFailurePreservesWarningSnapshot(t *testing.T) {
-	config, snapshot, _ := createTrafficConfig(t, "api.example.test\n")
-	engine, err := newRuntime(config, snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	settings := &lifecycleTestSystemSettings{reconcileErr: errors.New("inspection denied")}
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial := []ManagedPACWarningDetail{{Kind: ManagedPACWarningDrift, ServiceName: "Wi-Fi", Diagnostic: "foreign PAC state is active"}}
-	active := &activeRuntime{
-		engine: engine,
-		phase:  runtimePhaseRunning,
-		managedPAC: &managedPACRuntime{
-			state:    managedpac.NewRuntimeState([]string{"Wi-Fi"}, engine.pacURL(1)),
-			warnings: initial,
-		},
-	}
-	lifecycle.runtime = active
-	engine.mu.Lock()
-	engine.pacVersion = 2
-	nextURL := engine.pacURL(2)
-	engine.mu.Unlock()
-
-	lifecycle.requestPACReconciliation(active, nextURL)
-
-	if !slices.Equal(active.managedPAC.warnings, initial) {
-		t.Fatalf("warnings after reconciliation failure = %#v", active.managedPAC.warnings)
 	}
 }
 
@@ -436,8 +325,8 @@ func TestAdmittedCAOperationIgnoresRequestCancellation(t *testing.T) {
 }
 
 func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) {
-	config, snapshot, _ := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(config, snapshot)
+	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,16 +489,13 @@ func (emptyTestUserCA) Uninstall(context.Context) (userca.UninstallResult, error
 }
 
 type lifecycleTestSystemSettings struct {
-	services          []managedpac.Service
-	applied           int
-	installResult     *managedpac.InstallResult
-	installErr        error
-	stateErr          error
-	clearErr          error
-	cleared           int
-	reconcileWarnings []managedpac.Warning
-	reconcileErr      error
-	requestedURLs     []string
+	services      []managedpac.Service
+	applied       int
+	installResult *managedpac.InstallResult
+	installErr    error
+	stateErr      error
+	clearErr      error
+	cleared       int
 }
 
 func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
@@ -619,24 +505,19 @@ func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snaps
 	return managedpac.NewSnapshot(f.services), nil
 }
 
-func (f *lifecycleTestSystemSettings) Install(_ context.Context, services []string, pacURL string) (managedpac.InstallResult, error) {
+func (f *lifecycleTestSystemSettings) InstallDesired(_ context.Context, services []string, desired managedpac.DesiredState) (managedpac.InstallResult, error) {
 	f.applied++
 	if f.installResult != nil {
 		return *f.installResult, f.installErr
 	}
 	return managedpac.NewInstallResult(
-		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), pacURL),
+		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), managedpac.PACURL(desired.PACListen, 1)),
 		sortedUniqueServiceNames(services),
 		nil,
 	), f.installErr
 }
 
-func (f *lifecycleTestSystemSettings) RequestReconcile(_ managedpac.RuntimeState, pacURL string, complete func(managedpac.ReconcileResult)) {
-	f.requestedURLs = append(f.requestedURLs, pacURL)
-	if complete != nil {
-		complete(managedpac.NewReconcileResult(f.reconcileWarnings, f.reconcileErr))
-	}
-}
+func (*lifecycleTestSystemSettings) PublishDesiredState(managedpac.DesiredState) {}
 
 func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
 	f.cleared++

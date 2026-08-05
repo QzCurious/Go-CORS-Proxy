@@ -11,8 +11,8 @@ import (
 // serialization remain private to that feature.
 type managedPACModule interface {
 	Inspect(context.Context) (managedpac.Snapshot, error)
-	Install(context.Context, []string, string) (managedpac.InstallResult, error)
-	RequestReconcile(managedpac.RuntimeState, string, func(managedpac.ReconcileResult))
+	InstallDesired(context.Context, []string, managedpac.DesiredState) (managedpac.InstallResult, error)
+	PublishDesiredState(managedpac.DesiredState)
 	Uninstall(context.Context) error
 }
 
