@@ -181,7 +181,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		HTTPSInterception:    state.HTTPSInterception,
 		HTTPSIntent:          state.HTTPSIntent,
 		HTTPSWarnings:        state.HTTPSWarnings,
-		UpstreamListWarnings: upstreamListWarningDetails(initialUpstreamList.Warnings()),
+		UpstreamListWarnings: upstreamListWarningDetails(initialUpstreamList.Warnings),
 	}}, nil
 }
 

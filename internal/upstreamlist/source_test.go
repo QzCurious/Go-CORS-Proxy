@@ -52,11 +52,26 @@ func TestCurrentLoadsOnceAndReturnsCachedValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := second.Entries().HostSelectors()[0].Hostname; got != "first.example.test" {
+	if got := second.HostSelectors[0].Hostname; got != "first.example.test" {
 		t.Fatalf("cached hostname = %q", got)
 	}
-	if got := first.Entries().HostSelectors()[0].Hostname; got != "first.example.test" {
+	if got := first.HostSelectors[0].Hostname; got != "first.example.test" {
 		t.Fatalf("first hostname = %q", got)
+	}
+}
+
+func TestCurrentDeduplicatesNormalizedSelectors(t *testing.T) {
+	path := writeSourceFile(t, "EXAMPLE.TEST\nexample.test\nhttps://EXAMPLE.TEST:0443\nhttps://example.test:443\n")
+	source := initializedSource(t, path)
+	list, err := source.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.HostSelectors) != 1 || list.HostSelectors[0].Hostname != "example.test" {
+		t.Fatalf("host selectors = %#v", list.HostSelectors)
+	}
+	if len(list.OriginSelectors) != 1 || list.OriginSelectors[0].Port != "443" {
+		t.Fatalf("origin selectors = %#v", list.OriginSelectors)
 	}
 }
 
@@ -130,14 +145,14 @@ func TestSemanticEntryChangePublishesAndUpdatesCacheBeforeState(t *testing.T) {
 	updates := updatesFor(t, source, ctx)
 	writeFile(t, path, "second.example.test\n")
 	state := waitState(t, updates)
-	if state.Diagnostic != nil || state.List.Entries().HostSelectors()[0].Hostname != "second.example.test" {
+	if state.Diagnostic != nil || state.List.HostSelectors[0].Hostname != "second.example.test" {
 		t.Fatalf("state = %#v", state)
 	}
 	cached, err := source.Current()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cached.Entries().HostSelectors()[0].Hostname != "second.example.test" {
+	if cached.HostSelectors[0].Hostname != "second.example.test" {
 		t.Fatal("cache was updated after publication")
 	}
 }
@@ -150,7 +165,7 @@ func TestWarningsOnlyChangePublishesWithoutChangingEntries(t *testing.T) {
 	updates := updatesFor(t, source, ctx)
 	writeFile(t, path, "api.example.test\nbad/path\n")
 	state := waitState(t, updates)
-	if state.Diagnostic != nil || len(state.List.Warnings()) != 1 || state.List.Count() != 1 {
+	if state.Diagnostic != nil || len(state.List.Warnings) != 1 || len(state.List.HostSelectors)+len(state.List.OriginSelectors) != 1 {
 		t.Fatalf("state = %#v", state)
 	}
 }
@@ -163,7 +178,7 @@ func TestInitialReconciliationClosesCurrentWatchRace(t *testing.T) {
 	defer cancel()
 	updates := updatesFor(t, source, ctx)
 	state := waitState(t, updates)
-	if got := state.List.Entries().HostSelectors()[0].Hostname; got != "second.example.test" {
+	if got := state.List.HostSelectors[0].Hostname; got != "second.example.test" {
 		t.Fatalf("initial reconciliation hostname = %q", got)
 	}
 }
@@ -181,13 +196,13 @@ func TestRuntimeUnavailableSourceKeepsLastKnownGoodAndRecovers(t *testing.T) {
 	if degraded.Diagnostic == nil || degraded.Diagnostic.Kind != upstreamlist.DiagnosticSourceUnavailable {
 		t.Fatalf("degraded state = %#v", degraded)
 	}
-	if degraded.List.Entries().HostSelectors()[0].Hostname != "api.example.test" {
+	if degraded.List.HostSelectors[0].Hostname != "api.example.test" {
 		t.Fatal("degraded state lost last-known-good list")
 	}
 
 	writeFile(t, path, "api.example.test\n")
 	healthy := waitState(t, updates)
-	if healthy.Diagnostic != nil || healthy.List.Count() != 1 {
+	if healthy.Diagnostic != nil || len(healthy.List.HostSelectors)+len(healthy.List.OriginSelectors) != 1 {
 		t.Fatalf("recovered state = %#v", healthy)
 	}
 }
@@ -219,15 +234,15 @@ func TestReturnedListsAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hosts := first.Entries().HostSelectors()
+	hosts := first.HostSelectors
 	hosts[0].Hostname = "mutated.example.test"
-	warnings := first.Warnings()
+	warnings := first.Warnings
 	warnings[0].Diagnostic = "mutated"
 	second, err := source.Current()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Entries().HostSelectors()[0].Hostname != "api.example.test" || second.Warnings()[0].Diagnostic == "mutated" {
+	if second.HostSelectors[0].Hostname != "api.example.test" || second.Warnings[0].Diagnostic == "mutated" {
 		t.Fatalf("source value was mutated: %#v", second)
 	}
 }

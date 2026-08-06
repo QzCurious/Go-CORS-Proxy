@@ -7,11 +7,18 @@ import (
 	"unicode/utf8"
 )
 
-// Decode interprets raw Upstream List text. Invalid lines become warnings;
-// source-level decoding failures remain errors.
-func Decode(data []byte) (UpstreamList, error) {
+type parsedUpstreamList struct {
+	HostSelectors   []HostSelector
+	OriginSelectors []OriginSelector
+	Warnings        []Warning
+}
+
+// decode interprets raw Upstream List text without applying source-level
+// deduplication. Invalid lines become warnings; source-level decoding failures
+// remain errors.
+func decode(data []byte) (parsedUpstreamList, error) {
 	if !utf8.Valid(data) {
-		return UpstreamList{}, fmt.Errorf("invalid Upstream List: content must be UTF-8")
+		return parsedUpstreamList{}, fmt.Errorf("invalid Upstream List: content must be UTF-8")
 	}
 
 	var (
@@ -20,7 +27,7 @@ func Decode(data []byte) (UpstreamList, error) {
 		warnings        []Warning
 	)
 
-	// Decode raw entries.
+	// Decode raw selectors.
 	for idx, line := range strings.Split(string(data), "\n") {
 		lineNo := idx + 1
 		selectorText := stripComment(line)
@@ -56,29 +63,11 @@ func Decode(data []byte) (UpstreamList, error) {
 		hostSelectors = append(hostSelectors, selector)
 	}
 
-	// Deduplicate normalized entries.
-	var deduplicatedHosts []HostSelector
-
-	seenHosts := make(map[HostSelector]struct{}, len(hostSelectors))
-	for _, selector := range hostSelectors {
-		if _, ok := seenHosts[selector]; ok {
-			continue
-		}
-		seenHosts[selector] = struct{}{}
-		deduplicatedHosts = append(deduplicatedHosts, selector)
-	}
-
-	var deduplicatedOrigins []OriginSelector
-	seenOrigins := make(map[OriginSelector]struct{}, len(originSelectors))
-	for _, selector := range originSelectors {
-		if _, ok := seenOrigins[selector]; ok {
-			continue
-		}
-		seenOrigins[selector] = struct{}{}
-		deduplicatedOrigins = append(deduplicatedOrigins, selector)
-	}
-
-	return NewUpstreamList(NewEntries(deduplicatedHosts, deduplicatedOrigins), warnings), nil
+	return parsedUpstreamList{
+		HostSelectors:   hostSelectors,
+		OriginSelectors: originSelectors,
+		Warnings:        warnings,
+	}, nil
 }
 
 func decodeOriginSelector(selectorText string) (OriginSelector, error) {

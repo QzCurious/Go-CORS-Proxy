@@ -253,7 +253,7 @@ func (o *sourceObserver) reconcile(ctx context.Context, output chan State) bool 
 
 	o.source.mu.Lock()
 	previous := o.source.current.Clone()
-	changed := !Same(previous, list)
+	changed := !sameUpstreamList(previous, list)
 	if changed {
 		// The cache is deliberately replaced before the complete state is
 		// published so Current and Updates observe one ordering.
@@ -346,7 +346,7 @@ func loadObservedUpstreamList(ctx context.Context, path string) (UpstreamList, *
 	if err != nil {
 		return UpstreamList{}, &Diagnostic{Kind: DiagnosticSourceUnavailable, Err: err}
 	}
-	list, err := Decode(data)
+	list, err := decodeAndDeduplicate(data)
 	if err != nil {
 		return UpstreamList{}, &Diagnostic{Kind: DiagnosticInvalidSource, Err: err}
 	}
@@ -393,7 +393,91 @@ func loadUpstreamList(path string) (UpstreamList, error) {
 	if err != nil {
 		return UpstreamList{}, err
 	}
-	return Decode(data)
+	return decodeAndDeduplicate(data)
+}
+
+func decodeAndDeduplicate(data []byte) (UpstreamList, error) {
+	parsed, err := decode(data)
+	if err != nil {
+		return UpstreamList{}, err
+	}
+	return deduplicate(parsed), nil
+}
+
+func deduplicate(parsed parsedUpstreamList) UpstreamList {
+	var hostSelectors []HostSelector
+	seenHosts := make(map[HostSelector]struct{}, len(parsed.HostSelectors))
+	for _, selector := range parsed.HostSelectors {
+		if _, ok := seenHosts[selector]; ok {
+			continue
+		}
+		seenHosts[selector] = struct{}{}
+		hostSelectors = append(hostSelectors, selector)
+	}
+
+	var originSelectors []OriginSelector
+	seenOrigins := make(map[OriginSelector]struct{}, len(parsed.OriginSelectors))
+	for _, selector := range parsed.OriginSelectors {
+		if _, ok := seenOrigins[selector]; ok {
+			continue
+		}
+		seenOrigins[selector] = struct{}{}
+		originSelectors = append(originSelectors, selector)
+	}
+
+	return UpstreamList{
+		HostSelectors:   hostSelectors,
+		OriginSelectors: originSelectors,
+		Warnings:        append([]Warning(nil), parsed.Warnings...),
+	}
+}
+
+func sameUpstreamList(left, right UpstreamList) bool {
+	if !sameHostSelectors(left.HostSelectors, right.HostSelectors) ||
+		!sameOriginSelectors(left.OriginSelectors, right.OriginSelectors) {
+		return false
+	}
+	if len(left.Warnings) != len(right.Warnings) {
+		return false
+	}
+	for index := range left.Warnings {
+		if left.Warnings[index] != right.Warnings[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameHostSelectors(left, right []HostSelector) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	selectors := make(map[HostSelector]struct{}, len(left))
+	for _, selector := range left {
+		selectors[selector] = struct{}{}
+	}
+	for _, selector := range right {
+		if _, ok := selectors[selector]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func sameOriginSelectors(left, right []OriginSelector) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	selectors := make(map[OriginSelector]struct{}, len(left))
+	for _, selector := range left {
+		selectors[selector] = struct{}{}
+	}
+	for _, selector := range right {
+		if _, ok := selectors[selector]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func readRegularFile(path string) ([]byte, error) {

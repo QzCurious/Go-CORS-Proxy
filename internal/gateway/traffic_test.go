@@ -46,12 +46,42 @@ func TestPACPublicationInputIgnoresRepresentationAndWarningOnlyChanges(t *testin
 	writeTrafficTestFile(t, upstreamPath, "changed.example.test\n")
 	select {
 	case state := <-desired:
-		entries := state.UpstreamList.Entries().HostSelectors()
+		entries := state.UpstreamList.HostSelectors
 		if len(entries) != 1 || entries[0].Hostname != "changed.example.test" {
 			t.Fatalf("desired entries = %#v", entries)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for desired Upstream List input")
+	}
+}
+
+func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
+	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	if err := runtime.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.DesiredStates():
+	default:
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan serverError, 1)
+	go runtime.watchUpstreamList(ctx, errs)
+	desired := runtime.DesiredStates()
+
+	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSIntent })
+	select {
+	case state := <-desired:
+		t.Fatalf("inactive HTTPS selector published PAC input: %#v", state)
+	case <-time.After(250 * time.Millisecond):
 	}
 }
 

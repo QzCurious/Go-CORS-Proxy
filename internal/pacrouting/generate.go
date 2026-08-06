@@ -11,13 +11,12 @@ import (
 )
 
 // Routing owns the generated PAC artifact and the handler that serves it.
-// Gateway Runtime supplies only semantic routing entries and whether Trusted
+// Gateway Runtime supplies only semantic selectors and whether Trusted
 // HTTPS Interception is currently active; selector interpretation and PAC
 // rendering remain inside this module.
 type Routing struct {
 	mu           sync.RWMutex
 	proxyListen  string
-	entries      upstreamlist.Entries
 	trustedHTTPS bool
 	routes       routeSet
 	handler      *dynamicHandler
@@ -27,11 +26,9 @@ type Routing struct {
 // is ready to serve immediately; the first Apply call replaces its body when
 // the supplied semantic route set differs from the empty set.
 func NewRouting(proxyListen string) *Routing {
-	empty := upstreamlist.NewEntries(nil, nil)
-	routes := deriveRouteSet(empty, false)
+	routes := deriveRouteSet(nil, nil, false)
 	return &Routing{
 		proxyListen: proxyListen,
-		entries:     empty,
 		routes:      routes,
 		handler:     newDynamicHandler(render(proxyListen, routes)),
 	}
@@ -40,19 +37,14 @@ func NewRouting(proxyListen string) *Routing {
 // Apply adopts the newest semantic routing input. It returns true only when
 // the generated PAC route set changed; equivalent input or trust changes that
 // do not affect any route are coalesced without publishing a new body.
-func (r *Routing) Apply(entries upstreamlist.Entries, trustedHTTPS bool) bool {
-	nextEntries := upstreamlist.NewEntries(entries.HostSelectors(), entries.OriginSelectors())
-	nextRoutes := deriveRouteSet(nextEntries, trustedHTTPS)
+func (r *Routing) Apply(hostSelectors []upstreamlist.HostSelector, originSelectors []upstreamlist.OriginSelector, trustedHTTPS bool) bool {
+	nextRoutes := deriveRouteSet(hostSelectors, originSelectors, trustedHTTPS)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sameRouteSet(r.routes, nextRoutes) {
-		// Keep the semantic input current even when it produces the same route
-		// set. This matters when a later caller reads Routing state for status.
-		r.entries = nextEntries
 		r.trustedHTTPS = trustedHTTPS
 		return false
 	}
-	r.entries = nextEntries
 	r.trustedHTTPS = trustedHTTPS
 	r.routes = nextRoutes
 	r.handler.Set(render(r.proxyListen, nextRoutes))
@@ -62,8 +54,8 @@ func (r *Routing) Apply(entries upstreamlist.Entries, trustedHTTPS bool) bool {
 // Render derives the complete effective PAC for semantic routing input. The
 // caller supplies the proxy endpoint because PAC Routing does not own the
 // runtime listener.
-func Render(proxyListen string, entries upstreamlist.Entries, trustedHTTPS bool) string {
-	return render(proxyListen, deriveRouteSet(entries, trustedHTTPS))
+func Render(proxyListen string, hostSelectors []upstreamlist.HostSelector, originSelectors []upstreamlist.OriginSelector, trustedHTTPS bool) string {
+	return render(proxyListen, deriveRouteSet(hostSelectors, originSelectors, trustedHTTPS))
 }
 
 // Handler returns the dynamic HTTP handler owned by PAC Routing.
@@ -84,13 +76,6 @@ func (r *Routing) Body() string {
 	return render(proxyListen, routes)
 }
 
-// Entries returns the latest semantic entries adopted by Apply.
-func (r *Routing) Entries() upstreamlist.Entries {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return upstreamlist.NewEntries(r.entries.HostSelectors(), r.entries.OriginSelectors())
-}
-
 // TrustedHTTPS reports the latest Trusted HTTPS Interception state adopted by
 // Apply.
 func (r *Routing) TrustedHTTPS() bool {
@@ -107,10 +92,10 @@ type routeSet struct {
 	originRoutes []string
 }
 
-func deriveRouteSet(entries upstreamlist.Entries, trustedHTTPS bool) routeSet {
+func deriveRouteSet(hostSelectors []upstreamlist.HostSelector, originSelectors []upstreamlist.OriginSelector, trustedHTTPS bool) routeSet {
 	return routeSet{
-		hostRoutes:   deriveHostRoutes(entries.HostSelectors(), trustedHTTPS),
-		originRoutes: deriveOriginRoutes(entries.OriginSelectors(), trustedHTTPS),
+		hostRoutes:   deriveHostRoutes(hostSelectors, trustedHTTPS),
+		originRoutes: deriveOriginRoutes(originSelectors, trustedHTTPS),
 	}
 }
 

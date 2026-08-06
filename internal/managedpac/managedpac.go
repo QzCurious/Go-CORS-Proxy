@@ -133,7 +133,7 @@ type DesiredState struct {
 // NewDesiredState constructs an immutable desired-state snapshot.
 func NewDesiredState(list upstreamlist.UpstreamList, httpsInterception bool, proxyListen, pacListen string) DesiredState {
 	return DesiredState{
-		UpstreamList:      list,
+		UpstreamList:      list.Clone(),
 		HTTPSInterception: httpsInterception,
 		ProxyListen:       proxyListen,
 		PACListen:         pacListen,
@@ -147,7 +147,7 @@ type effectivePAC struct {
 
 func deriveEffectivePAC(state DesiredState) effectivePAC {
 	return effectivePAC{
-		body:      pacrouting.Render(state.ProxyListen, state.UpstreamList.Entries(), state.HTTPSInterception),
+		body:      pacrouting.Render(state.ProxyListen, state.UpstreamList.HostSelectors, state.UpstreamList.OriginSelectors, state.HTTPSInterception),
 		pacListen: state.PACListen,
 	}
 }

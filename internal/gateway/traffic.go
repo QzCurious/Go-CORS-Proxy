@@ -91,7 +91,7 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 	proxyListen := proxyListener.Addr().String()
 
 	pacRouting := pacrouting.NewRouting(proxyListen)
-	pacRouting.Apply(initial.Entries(), false)
+	pacRouting.Apply(initial.HostSelectors, initial.OriginSelectors, false)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
 	return &trafficRuntime{
 		upstreamListPath:    upstreamListPath,
@@ -134,7 +134,7 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userca.Snapshot, asse
 		r.httpsWarnings = nextWarnings
 		r.httpsWarningsRevision++
 	}
-	r.pacRouting.Apply(r.currentUpstreamList.Entries(), r.interceptionState == HTTPSInterceptionActive)
+	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
 	r.mu.Unlock()
 	r.publishDesiredState()
 	return nil
@@ -181,7 +181,7 @@ func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) error {
 		r.publishHTTPSWarningUpdate(warningsChanged)
 		return nil
 	}
-	r.pacRouting.Apply(r.currentUpstreamList.Entries(), true)
+	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, true)
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	r.publishDesiredState()
@@ -213,7 +213,7 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot) {
 	r.interceptionState = HTTPSInterceptionInactive
 	r.interceptionError = nil
 	warningsChanged := r.updateHTTPSWarningsLocked()
-	r.pacRouting.Apply(r.currentUpstreamList.Entries(), false)
+	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, false)
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	if desiredChanged {
@@ -236,7 +236,7 @@ func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
 	}
 	r.interceptionError = failure.Err
 	warningsChanged := r.updateHTTPSWarningsLocked()
-	r.pacRouting.Apply(r.currentUpstreamList.Entries(), r.interceptionState == HTTPSInterceptionActive)
+	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	r.publishDesiredState()
@@ -354,22 +354,18 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 
 func (r *trafficRuntime) applyUpstreamListState(state upstreamlist.State) {
 	r.mu.Lock()
-	previousList := r.currentUpstreamList.Clone()
-	previousDiagnostic := r.upstreamListDiagnostic.Clone()
 	r.currentUpstreamList = state.List.Clone()
 	r.upstreamListDiagnostic = state.Diagnostic.Clone()
-	r.pacRouting.Apply(r.currentUpstreamList.Entries(), r.interceptionState == HTTPSInterceptionActive)
+	routeChanged := r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
 	warningsChanged := r.updateHTTPSWarningsLocked()
-	desiredChanged := !upstreamlist.SameEntries(previousList, r.currentUpstreamList)
-	visibleChanged := !upstreamlist.Same(previousList, r.currentUpstreamList) || !upstreamlist.SameDiagnostics(previousDiagnostic, r.upstreamListDiagnostic)
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
-	if desiredChanged {
+	if routeChanged {
 		r.publishDesiredState()
 	}
-	if visibleChanged {
-		r.publishRuntimeChange(RuntimeStatusChanged)
-	}
+	// Source emits only changed lists or diagnostics, so every received state
+	// invalidates the complete runtime status snapshot.
+	r.publishRuntimeChange(RuntimeStatusChanged)
 }
 
 func (r *trafficRuntime) publishDesiredState() {
@@ -480,8 +476,8 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		HTTPSInterception:      interception,
 		HTTPSIntent:            upstreamList.HTTPSIntent(),
 		HTTPSWarnings:          warnings,
-		UpstreamCount:          upstreamList.Count(),
-		UpstreamListWarnings:   upstreamListWarningDetails(upstreamList.Warnings()),
+		UpstreamCount:          len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
+		UpstreamListWarnings:   upstreamListWarningDetails(upstreamList.Warnings),
 		UpstreamListDiagnostic: upstreamListDiagnosticDetail(r.upstreamListDiagnostic),
 	}
 }

@@ -11,14 +11,11 @@ import (
 
 func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {
 	routing := NewRouting("127.0.0.1:8080")
-	routing.Apply(upstreamlist.NewEntries(
-		[]upstreamlist.HostSelector{
-			{Hostname: "qa.example.test", HostnameMatch: upstreamlist.HostnameSingleLevel},
-		},
-		[]upstreamlist.OriginSelector{
-			{Scheme: "https", Hostname: "api.example.test"},
-		},
-	), true)
+	routing.Apply(
+		[]upstreamlist.HostSelector{{Hostname: "qa.example.test", HostnameMatch: upstreamlist.HostnameSingleLevel}},
+		[]upstreamlist.OriginSelector{{Scheme: "https", Hostname: "api.example.test"}},
+		true,
+	)
 	js := routing.Body()
 
 	want := `var VIEW_BAG = {` +
@@ -32,6 +29,20 @@ func TestGenerateInjectsFlatPascalCaseViewBag(t *testing.T) {
 	}
 	if !strings.Contains(js, `'PROXY ' + VIEW_BAG.Proxy`) {
 		t.Fatalf("PAC program should construct the proxy directive, got:\n%s", js)
+	}
+}
+
+func TestRoutingAcceptsSelectorSlicesDirectly(t *testing.T) {
+	routing := NewRouting("127.0.0.1:8080")
+	if !routing.Apply(
+		[]upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}},
+		[]upstreamlist.OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}},
+		true,
+	) {
+		t.Fatal("first direct selector apply should change the route set")
+	}
+	if !strings.Contains(routing.Body(), "secure.example.test") {
+		t.Fatalf("PAC body omitted direct origin selector: %s", routing.Body())
 	}
 }
 
@@ -58,15 +69,11 @@ func TestGenerateUsesOriginRoutesBeforeHostRoutes(t *testing.T) {
 
 func TestRoutingOwnsHandlerAndPublishesOnlyRouteSetChanges(t *testing.T) {
 	routing := NewRouting("127.0.0.1:8080")
-	empty := upstreamlist.NewEntries(nil, nil)
-	if routing.Apply(empty, true) {
+	if routing.Apply(nil, nil, true) {
 		t.Fatal("trust-only change with no entries should not change the route set")
 	}
-	entries := upstreamlist.NewEntries(
-		[]upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}},
-		nil,
-	)
-	if !routing.Apply(entries, false) {
+	hostSelectors := []upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}}
+	if !routing.Apply(hostSelectors, nil, false) {
 		t.Fatal("adding an HTTP host route should change the route set")
 	}
 	httpBody := routing.Body()
@@ -74,20 +81,14 @@ func TestRoutingOwnsHandlerAndPublishesOnlyRouteSetChanges(t *testing.T) {
 		strings.Contains(httpBody, `"Scheme":"https"`) {
 		t.Fatalf("unexpected PAC body after HTTP apply:\n%s", httpBody)
 	}
-	if routing.Apply(entries, false) {
+	if routing.Apply(hostSelectors, nil, false) {
 		t.Fatal("reapplying equivalent route input should be coalesced")
 	}
-	reordered := upstreamlist.NewEntries(
-		[]upstreamlist.HostSelector{{Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact}, {Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}},
-		nil,
-	)
-	if !routing.Apply(reordered, false) {
+	reordered := []upstreamlist.HostSelector{{Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact}, {Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}}
+	if !routing.Apply(reordered, nil, false) {
 		t.Fatal("adding a distinct host route should change the route set")
 	}
-	if routing.Apply(upstreamlist.NewEntries(
-		[]upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}, {Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact}},
-		nil,
-	), false) {
+	if routing.Apply([]upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}, {Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact}}, nil, false) {
 		t.Fatal("reordering equivalent host routes should be coalesced")
 	}
 	body := routing.Body()
@@ -101,19 +102,17 @@ func TestRoutingOwnsHandlerAndPublishesOnlyRouteSetChanges(t *testing.T) {
 }
 
 func TestRoutingAddsHTTPSRoutesOnlyWhenTrusted(t *testing.T) {
-	entries := upstreamlist.NewEntries(
-		[]upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}},
-		[]upstreamlist.OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}},
-	)
+	hostSelectors := []upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}}
+	originSelectors := []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}}
 	routing := NewRouting("127.0.0.1:8080")
-	if !routing.Apply(entries, false) {
+	if !routing.Apply(hostSelectors, originSelectors, false) {
 		t.Fatal("HTTP route set should change on first semantic apply")
 	}
 	withoutTrust := routing.Body()
 	if strings.Contains(withoutTrust, `"Scheme":"https"`) || strings.Contains(withoutTrust, "secure.example.test") {
 		t.Fatalf("untrusted PAC should omit HTTPS routes:\n%s", withoutTrust)
 	}
-	if !routing.Apply(entries, true) {
+	if !routing.Apply(hostSelectors, originSelectors, true) {
 		t.Fatal("trusted HTTPS should change the route set")
 	}
 	withTrust := routing.Body()
