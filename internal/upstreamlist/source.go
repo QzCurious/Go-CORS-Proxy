@@ -1,6 +1,7 @@
 package upstreamlist
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ const (
 
 	changeDebounce      = 100 * time.Millisecond
 	invalidConfirmation = time.Second
+	stableReadInterval  = 10 * time.Millisecond
+	stableReadAttempts  = 3
 )
 
 // DiagnosticKind classifies a runtime problem reported by a watched source.
@@ -239,7 +242,7 @@ func (o *sourceObserver) reconcile(ctx context.Context, output chan State) bool 
 		return true
 	}
 
-	list, diagnostic := loadObservedUpstreamList(o.target)
+	list, diagnostic := loadObservedUpstreamList(ctx, o.target)
 	if diagnostic != nil {
 		o.handleSourceError(output, *diagnostic)
 		return false
@@ -338,8 +341,8 @@ func (o *sourceObserver) close() {
 	}
 }
 
-func loadObservedUpstreamList(path string) (UpstreamList, *Diagnostic) {
-	data, err := readRegularFile(path)
+func loadObservedUpstreamList(ctx context.Context, path string) (UpstreamList, *Diagnostic) {
+	data, err := readStableRegularFile(ctx, path)
 	if err != nil {
 		return UpstreamList{}, &Diagnostic{Kind: DiagnosticSourceUnavailable, Err: err}
 	}
@@ -348,6 +351,41 @@ func loadObservedUpstreamList(path string) (UpstreamList, *Diagnostic) {
 		return UpstreamList{}, &Diagnostic{Kind: DiagnosticInvalidSource, Err: err}
 	}
 	return list, nil
+}
+
+// readStableRegularFile avoids decoding the transient empty/truncated state
+// produced by in-place file writers. This matters during the initial
+// reconciliation, which can race with a write that happened before the
+// directory watcher was installed.
+func readStableRegularFile(ctx context.Context, path string) ([]byte, error) {
+	data, err := readRegularFile(path)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 1; attempt < stableReadAttempts; attempt++ {
+		timer := time.NewTimer(stableReadInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+
+		current, err := readRegularFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Equal(data, current) {
+			return current, nil
+		}
+		data = current
+	}
+	return data, nil
 }
 
 func loadUpstreamList(path string) (UpstreamList, error) {
