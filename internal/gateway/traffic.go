@@ -96,7 +96,7 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 	return &trafficRuntime{
 		upstreamListPath:    upstreamListPath,
 		upstreamListSource:  source,
-		currentUpstreamList: initial.Clone(),
+		currentUpstreamList: initial,
 		proxyHandler:        proxyHandler,
 		pacRouting:          pacRouting,
 		proxy:               &http.Server{Handler: proxyHandler},
@@ -354,8 +354,8 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 
 func (r *trafficRuntime) applyUpstreamListState(state upstreamlist.State) {
 	r.mu.Lock()
-	r.currentUpstreamList = state.List.Clone()
-	r.upstreamListDiagnostic = state.Diagnostic.Clone()
+	r.currentUpstreamList = state.List
+	r.upstreamListDiagnostic = state.Diagnostic
 	routeChanged := r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()

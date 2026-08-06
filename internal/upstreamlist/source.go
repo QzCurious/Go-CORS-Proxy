@@ -38,14 +38,6 @@ type Diagnostic struct {
 	Err  error
 }
 
-// Clone returns an independent diagnostic value.
-func (d *Diagnostic) Clone() *Diagnostic {
-	if d == nil {
-		return nil
-	}
-	return &Diagnostic{Kind: d.Kind, Err: d.Err}
-}
-
 // SameDiagnostics reports whether two diagnostics describe the same source
 // health state.
 func SameDiagnostics(left, right *Diagnostic) bool {
@@ -92,7 +84,7 @@ func New(path string) (*Source, error) {
 func (s *Source) Current() (UpstreamList, error) {
 	s.mu.RLock()
 	if s.hasCurrent {
-		current := s.current.Clone()
+		current := s.current
 		s.mu.RUnlock()
 		return current, nil
 	}
@@ -101,15 +93,15 @@ func (s *Source) Current() (UpstreamList, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.hasCurrent {
-		return s.current.Clone(), nil
+		return s.current, nil
 	}
 	current, err := loadUpstreamList(s.path)
 	if err != nil {
 		return UpstreamList{}, err
 	}
-	s.current = current.Clone()
+	s.current = current
 	s.hasCurrent = true
-	return s.current.Clone(), nil
+	return s.current, nil
 }
 
 // Updates starts one source observation and returns complete state snapshots.
@@ -252,14 +244,14 @@ func (o *sourceObserver) reconcile(ctx context.Context, output chan State) bool 
 	o.confirmationMatured = false
 
 	o.source.mu.Lock()
-	previous := o.source.current.Clone()
+	previous := o.source.current
 	changed := !sameUpstreamList(previous, list)
 	if changed {
 		// The cache is deliberately replaced before the complete state is
 		// published so Current and Updates observe one ordering.
-		o.source.current = list.Clone()
+		o.source.current = list
 	}
-	current := o.source.current.Clone()
+	current := o.source.current
 	o.source.mu.Unlock()
 
 	if !changed && o.publishedDiagnostic == nil {
@@ -285,7 +277,7 @@ func (o *sourceObserver) handleSourceError(output chan State, diagnostic Diagnos
 	if SameDiagnostics(o.publishedDiagnostic, &diagnostic) {
 		return
 	}
-	o.publishedDiagnostic = diagnostic.Clone()
+	o.publishedDiagnostic = &diagnostic
 	latestvalue.Publish(output, o.source.currentState(&diagnostic))
 }
 
@@ -319,9 +311,9 @@ func (o *sourceObserver) clearConfirmation() {
 
 func (s *Source) currentState(diagnostic *Diagnostic) State {
 	s.mu.RLock()
-	list := s.current.Clone()
+	list := s.current
 	s.mu.RUnlock()
-	return State{List: list, Diagnostic: diagnostic.Clone()}
+	return State{List: list, Diagnostic: diagnostic}
 }
 
 func publishObservationStopped(output chan State, source *Source, err error) {

@@ -227,26 +227,6 @@ func TestEquivalentRepeatedDiagnosticIsSuppressed(t *testing.T) {
 	}
 }
 
-func TestReturnedListsAreIndependent(t *testing.T) {
-	path := writeSourceFile(t, "api.example.test\nbad/path\n")
-	source := initializedSource(t, path)
-	first, err := source.Current()
-	if err != nil {
-		t.Fatal(err)
-	}
-	hosts := first.HostSelectors
-	hosts[0].Hostname = "mutated.example.test"
-	warnings := first.Warnings
-	warnings[0].Diagnostic = "mutated"
-	second, err := source.Current()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.HostSelectors[0].Hostname != "api.example.test" || second.Warnings[0].Diagnostic == "mutated" {
-		t.Fatalf("source value was mutated: %#v", second)
-	}
-}
-
 func TestCurrentRejectsSymlinkedSource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upstreams.txt")
 	target := filepath.Join(t.TempDir(), "target.txt")

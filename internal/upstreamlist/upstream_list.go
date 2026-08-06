@@ -37,15 +37,6 @@ type UpstreamList struct {
 	Warnings        []Warning
 }
 
-// Clone returns an independent Upstream List value.
-func (u UpstreamList) Clone() UpstreamList {
-	return UpstreamList{
-		HostSelectors:   append([]HostSelector(nil), u.HostSelectors...),
-		OriginSelectors: append([]OriginSelector(nil), u.OriginSelectors...),
-		Warnings:        append([]Warning(nil), u.Warnings...),
-	}
-}
-
 // HTTPSIntent reports whether the list contains at least one HTTPS Origin
 // Selector.
 func (u UpstreamList) HTTPSIntent() bool {

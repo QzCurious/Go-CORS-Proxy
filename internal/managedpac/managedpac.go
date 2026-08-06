@@ -130,10 +130,10 @@ type DesiredState struct {
 	PACListen         string
 }
 
-// NewDesiredState constructs an immutable desired-state snapshot.
+// NewDesiredState constructs a desired-state snapshot.
 func NewDesiredState(list upstreamlist.UpstreamList, httpsInterception bool, proxyListen, pacListen string) DesiredState {
 	return DesiredState{
-		UpstreamList:      list.Clone(),
+		UpstreamList:      list,
 		HTTPSInterception: httpsInterception,
 		ProxyListen:       proxyListen,
 		PACListen:         pacListen,

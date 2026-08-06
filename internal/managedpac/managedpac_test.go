@@ -155,19 +155,6 @@ func TestDesiredStateRendersCompletePACAndSuppressesEffectiveNoOp(t *testing.T) 
 	}
 }
 
-func TestNewDesiredStateCopiesUpstreamListSlices(t *testing.T) {
-	list := upstreamlist.UpstreamList{
-		HostSelectors: []upstreamlist.HostSelector{{Hostname: "api.example.test"}},
-		Warnings:      []upstreamlist.Warning{{Line: 1, Text: "bad", Diagnostic: "invalid"}},
-	}
-	desired := NewDesiredState(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
-	list.HostSelectors[0].Hostname = "mutated.example.test"
-	list.Warnings[0].Diagnostic = "mutated"
-	if desired.UpstreamList.HostSelectors[0].Hostname != "api.example.test" || desired.UpstreamList.Warnings[0].Diagnostic != "invalid" {
-		t.Fatalf("desired state retained caller-owned slices: %#v", desired.UpstreamList)
-	}
-}
-
 func TestDesiredStateChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "other.example.test\n")
