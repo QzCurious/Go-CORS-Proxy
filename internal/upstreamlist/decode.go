@@ -13,9 +13,10 @@ type parsedUpstreamList struct {
 	Warnings        []Warning
 }
 
-// decode interprets raw Upstream List text without applying source-level
-// deduplication. Invalid lines become warnings; source-level decoding failures
-// remain errors.
+// decode parses the Upstream List format described in
+// [upstream-list-format.md](upstream-list-format.md). It does not apply
+// source-level deduplication. Invalid lines become warnings; source-level
+// decoding failures remain errors.
 func decode(data []byte) (parsedUpstreamList, error) {
 	if !utf8.Valid(data) {
 		return parsedUpstreamList{}, fmt.Errorf("invalid Upstream List: content must be UTF-8")
