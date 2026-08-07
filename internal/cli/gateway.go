@@ -180,8 +180,6 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 		fmt.Fprintln(stdout, "Certificate trust was not approved.")
 		fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
 		return fmt.Errorf("certificate trust approval denied")
-	case gateway.InstallResultRuntimeAdoptionFailed:
-		return fmt.Errorf("Installed User CA is usable, but Gateway recovery is incomplete")
 	case gateway.InstallResultAlreadyMutating:
 		return fmt.Errorf("certificate operation in progress; retry install")
 	case gateway.InstallResultOwnerEnding:
@@ -429,9 +427,6 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	case gateway.InstallResultAlreadyUsable:
 		fmt.Fprintln(stdout, "Installed User CA is already usable.")
 		fmt.Fprintln(stdout, "https-readiness: ready")
-	case gateway.InstallResultRuntimeAdoptionFailed:
-		fmt.Fprintln(stdout, "Installed User CA installed, but the running Gateway could not adopt it.")
-		renderHTTPSWarnings(stdout, result.Warnings)
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))

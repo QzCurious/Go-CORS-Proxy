@@ -47,7 +47,7 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 		install: func(context.Context) (userca.InstallResult, error) {
 			close(entered)
 			<-release
-			return userca.NewInstallResult(userca.Snapshot{}, true), nil
+			return userca.NewInstallResult(userca.Assessment{}, true), nil
 		},
 	}
 	done := make(chan error, 1)

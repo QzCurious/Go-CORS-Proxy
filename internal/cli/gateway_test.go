@@ -334,24 +334,6 @@ func TestStartReportsFailFastCAAdmission(t *testing.T) {
 	}
 }
 
-func TestInstallRendersGatewayPartialSuccess(t *testing.T) {
-	var out bytes.Buffer
-	err := installCAWithCommand(context.Background(), &out, func(context.Context) (gateway.InstallResult, error) {
-		return gateway.InstallResult{
-			Kind: gateway.InstallResultRuntimeAdoptionFailed,
-			Warnings: []gateway.HTTPSWarningDetail{{
-				Diagnostic: "runtime adoption failed",
-				Action:     "Run install again.",
-			}},
-		}, nil
-	})
-
-	if err == nil || !strings.Contains(out.String(), "could not adopt") ||
-		!strings.Contains(out.String(), "runtime adoption failed") {
-		t.Fatalf("partial install error = %v output = %q", err, out.String())
-	}
-}
-
 func TestUninstallConfirmsOnlyWhenHTTPSIsActive(t *testing.T) {
 	var out bytes.Buffer
 	var calls []gateway.UninstallRequest

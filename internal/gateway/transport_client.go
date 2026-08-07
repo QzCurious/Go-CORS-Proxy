@@ -226,8 +226,7 @@ func knownStopFailureKind(kind StopResultKind) bool {
 
 func knownInstallFailureKind(kind InstallResultKind) bool {
 	switch kind {
-	case InstallResultRuntimeAdoptionFailed,
-		InstallResultApprovalDenied,
+	case InstallResultApprovalDenied,
 		InstallResultAlreadyMutating,
 		InstallResultOwnerEnding,
 		InstallResultOwnerTransition:

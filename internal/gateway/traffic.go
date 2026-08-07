@@ -52,6 +52,7 @@ type RuntimeChangeKind uint8
 const (
 	RuntimeStatusChanged RuntimeChangeKind = iota
 	HTTPSWarningsChanged
+	HTTPSDeadlineReached
 )
 
 type dynamicHTTPHandler struct {
@@ -108,12 +109,16 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 	}, nil
 }
 
-func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userca.Snapshot, assessmentErr error) error {
-	generation, generationOK := proxyGeneration(snapshot)
+func (r *trafficRuntime) SetInitialHTTPSReadiness(assessment userca.Assessment, assessmentErr error) error {
+	snapshot := assessment.Snapshot()
+	provider, providerOK := assessment.Provider()
+	if assessmentErr != nil {
+		provider = nil
+		providerOK = false
+	}
 	proxyHandler, err := corsproxy.New(corsproxy.Options{
-		InterceptHTTPS:  generationOK,
-		HTTPSGeneration: generation,
-		OnHTTPSFailure:  r.handleHTTPSFailure,
+		Provider:       provider,
+		OnHTTPSFailure: r.handleHTTPSFailure,
 	})
 	if err != nil {
 		return err
@@ -124,7 +129,7 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userca.Snapshot, asse
 	r.readinessError = assessmentErr
 	r.proxyCore = proxyHandler
 	r.interceptionState = HTTPSInterceptionInactive
-	if generationOK {
+	if providerOK && assessmentErr == nil {
 		r.interceptionState = HTTPSInterceptionActive
 	}
 	r.interceptionError = nil
@@ -140,35 +145,23 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(snapshot userca.Snapshot, asse
 	return nil
 }
 
-// RecoverHTTPS applies a successful UserCA install to a live runtime and
-// publishes the complete Managed PAC desired state when interception becomes
+// RecoverHTTPS atomically adopts a fresh UserCA provider into a live runtime
+// and publishes the complete Managed PAC desired state when interception is
 // active.
-func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) error {
-	generation, ok := proxyGeneration(snapshot)
+func (r *trafficRuntime) RecoverHTTPS(assessment userca.Assessment) error {
+	snapshot := assessment.Snapshot()
+	provider, ok := assessment.Provider()
 	if !ok {
-		return fmt.Errorf("HTTPS Readiness Recovery requires an Installed User CA")
+		return fmt.Errorf("HTTPS Readiness Recovery requires a usable UserCA assessment")
 	}
 	r.mu.Lock()
 	core := r.proxyCore
 	wasActive := r.interceptionState == HTTPSInterceptionActive
-	current := r.userCA
 	r.mu.Unlock()
 	if core == nil {
 		return fmt.Errorf("HTTPS proxy is not configured")
 	}
-	if wasActive && sameUserCA(current, snapshot) {
-		r.mu.Lock()
-		r.userCA = snapshot
-		r.readinessError = nil
-		r.interceptionError = nil
-		warningsChanged := r.updateHTTPSWarningsLocked()
-		r.mu.Unlock()
-		r.publishHTTPSWarningUpdate(warningsChanged)
-		return nil
-	}
-	if err := core.ActivateHTTPS(*generation); err != nil {
-		return err
-	}
+	core.ReplaceProvider(provider)
 	r.mu.Lock()
 	r.userCA = snapshot
 	r.readinessError = nil
@@ -188,28 +181,16 @@ func (r *trafficRuntime) RecoverHTTPS(snapshot userca.Snapshot) error {
 	return nil
 }
 
-func sameUserCA(left, right userca.Snapshot) bool {
-	if left.Usable() != right.Usable() || !left.Usable() {
-		return left.Usable() == right.Usable()
-	}
-	leftCert, _ := left.TLSCertificate()
-	rightCert, _ := right.TLSCertificate()
-	if len(leftCert.Certificate) == 0 || len(rightCert.Certificate) == 0 {
-		return false
-	}
-	return slices.Equal(leftCert.Certificate[0], rightCert.Certificate[0])
-}
-
 // DeactivateHTTPS is the live-uninstall linearization companion: new CONNECT
 // requests tunnel directly and HTTPS PAC routes are withdrawn immediately.
-func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot) {
+func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr error) {
 	r.mu.Lock()
 	desiredChanged := r.interceptionState == HTTPSInterceptionActive
 	if r.proxyCore != nil {
 		r.proxyCore.DeactivateHTTPS()
 	}
 	r.userCA = snapshot
-	r.readinessError = nil
+	r.readinessError = assessmentErr
 	r.interceptionState = HTTPSInterceptionInactive
 	r.interceptionError = nil
 	warningsChanged := r.updateHTTPSWarningsLocked()
@@ -222,18 +203,18 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot) {
 }
 
 func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
+	if failure.Disposition == corsproxy.HTTPSFailureExpired {
+		// Expiry is a signal only. Gateway lifecycle re-assesses UserCA and
+		// decides whether the current capability is truly unusable.
+		r.publishRuntimeChange(HTTPSDeadlineReached)
+		return
+	}
 	r.mu.Lock()
 	if r.interceptionState != HTTPSInterceptionActive {
 		r.mu.Unlock()
 		return
 	}
-	switch failure.Kind {
-	case corsproxy.HTTPSFailureReadiness:
-		r.userCA = userca.Snapshot{}
-		r.interceptionState = HTTPSInterceptionInactive
-	default:
-		r.interceptionState = HTTPSInterceptionFailed
-	}
+	r.interceptionState = HTTPSInterceptionFailed
 	r.interceptionError = failure.Err
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
@@ -250,7 +231,7 @@ func (r *trafficRuntime) Serve(ctx context.Context) error {
 // serving goroutines. Callers may then safely publish the PAC URL.
 func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
 	if !r.proxyConfigured {
-		if err := r.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
+		if err := r.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
 			return err
 		}
 	}
@@ -330,6 +311,12 @@ func (r *trafficRuntime) snapshot() runtimeState {
 	return r.stateLocked()
 }
 
+func (r *trafficRuntime) interceptionActive() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.interceptionState == HTTPSInterceptionActive
+}
+
 func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
 	updates, err := r.upstreamListSource.Updates(ctx)
 	if err != nil {
@@ -389,6 +376,20 @@ func (r *trafficRuntime) currentDesiredState() managedpac.DesiredState {
 func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
 	r.publishMu.Lock()
 	defer r.publishMu.Unlock()
+	if kind != HTTPSDeadlineReached {
+		// Deadline is a lifecycle signal, not an ordinary status invalidation.
+		// Preserve it when a status or warning change races with the provider
+		// expiry callback; the latest-value channel must not erase the request
+		// for Gateway to reassess UserCA.
+		select {
+		case pending := <-r.runtimeChanges:
+			if pending == HTTPSDeadlineReached {
+				r.runtimeChanges <- pending
+				return
+			}
+		default:
+		}
+	}
 	latestvalue.Publish(r.runtimeChanges, kind)
 }
 
@@ -533,17 +534,6 @@ func httpsRuntimeWarnings(
 		}}
 	}
 	return httpsReadinessWarnings(httpsIntent, snapshot, assessmentErr)
-}
-
-func proxyGeneration(snapshot userca.Snapshot) (*corsproxy.HTTPSGeneration, bool) {
-	certificate, usable := snapshot.TLSCertificate()
-	if !usable {
-		return nil, false
-	}
-	return &corsproxy.HTTPSGeneration{
-		Certificate: certificate,
-		ExpiresAt:   snapshot.ExpiresAt(),
-	}, true
 }
 
 func hasHTTPSWarning(warnings []HTTPSWarningDetail, kind HTTPSWarningKind) bool {

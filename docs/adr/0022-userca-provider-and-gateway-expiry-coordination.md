@@ -1,0 +1,7 @@
+# UserCA owns certificate providers; Gateway coordinates expiry
+
+**Status:** accepted
+
+UserCA now returns a coherent assessment containing a status-only snapshot and, when usable, an opaque HTTPS Certificate Provider. UserCA owns authority validation, provider self-testing, per-host leaf issuance, leaf validity, 90-day renewal warnings, and generation-scoped leaf caching; provider construction is required before a new Active authority is committed or install succeeds. Gateway owns lifecycle orchestration: it wires the provider into CorsProxy, replaces it with a fresh provider after every successful install, schedules expiry signals, reassesses UserCA at the deadline, and coordinates HTTPS route/status changes without mutating trust automatically. CorsProxy consumes only a minimal certificate-request interface, atomically replaces or deactivates the provider, leaves invalid-request handling local to goproxy, and uses compare-and-swap to report only current provider failures.
+
+This refines the provider, leaf-cache, expiry-boundary, readiness-latching, and runtime-adoption boundaries described by ADR-0017, ADR-0018, and ADR-0019; their lifecycle and ownership decisions remain in force. Expiry signals carry no cached authority facts or adoption token: Gateway reconstructs current truth through UserCA, defers reassessment during an admitted CA mutation, and deactivates HTTPS on expired, unusable, or unassessable state while leaving HTTP and OS trust lifecycle independent.

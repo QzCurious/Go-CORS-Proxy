@@ -74,8 +74,8 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return StartAlreadyMutating{}, nil
 	}
 	publishRuntime := func() error {
-		userCASnapshot, readinessErr := s.lifecycle.userCA.Inspect(ctx)
-		if err := engine.SetInitialHTTPSReadiness(userCASnapshot, readinessErr); err != nil {
+		assessment, readinessErr := s.lifecycle.userCA.Inspect(ctx)
+		if err := engine.SetInitialHTTPSReadiness(assessment, readinessErr); err != nil {
 			return err
 		}
 		s.lifecycle.mu.Lock()
@@ -83,9 +83,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		s.lifecycle.userCASnapshot = userCASnapshot
+		s.lifecycle.userCASnapshot = assessment.Snapshot()
 		s.lifecycle.userCAAssessmentErr = readinessErr
 		s.lifecycle.runtime = active
+		if _, ok := assessment.Provider(); ok && readinessErr == nil {
+			s.lifecycle.scheduleHTTPSDeadlineLocked(active, assessment)
+		}
 		return nil
 	}
 	publishErr := publishRuntime()
@@ -102,6 +105,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 			s.lifecycle.runtime = nil
 		}
 		s.lifecycle.mu.Unlock()
+		s.lifecycle.cancelHTTPSDeadline(active)
 		cancel()
 	}
 

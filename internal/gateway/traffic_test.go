@@ -2,12 +2,7 @@ package gateway
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,7 +57,7 @@ func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -92,7 +87,7 @@ func TestHTTPSIntentDoesNotReassessLatchedUserCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -116,7 +111,7 @@ func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	err = runtime.RecoverHTTPS(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
@@ -151,8 +146,8 @@ func TestInterceptionFailurePreservesLatchedUserCAAndInstallCanRecover(t *testin
 	}
 
 	runtime.handleHTTPSFailure(corsproxy.HTTPSFailure{
-		Kind: corsproxy.HTTPSFailureInterception,
-		Err:  context.DeadlineExceeded,
+		Disposition: corsproxy.HTTPSFailureProvider,
+		Err:         context.DeadlineExceeded,
 	})
 	failed := runtime.snapshot()
 	if failed.HTTPSReadiness != HTTPSReadinessReady || failed.HTTPSInterception != HTTPSInterceptionFailed {
@@ -182,16 +177,42 @@ func TestUserCAExpiryWithdrawsHTTPSAndDirectsExplicitInstall(t *testing.T) {
 	}
 
 	runtime.handleHTTPSFailure(corsproxy.HTTPSFailure{
-		Kind: corsproxy.HTTPSFailureReadiness,
-		Err:  context.DeadlineExceeded,
+		Disposition: corsproxy.HTTPSFailureExpired,
+		Err:         context.DeadlineExceeded,
 	})
 
 	state := runtime.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessNotReady || state.HTTPSInterception != HTTPSInterceptionInactive {
-		t.Fatalf("expiry state = %#v", state)
+	if state.HTTPSReadiness != HTTPSReadinessReady || state.HTTPSInterception != HTTPSInterceptionActive {
+		t.Fatalf("expiry signal changed state before Gateway assessment = %#v", state)
 	}
-	if !strings.Contains(httpsWarningDiagnostics(state.HTTPSWarnings), "install") {
-		t.Fatalf("expiry warnings = %#v", state.HTTPSWarnings)
+	select {
+	case kind := <-runtime.RuntimeChanges():
+		if kind != HTTPSDeadlineReached {
+			t.Fatalf("expiry signal kind = %v", kind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expiry signal was not published")
+	}
+}
+
+func TestHTTPSDeadlineSignalSurvivesStatusInvalidation(t *testing.T) {
+	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	runtime.publishRuntimeChange(HTTPSDeadlineReached)
+	runtime.publishRuntimeChange(RuntimeStatusChanged)
+
+	select {
+	case got := <-runtime.RuntimeChanges():
+		if got != HTTPSDeadlineReached {
+			t.Fatalf("runtime change = %v, want deadline signal", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deadline signal was lost")
 	}
 }
 
@@ -235,7 +256,7 @@ func TestHTTPSReadinessWarningsUseOnlySemanticUserCAState(t *testing.T) {
 		{
 			name:     "renewal due stays ready",
 			list:     noIntent,
-			snapshot: testUserCASnapshot(t, expiry, true),
+			snapshot: testUserCASnapshot(t, expiry, true).Snapshot(),
 			want:     "expires soon",
 		},
 		{
@@ -255,40 +276,22 @@ func TestHTTPSReadinessWarningsUseOnlySemanticUserCAState(t *testing.T) {
 	}
 }
 
-func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) userca.Snapshot {
+func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) userca.Assessment {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	snapshot, err := userca.NewSnapshot(expiresAt, renewalDue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now()
-	template := &x509.Certificate{
-		SerialNumber:          big.NewInt(now.UnixNano()),
-		Subject:               pkix.Name{CommonName: "gateway test UserCA"},
-		NotBefore:             now.Add(-time.Minute),
-		NotAfter:              expiresAt,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := userca.NewSnapshot(
-		tls.Certificate{
-			Certificate: [][]byte{der},
-			PrivateKey:  key,
-			Leaf:        template,
-		},
-		expiresAt,
-		renewalDue,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return snapshot
+	return userca.NewAssessment(snapshot, testUserCAProvider{validUntil: expiresAt})
 }
+
+type testUserCAProvider struct{ validUntil time.Time }
+
+func (p testUserCAProvider) CertificateFor(string) (*tls.Certificate, error) {
+	return &tls.Certificate{}, nil
+}
+
+func (p testUserCAProvider) ValidUntil() time.Time { return p.validUntil }
 
 func httpsWarningDiagnostics(warnings []HTTPSWarningDetail) string {
 	var diagnostics []string

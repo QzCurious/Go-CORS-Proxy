@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -279,13 +278,12 @@ const (
 type InstallResultKind string
 
 const (
-	InstallResultInstalled             InstallResultKind = "installed"
-	InstallResultAlreadyUsable         InstallResultKind = "already-usable"
-	InstallResultRuntimeAdoptionFailed InstallResultKind = "installed-runtime-adoption-failed"
-	InstallResultApprovalDenied        InstallResultKind = "approval-denied"
-	InstallResultAlreadyMutating       InstallResultKind = "already-mutating"
-	InstallResultOwnerEnding           InstallResultKind = "owner-ending"
-	InstallResultOwnerTransition       InstallResultKind = "owner-transition"
+	InstallResultInstalled       InstallResultKind = "installed"
+	InstallResultAlreadyUsable   InstallResultKind = "already-usable"
+	InstallResultApprovalDenied  InstallResultKind = "approval-denied"
+	InstallResultAlreadyMutating InstallResultKind = "already-mutating"
+	InstallResultOwnerEnding     InstallResultKind = "owner-ending"
+	InstallResultOwnerTransition InstallResultKind = "owner-transition"
 )
 
 type InstallResult struct {
@@ -482,17 +480,19 @@ type lifecycle struct {
 	ownerEnding          bool
 	transientOwner       bool
 	caMutating           bool
+	deadlinePending      bool
 	runtime              *activeRuntime
 	httpsWarningsChanged func([]HTTPSWarningDetail)
 	fatal                chan error
 }
 
 type activeRuntime struct {
-	engine     *trafficRuntime
-	managedPAC *managedPACRuntime
-	cancel     context.CancelFunc
-	done       chan error
-	phase      runtimePhase
+	engine        *trafficRuntime
+	managedPAC    *managedPACRuntime
+	cancel        context.CancelFunc
+	done          chan error
+	phase         runtimePhase
+	deadlineTimer *time.Timer
 }
 
 type managedPACRuntime struct {
@@ -539,7 +539,7 @@ func newLifecycleState(
 	if pac == nil {
 		pac = openSystemManagedPAC()
 	}
-	var initial userca.Snapshot
+	var initial userca.Assessment
 	var assessmentErr error
 	if inspectUserCA {
 		initial, assessmentErr = ca.Inspect(context.Background())
@@ -547,7 +547,7 @@ func newLifecycleState(
 	return &lifecycle{
 		managedPAC:          pac,
 		userCA:              ca,
-		userCASnapshot:      initial,
+		userCASnapshot:      initial.Snapshot(),
 		userCAAssessmentErr: assessmentErr,
 		coord:               coord,
 		runtimeDir:          coord.RuntimeDirPath(),
@@ -598,6 +598,123 @@ func (f *lifecycle) takeStartCleanupComplete() bool {
 	return complete
 }
 
+func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, assessment userca.Assessment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.runtime != active {
+		return
+	}
+	f.scheduleHTTPSDeadlineLocked(active, assessment)
+}
+
+func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessment userca.Assessment) {
+	provider, ok := assessment.Provider()
+	if !ok {
+		return
+	}
+	if active.deadlineTimer != nil {
+		active.deadlineTimer.Stop()
+	}
+	now := time.Now()
+	if active.engine != nil && active.engine.now != nil {
+		now = active.engine.now()
+	}
+	delay := provider.ValidUntil().Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	active.deadlineTimer = time.AfterFunc(delay, func() {
+		f.handleHTTPSDeadline(active)
+	})
+}
+
+func (f *lifecycle) cancelHTTPSDeadline(active *activeRuntime) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if active.deadlineTimer != nil {
+		active.deadlineTimer.Stop()
+		active.deadlineTimer = nil
+	}
+}
+
+func (f *lifecycle) handleHTTPSDeadline(active *activeRuntime) {
+	if !f.caAdmissionMu.TryLock() {
+		f.mu.Lock()
+		if f.runtime == active {
+			f.deadlinePending = true
+		}
+		f.mu.Unlock()
+		return
+	}
+	defer f.caAdmissionMu.Unlock()
+	f.mu.Lock()
+	if f.runtime != active {
+		f.mu.Unlock()
+		return
+	}
+	if f.caMutating || f.startMutating {
+		f.deadlinePending = true
+		f.mu.Unlock()
+		return
+	}
+	f.mu.Unlock()
+	if !active.engine.interceptionActive() {
+		f.cancelHTTPSDeadline(active)
+		return
+	}
+	f.reassessHTTPSDeadline(active)
+}
+
+func (f *lifecycle) reassessHTTPSDeadline(active *activeRuntime) {
+	if !active.engine.interceptionActive() {
+		f.cancelHTTPSDeadline(active)
+		return
+	}
+	assessment, err := f.userCA.Inspect(context.Background())
+	if err != nil || !assessment.Snapshot().Usable() {
+		f.mu.Lock()
+		stillActive := f.runtime == active
+		if stillActive {
+			f.userCASnapshot = assessment.Snapshot()
+			f.userCAAssessmentErr = err
+		}
+		f.mu.Unlock()
+		if !stillActive {
+			return
+		}
+		active.engine.DeactivateHTTPS(assessment.Snapshot(), err)
+		f.cancelHTTPSDeadline(active)
+		return
+	}
+	// A stale signal from a replaced provider is harmless. The fresh
+	// assessment is authoritative, but it does not implicitly recover a
+	// provider that had already failed; explicit install owns recovery.
+	f.mu.Lock()
+	if f.runtime == active {
+		f.userCASnapshot = assessment.Snapshot()
+		f.userCAAssessmentErr = nil
+	}
+	f.mu.Unlock()
+	// The signal may have come from a stale timer. Keep the current provider
+	// covered even when the fresh assessment says HTTPS can remain active.
+	f.scheduleHTTPSDeadline(active, assessment)
+}
+
+func (f *lifecycle) finishCAMutation(active *activeRuntime) {
+	f.mu.Lock()
+	if f.transientOwner {
+		f.ownerEnding = true
+	}
+	f.caMutating = false
+	pending := f.deadlinePending && f.runtime == active && active != nil
+	f.deadlinePending = false
+	f.mu.Unlock()
+	if pending {
+		f.reassessHTTPSDeadline(active)
+	}
+	f.caAdmissionMu.Unlock()
+}
+
 func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (StartResult, error) {
 	f.mu.Lock()
 	if f.ownerEnding {
@@ -631,7 +748,15 @@ func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (Sta
 		f.startMutating = false
 		f.startCancel = nil
 		f.startDone = nil
+		active := f.runtime
+		pending := f.deadlinePending && active != nil
+		f.deadlinePending = false
 		f.mu.Unlock()
+		if pending {
+			f.caAdmissionMu.Lock()
+			f.reassessHTTPSDeadline(active)
+			f.caAdmissionMu.Unlock()
+		}
 		close(done)
 	}()
 
@@ -652,6 +777,7 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 		startCancel()
 	}
 	if active != nil {
+		f.cancelHTTPSDeadline(active)
 		if err := active.engine.CloseTraffic(); err != nil {
 			warnings = append(warnings, CommandWarning{Kind: CommandWarningRuntimeCloseFailed, Diagnostic: err.Error()})
 		}
@@ -806,18 +932,10 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 		}
 		return InstallResult{Kind: InstallResultOwnerEnding}, nil
 	}
-	defer func() {
-		f.mu.Lock()
-		if f.transientOwner {
-			f.ownerEnding = true
-		}
-		f.caMutating = false
-		f.mu.Unlock()
-		f.caAdmissionMu.Unlock()
-	}()
 	f.mu.Lock()
 	active := f.runtime
 	f.mu.Unlock()
+	defer f.finishCAMutation(active)
 	// Once admitted, CA work belongs to the owner rather than the request.
 	result, err := f.userCA.Install(context.Background())
 	if err != nil {
@@ -828,24 +946,19 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	}
 	current := result.Current()
 	f.mu.Lock()
-	f.userCASnapshot = current
-	f.userCAAssessmentErr = nil
 	stillLive := f.runtime == active && active != nil
 	f.mu.Unlock()
 	if stillLive {
 		recoveryErr := active.engine.RecoverHTTPS(current)
 		if recoveryErr != nil {
-			return InstallResult{
-				Kind:               InstallResultRuntimeAdoptionFailed,
-				InstalledCAExpires: current.ExpiresAt(),
-				Warnings: []HTTPSWarningDetail{{
-					Kind:       HTTPSWarningInterceptionFailed,
-					Diagnostic: fmt.Sprintf("Installed User CA is usable, but runtime adoption failed: %v.", recoveryErr),
-					Action:     "Run `seamless-cors install` again.",
-				}},
-			}, nil
+			return InstallResult{}, recoveryErr
 		}
+		f.scheduleHTTPSDeadline(active, current)
 	}
+	f.mu.Lock()
+	f.userCASnapshot = current.Snapshot()
+	f.userCAAssessmentErr = nil
+	f.mu.Unlock()
 	kind := InstallResultAlreadyUsable
 	if result.Changed() {
 		kind = InstallResultInstalled
@@ -891,17 +1004,10 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	}
 	f.caMutating = true
 	f.mu.Unlock()
-	defer func() {
-		f.mu.Lock()
-		if f.transientOwner {
-			f.ownerEnding = true
-		}
-		f.caMutating = false
-		f.mu.Unlock()
-		f.caAdmissionMu.Unlock()
-	}()
+	defer f.finishCAMutation(active)
 	if active != nil {
-		active.engine.DeactivateHTTPS(userca.Snapshot{})
+		f.cancelHTTPSDeadline(active)
+		active.engine.DeactivateHTTPS(userca.Snapshot{}, nil)
 	}
 	result, err := f.userCA.Uninstall(context.Background())
 	if err != nil {
@@ -923,7 +1029,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	}
 	current := result.Current()
 	f.mu.Lock()
-	f.userCASnapshot = current
+	f.userCASnapshot = current.Snapshot()
 	f.userCAAssessmentErr = nil
 	f.mu.Unlock()
 	if !result.Changed() {
@@ -968,12 +1074,25 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 			switch kind {
 			case HTTPSWarningsChanged:
 				consumeWarnings()
+				if state.HTTPSInterception != HTTPSInterceptionActive {
+					f.cancelHTTPSDeadline(active)
+				}
 			case RuntimeStatusChanged:
 				// Status consumers read the complete Gateway snapshot. No
 				// revision is needed to distinguish a source diagnostic. The
 				// warning check also preserves an HTTPS warning invalidation
 				// that was coalesced by this generic status notification.
 				consumeWarnings()
+				if state.HTTPSInterception != HTTPSInterceptionActive {
+					f.cancelHTTPSDeadline(active)
+				}
+			case HTTPSDeadlineReached:
+				consumeWarnings()
+				if !active.engine.interceptionActive() {
+					f.cancelHTTPSDeadline(active)
+					continue
+				}
+				f.handleHTTPSDeadline(active)
 			default:
 				// Unknown kinds are ignored; the scoped vocabulary is private
 				// to Gateway Runtime and this keeps a malformed notification

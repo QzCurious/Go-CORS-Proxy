@@ -16,7 +16,6 @@ func TestCommandFulfillmentIsOwnedByGatewayResultKinds(t *testing.T) {
 		{"stop cleanup failed", StopResult{Kind: StopResultCleanupFailed}.Fulfillment(), CommandUnfulfilled},
 		{"install installed", InstallResult{Kind: InstallResultInstalled}.Fulfillment(), CommandFulfilled},
 		{"install already usable", InstallResult{Kind: InstallResultAlreadyUsable}.Fulfillment(), CommandFulfilled},
-		{"install partial", InstallResult{Kind: InstallResultRuntimeAdoptionFailed}.Fulfillment(), CommandUnfulfilled},
 		{"uninstall removed", UninstallResult{Kind: UninstallResultUninstalled}.Fulfillment(), CommandFulfilled},
 		{"uninstall absent", UninstallResult{Kind: UninstallResultAlreadyAbsent}.Fulfillment(), CommandFulfilled},
 		{"uninstall incomplete", UninstallResult{Kind: UninstallResultIncomplete}.Fulfillment(), CommandUnfulfilled},

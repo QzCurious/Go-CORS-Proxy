@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,7 +185,7 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
@@ -204,34 +206,165 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 	}
 }
 
-func TestInstallReturnsPartialSuccessWhenRuntimeCannotAdopt(t *testing.T) {
-	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, snapshot)
+func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(userca.Snapshot{}, nil); err != nil {
+	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
+	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
 		t.Fatal(err)
 	}
-	installed := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
-	ca := &fakeUserCA{installResult: userca.NewInstallResult(installed, true)}
+	select {
+	case <-engine.DesiredStates():
+	default:
+	}
+	ca := &fakeUserCA{}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
-	engine.mu.Lock()
-	engine.proxyCore = nil
-	engine.mu.Unlock()
+	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+	lifecycle.runtime = active
 
-	result, err := lifecycle.Install(context.Background())
+	lifecycle.handleHTTPSDeadline(active)
 
+	state := engine.snapshot()
+	if state.HTTPSReadiness != HTTPSReadinessNotReady || state.HTTPSInterception != HTTPSInterceptionInactive {
+		t.Fatalf("deadline state = %#v", state)
+	}
+	select {
+	case desired := <-engine.DesiredStates():
+		if desired.HTTPSInterception {
+			t.Fatalf("deadline retained HTTPS PAC route: %#v", desired)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deadline did not publish PAC withdrawal")
+	}
+}
+
+func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != InstallResultRuntimeAdoptionFailed || !lifecycle.userCASnapshot.Usable() {
-		t.Fatalf("partial install result = %#v latched = %#v", result, lifecycle.userCASnapshot)
+	defer closeTrafficTestRuntime(engine)
+	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
+	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-engine.DesiredStates():
+	default:
+	}
+	ca := &fakeUserCA{assessment: assessment}
+	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+	lifecycle.runtime = active
+
+	lifecycle.handleHTTPSDeadline(active)
+
+	state := engine.snapshot()
+	if state.HTTPSReadiness != HTTPSReadinessReady || state.HTTPSInterception != HTTPSInterceptionActive {
+		t.Fatalf("stale deadline changed usable HTTPS: %#v", state)
+	}
+}
+
+func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *testing.T) {
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(engine)
+	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
+	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-engine.DesiredStates():
+	default:
+	}
+	ca := &fakeUserCA{inspectErr: errors.New("trust store unavailable")}
+	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+	lifecycle.runtime = active
+
+	lifecycle.handleHTTPSDeadline(active)
+
+	state := engine.snapshot()
+	if state.HTTPSReadiness != HTTPSReadinessNotReady || state.HTTPSInterception != HTTPSInterceptionInactive {
+		t.Fatalf("assessment failure state = %#v", state)
+	}
+	if !strings.Contains(httpsWarningDiagnostics(state.HTTPSWarnings), "could not be assessed") {
+		t.Fatalf("assessment failure warnings = %#v", state.HTTPSWarnings)
+	}
+	select {
+	case desired := <-engine.DesiredStates():
+		if desired.HTTPSInterception {
+			t.Fatalf("assessment failure retained HTTPS PAC route: %#v", desired)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("assessment failure did not publish PAC withdrawal")
+	}
+}
+
+func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(engine)
+	assessment := testUserCASnapshot(t, time.Now().Add(75*time.Millisecond), false)
+	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-engine.DesiredStates():
+	default:
+	}
+	var inspectCalls atomic.Int32
+	ca := &fakeUserCA{
+		inspect: func(context.Context) (userca.Assessment, error) {
+			if inspectCalls.Add(1) == 1 {
+				return assessment, nil
+			}
+			return userca.Assessment{}, nil
+		},
+	}
+	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+	lifecycle.runtime = active
+	lifecycle.scheduleHTTPSDeadline(active, assessment)
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		state := engine.snapshot()
+		if state.HTTPSInterception == HTTPSInterceptionInactive {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("Gateway deadline timer did not deactivate HTTPS")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if got := inspectCalls.Load(); got < 2 {
+		t.Fatalf("deadline timer inspections = %d, want fresh assessment", got)
 	}
 }
 
@@ -245,7 +378,7 @@ func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
 			}
 			close(entered)
 			<-release
-			return userca.NewInstallResult(userca.Snapshot{}, true), nil
+			return userca.NewInstallResult(userca.Assessment{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -337,10 +470,10 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 	}
 	var inactiveDuringUninstall bool
 	ca := &fakeUserCA{
-		snapshot: installed,
+		assessment: installed,
 		uninstall: func(context.Context) (userca.UninstallResult, error) {
 			inactiveDuringUninstall = engine.snapshot().HTTPSInterception == HTTPSInterceptionInactive
-			return userca.NewUninstallResult(userca.Snapshot{}, true), nil
+			return userca.NewUninstallResult(userca.Assessment{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -408,7 +541,7 @@ func TestStartUsesFreshInstalledUserCASnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	ca := &fakeUserCA{snapshot: installed}
+	ca := &fakeUserCA{assessment: installed}
 	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
 	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
@@ -432,8 +565,9 @@ func TestStartUsesFreshInstalledUserCASnapshot(t *testing.T) {
 
 type fakeUserCA struct {
 	mu              sync.Mutex
-	snapshot        userca.Snapshot
+	assessment      userca.Assessment
 	inspectErr      error
+	inspect         func(context.Context) (userca.Assessment, error)
 	installResult   userca.InstallResult
 	installErr      error
 	uninstallResult userca.UninstallResult
@@ -445,11 +579,14 @@ type fakeUserCA struct {
 	uninstallCalls  int
 }
 
-func (f *fakeUserCA) Inspect(context.Context) (userca.Snapshot, error) {
+func (f *fakeUserCA) Inspect(ctx context.Context) (userca.Assessment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inspectCalls++
-	return f.snapshot, f.inspectErr
+	if f.inspect != nil {
+		return f.inspect(ctx)
+	}
+	return f.assessment, f.inspectErr
 }
 
 func (f *fakeUserCA) Install(ctx context.Context) (userca.InstallResult, error) {
@@ -478,8 +615,8 @@ func (f *fakeUserCA) Uninstall(ctx context.Context) (userca.UninstallResult, err
 
 type emptyTestUserCA struct{}
 
-func (emptyTestUserCA) Inspect(context.Context) (userca.Snapshot, error) {
-	return userca.Snapshot{}, nil
+func (emptyTestUserCA) Inspect(context.Context) (userca.Assessment, error) {
+	return userca.Assessment{}, nil
 }
 func (emptyTestUserCA) Install(context.Context) (userca.InstallResult, error) {
 	return userca.InstallResult{}, nil

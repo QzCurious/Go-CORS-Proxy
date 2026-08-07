@@ -20,11 +20,11 @@ func TestInspectMissingIsNotUsable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Usable() {
+	if snapshot.Snapshot().Usable() {
 		t.Fatal("missing UserCA reported usable")
 	}
-	if _, ok := snapshot.TLSCertificate(); ok {
-		t.Fatal("not-usable snapshot exposed TLS signing material")
+	if _, ok := snapshot.Provider(); ok {
+		t.Fatal("not-usable assessment exposed a provider")
 	}
 }
 
@@ -39,9 +39,13 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if !first.Changed() || !first.Current().Usable() {
 		t.Fatalf("first install = changed %t usable %t", first.Changed(), first.Current().Usable())
 	}
-	firstCertificate, ok := first.Current().TLSCertificate()
+	firstFingerprint, err := readActiveFingerprint(ca.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstProvider, ok := first.Current().Provider()
 	if !ok {
-		t.Fatal("installed snapshot omitted TLS material")
+		t.Fatal("first install omitted provider")
 	}
 
 	second, err := ca.Install(context.Background())
@@ -51,20 +55,27 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if second.Changed() {
 		t.Fatal("idempotent install reported a user-visible change")
 	}
-	secondCertificate, ok := second.Current().TLSCertificate()
-	if !ok || string(secondCertificate.Certificate[0]) != string(firstCertificate.Certificate[0]) {
+	secondFingerprint, err := readActiveFingerprint(ca.dir)
+	if err != nil || secondFingerprint != firstFingerprint {
 		t.Fatal("idempotent install replaced the authority")
+	}
+	secondProvider, ok := second.Current().Provider()
+	if !ok {
+		t.Fatal("second install omitted provider")
+	}
+	if firstProvider == secondProvider {
+		t.Fatal("idempotent install reused the previous provider")
 	}
 }
 
 func TestInstallRepairsMarkerIdentifiedAuthorityWithoutReplacingIt(t *testing.T) {
 	store := &fakeTrustStore{}
 	ca := openAt(t.TempDir(), store, time.Now)
-	first, err := ca.Install(context.Background())
+	_, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstCertificate, _ := first.Current().TLSCertificate()
+	firstFingerprint, _ := readActiveFingerprint(ca.dir)
 	store.records = nil
 
 	repaired, err := ca.Install(context.Background())
@@ -75,8 +86,8 @@ func TestInstallRepairsMarkerIdentifiedAuthorityWithoutReplacingIt(t *testing.T)
 	if !repaired.Changed() || !repaired.Current().Usable() {
 		t.Fatalf("repair = changed %t usable %t", repaired.Changed(), repaired.Current().Usable())
 	}
-	repairedCertificate, _ := repaired.Current().TLSCertificate()
-	if string(repairedCertificate.Certificate[0]) != string(firstCertificate.Certificate[0]) {
+	repairedFingerprint, _ := readActiveFingerprint(ca.dir)
+	if repairedFingerprint != firstFingerprint {
 		t.Fatal("repair replaced a valid marker-identified authority")
 	}
 }
@@ -128,7 +139,7 @@ func TestInstallExplicitlyRenewsWhenDue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstCertificate, _ := first.Current().TLSCertificate()
+	firstFingerprint, _ := readActiveFingerprint(ca.dir)
 	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
 
 	renewed, err := ca.Install(context.Background())
@@ -139,12 +150,12 @@ func TestInstallExplicitlyRenewsWhenDue(t *testing.T) {
 	if !renewed.Changed() || !renewed.Current().Usable() {
 		t.Fatalf("renewal = changed %t usable %t", renewed.Changed(), renewed.Current().Usable())
 	}
-	renewedCertificate, _ := renewed.Current().TLSCertificate()
-	if string(renewedCertificate.Certificate[0]) == string(firstCertificate.Certificate[0]) {
+	renewedFingerprint, _ := readActiveFingerprint(ca.dir)
+	if renewedFingerprint == firstFingerprint {
 		t.Fatal("renewal reused the old authority")
 	}
 	if len(store.records) != 2 {
-		t.Fatalf("trusted roots = %d, want previous root retained until runtime adoption", len(store.records))
+		t.Fatalf("trusted roots = %d, want previous root retained until provider adoption", len(store.records))
 	}
 }
 
@@ -333,19 +344,14 @@ func TestInstallReturnsErrorWhenFreshPostconditionCannotBeAssessed(t *testing.T)
 	}
 }
 
-func TestSnapshotReturnsDefensiveCertificateBytes(t *testing.T) {
+func TestAssessmentCarriesProviderOnlyWhenUsable(t *testing.T) {
 	ca := openAt(t.TempDir(), &fakeTrustStore{}, time.Now)
 	result, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, _ := result.Current().TLSCertificate()
-	first.Certificate[0][0] ^= 0xff
-
-	second, _ := result.Current().TLSCertificate()
-
-	if first.Certificate[0][0] == second.Certificate[0][0] {
-		t.Fatal("snapshot TLS material was mutated through a returned slice")
+	if _, ok := result.Current().Provider(); !ok {
+		t.Fatal("usable assessment omitted its provider")
 	}
 }
 

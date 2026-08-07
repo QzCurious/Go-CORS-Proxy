@@ -266,8 +266,6 @@ func installFailureRepresentation(kind InstallResultKind) failureRepresentation 
 		return failureRepresentation{http.StatusConflict, "Another certificate operation is in progress."}
 	case InstallResultOwnerEnding:
 		return failureRepresentation{http.StatusConflict, "The Gateway owner is ending."}
-	case InstallResultRuntimeAdoptionFailed:
-		return failureRepresentation{http.StatusInternalServerError, "The User CA was installed, but runtime adoption did not complete."}
 	default:
 		return failureRepresentation{http.StatusInternalServerError, "Gateway Install was not fulfilled."}
 	}
