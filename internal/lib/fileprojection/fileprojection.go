@@ -16,54 +16,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-const defaultDebounce = 100 * time.Millisecond
-
-type ProjectFunc[T any] func([]byte) (T, error)
-
-type EqualFunc[T any] func(T, T) bool
-
-type Options struct {
-	// Debounce is the quiet period after the latest relevant filesystem event.
-	// Zero uses 100ms.
-	Debounce time.Duration
-}
-
-type ErrorKind uint8
-
-const (
-	ErrorRead ErrorKind = iota + 1
-	ErrorProject
-	ErrorObservation
-)
-
-type Error struct {
-	Kind ErrorKind
-	Path string
-	Err  error
-}
-
-func (e *Error) Error() string {
-	var operation string
-	switch e.Kind {
-	case ErrorRead:
-		operation = "read"
-	case ErrorProject:
-		operation = "project"
-	case ErrorObservation:
-		operation = "observe"
-	default:
-		operation = "process"
-	}
-	return fmt.Sprintf("file projection cannot %s %q: %v", operation, e.Path, e.Err)
-}
-
-func (e *Error) Unwrap() error { return e.Err }
-
-type Result[T any] struct {
-	Value T
-	Err   error
-}
-
 // Projection maintains the current projection of a file. Its embedded Stream
 // provides single-consumer, latest-value updates for post-initial results.
 type Projection[T any] struct {
@@ -85,6 +37,11 @@ type Projection[T any] struct {
 
 	closeOnce sync.Once
 	closeErr  error
+}
+
+type Result[T any] struct {
+	Value T
+	Err   error
 }
 
 func Open[T any](path string, project ProjectFunc[T], equal EqualFunc[T], options Options) (*Projection[T], error) {
@@ -150,6 +107,53 @@ func (p *Projection[T]) Close() error {
 		<-p.done
 	})
 	return p.closeErr
+}
+
+type ProjectFunc[T any] func([]byte) (T, error)
+
+type EqualFunc[T any] func(T, T) bool
+
+type Options struct {
+	// Debounce is the quiet period after the latest relevant filesystem event.
+	// Zero uses 100ms.
+	Debounce time.Duration
+}
+
+const defaultDebounce = 100 * time.Millisecond
+
+type ErrorKind uint8
+
+const (
+	ErrorRead ErrorKind = iota + 1
+	ErrorProject
+	ErrorObservation
+)
+
+type Error struct {
+	Kind ErrorKind
+	Path string
+	Err  error
+}
+
+func (e *Error) Error() string {
+	var operation string
+	switch e.Kind {
+	case ErrorRead:
+		operation = "read"
+	case ErrorProject:
+		operation = "project"
+	case ErrorObservation:
+		operation = "observe"
+	default:
+		operation = "process"
+	}
+	return fmt.Sprintf("file projection cannot %s %q: %v", operation, e.Path, e.Err)
+}
+
+func (e *Error) Unwrap() error { return e.Err }
+
+func failure[T any](kind ErrorKind, path string, err error) Result[T] {
+	return Result[T]{Err: &Error{Kind: kind, Path: path, Err: err}}
 }
 
 func (p *Projection[T]) observe() {
@@ -279,10 +283,6 @@ func (p *Projection[T]) store(result Result[T]) {
 	snapshot := new(Result[T])
 	*snapshot = result
 	p.latest.Store(snapshot)
-}
-
-func failure[T any](kind ErrorKind, path string, err error) Result[T] {
-	return Result[T]{Err: &Error{Kind: kind, Path: path, Err: err}}
 }
 
 func readOrdinaryFile(path string) ([]byte, error) {
