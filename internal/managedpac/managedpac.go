@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/latestvalue"
+	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
@@ -169,7 +169,7 @@ type ManagedPAC struct {
 	admissionGeneration uint64
 	activeCancel        context.CancelFunc
 
-	desiredStates         chan DesiredState
+	desiredStates         *conflatedstream.Stream[DesiredState]
 	desiredWorkerDone     chan struct{}
 	desiredWorkerStop     chan struct{}
 	latestDesiredState    *DesiredState
@@ -187,7 +187,7 @@ func Open() *ManagedPAC {
 func openWithSettings(settings systemSettings) *ManagedPAC {
 	return &ManagedPAC{
 		settings:      settings,
-		desiredStates: make(chan DesiredState, 1),
+		desiredStates: conflatedstream.New[DesiredState](),
 	}
 }
 
@@ -251,7 +251,7 @@ func (m *ManagedPAC) InstallDesired(ctx context.Context, serviceNames []string, 
 	m.mu.Lock()
 	m.latestDesiredState = &desired
 	m.serviceNames = append([]string(nil), selected...)
-	latestvalue.Publish(m.desiredStates, desired)
+	m.desiredStates.Publish(desired)
 	if publicationErr == nil {
 		m.lastPublishedPAC = &effective
 	}
@@ -286,7 +286,7 @@ func (m *ManagedPAC) PublishDesiredState(desired DesiredState) {
 		return
 	}
 	m.latestDesiredState = &desired
-	latestvalue.Publish(m.desiredStates, desired)
+	m.desiredStates.Publish(desired)
 	if m.desiredWorkerDone != nil {
 		m.mu.Unlock()
 		return
@@ -331,7 +331,7 @@ func (m *ManagedPAC) runDesiredReconciliation(done chan struct{}, stop <-chan st
 		select {
 		case <-stop:
 			return
-		case <-m.desiredStates:
+		case <-m.desiredStates.Updates():
 			succeeded := m.reconcileLatestDesiredState()
 			if succeeded {
 				if retry != nil {

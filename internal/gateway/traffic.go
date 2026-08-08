@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
-	"github.com/QzCurious/seamless-cors/internal/latestvalue"
+	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
@@ -37,9 +37,9 @@ type trafficRuntime struct {
 	pacRouting             *pacrouting.Routing
 	pac                    *http.Server
 	listeners              []net.Listener
-	desiredStates          chan managedpac.DesiredState
+	desiredStates          *conflatedstream.Stream[managedpac.DesiredState]
 	publishMu              sync.Mutex
-	runtimeChanges         chan RuntimeChangeKind
+	runtimeChanges         *conflatedstream.Stream[RuntimeChangeKind]
 	httpsWarningsRevision  uint64
 	now                    func() time.Time
 }
@@ -104,8 +104,8 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 		proxy:               &http.Server{Handler: proxyHandler},
 		pac:                 &http.Server{Handler: pacRouting.Handler()},
 		listeners:           []net.Listener{proxyListener, pacListener},
-		desiredStates:       make(chan managedpac.DesiredState, 1),
-		runtimeChanges:      make(chan RuntimeChangeKind, 1),
+		desiredStates:       conflatedstream.New[managedpac.DesiredState](),
+		runtimeChanges:      conflatedstream.New[RuntimeChangeKind](),
 		now:                 time.Now,
 	}, nil
 }
@@ -302,11 +302,11 @@ func (r *trafficRuntime) PACListen() string {
 }
 
 func (r *trafficRuntime) RuntimeChanges() <-chan RuntimeChangeKind {
-	return r.runtimeChanges
+	return r.runtimeChanges.Updates()
 }
 
 func (r *trafficRuntime) DesiredStates() <-chan managedpac.DesiredState {
-	return r.desiredStates
+	return r.desiredStates.Updates()
 }
 
 func (r *trafficRuntime) snapshot() runtimeState {
@@ -356,7 +356,7 @@ func (r *trafficRuntime) publishDesiredState() {
 	desired := r.currentDesiredState()
 	r.publishMu.Lock()
 	defer r.publishMu.Unlock()
-	latestvalue.Publish(r.desiredStates, desired)
+	r.desiredStates.Publish(desired)
 }
 
 func (r *trafficRuntime) currentDesiredState() managedpac.DesiredState {
@@ -376,18 +376,18 @@ func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
 	if kind != HTTPSDeadlineReached {
 		// Deadline is a lifecycle signal, not an ordinary status invalidation.
 		// Preserve it when a status or warning change races with the provider
-		// expiry callback; the latest-value channel must not erase the request
+		// expiry callback; conflation must not erase the request
 		// for Gateway to reassess UserCA.
 		select {
-		case pending := <-r.runtimeChanges:
+		case pending := <-r.runtimeChanges.Updates():
 			if pending == HTTPSDeadlineReached {
-				r.runtimeChanges <- pending
+				r.runtimeChanges.Publish(pending)
 				return
 			}
 		default:
 		}
 	}
-	latestvalue.Publish(r.runtimeChanges, kind)
+	r.runtimeChanges.Publish(kind)
 }
 
 func (r *trafficRuntime) SetUninstallWarning(err error) {

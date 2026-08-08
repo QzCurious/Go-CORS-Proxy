@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/QzCurious/seamless-cors/internal/latestvalue"
+	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/QzCurious/seamless-cors/internal/lib/fileprojection"
 )
 
@@ -38,7 +38,7 @@ type State struct {
 // source with last-known-good behavior.
 type Source struct {
 	projection *fileprojection.Projection[UpstreamList]
-	updates    chan State
+	updates    *conflatedstream.Stream[State]
 	done       chan struct{}
 
 	mu      sync.RWMutex
@@ -67,7 +67,7 @@ func Open(path string) (*Source, error) {
 
 	s := &Source{
 		projection: projection,
-		updates:    make(chan State, 1),
+		updates:    conflatedstream.New[State](),
 		done:       make(chan struct{}),
 		current:    State{List: projection.Current().Value},
 	}
@@ -83,7 +83,7 @@ func (s *Source) Current() State {
 
 // Updates returns the single-consumer, latest-value stream of post-initial
 // complete source states.
-func (s *Source) Updates() <-chan State { return s.updates }
+func (s *Source) Updates() <-chan State { return s.updates.Updates() }
 
 func (s *Source) Close() error {
 	s.closeOnce.Do(func() {
@@ -95,7 +95,7 @@ func (s *Source) Close() error {
 
 func (s *Source) translate() {
 	defer close(s.done)
-	defer close(s.updates)
+	defer s.updates.Close()
 	for result := range s.projection.Updates() {
 		s.mu.Lock()
 		state := State{List: s.current.List}
@@ -106,7 +106,7 @@ func (s *Source) translate() {
 		}
 		s.current = state
 		s.mu.Unlock()
-		latestvalue.Publish(s.updates, state)
+		s.updates.Publish(state)
 	}
 }
 

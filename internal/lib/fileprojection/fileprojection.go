@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/latestvalue"
+	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -72,7 +72,7 @@ type Projection[T any] struct {
 	watcher  *fsnotify.Watcher
 
 	latest  atomic.Pointer[Result[T]]
-	updates chan Result[T]
+	updates *conflatedstream.Stream[Result[T]]
 	stop    chan struct{}
 	done    chan struct{}
 
@@ -118,7 +118,7 @@ func Open[T any](path string, project ProjectFunc[T], equal EqualFunc[T], option
 		equal:    equal,
 		debounce: options.Debounce,
 		watcher:  watcher,
-		updates:  make(chan Result[T], 1),
+		updates:  conflatedstream.New[Result[T]](),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
@@ -139,7 +139,7 @@ func (p *Projection[T]) Current() Result[T] {
 
 // Updates returns the single-consumer, latest-value stream of post-initial
 // projection results.
-func (p *Projection[T]) Updates() <-chan Result[T] { return p.updates }
+func (p *Projection[T]) Updates() <-chan Result[T] { return p.updates.Updates() }
 
 func (p *Projection[T]) Close() error {
 	p.closeOnce.Do(func() {
@@ -152,7 +152,7 @@ func (p *Projection[T]) Close() error {
 
 func (p *Projection[T]) observe() {
 	defer close(p.done)
-	defer close(p.updates)
+	defer p.updates.Close()
 
 	var timer *time.Timer
 	var timerC <-chan time.Time
@@ -270,7 +270,7 @@ func (p *Projection[T]) stopObservation(err error) {
 
 func (p *Projection[T]) publish(result Result[T]) {
 	p.store(result)
-	latestvalue.Publish(p.updates, result)
+	p.updates.Publish(result)
 }
 
 func (p *Projection[T]) store(result Result[T]) {
