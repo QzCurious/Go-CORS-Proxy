@@ -338,15 +338,11 @@ func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*upstream
 		t.Fatal(err)
 	}
 	writeTrafficTestFile(t, upstreamPath, upstreams)
-	source, err := upstreamlist.New(upstreamPath)
+	source, err := upstreamlist.Open(upstreamPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := source.Current()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return source, snapshot, upstreamPath
+	return source, source.Current().List, upstreamPath
 }
 
 func waitForTrafficConfig(t *testing.T, runtime *trafficRuntime, errs <-chan serverError, ready func(runtimeState) bool) {

@@ -25,14 +25,17 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	if err != nil {
 		return nil, err
 	}
-	upstreamListSource, err := upstreamlist.New(upstreamListPath)
+	upstreamListSource, err := upstreamlist.Open(upstreamListPath)
 	if err != nil {
 		return nil, err
 	}
-	initialUpstreamList, err := upstreamListSource.Current()
-	if err != nil {
-		return nil, err
-	}
+	closeUpstreamListSource := true
+	defer func() {
+		if closeUpstreamListSource {
+			_ = upstreamListSource.Close()
+		}
+	}()
+	initialUpstreamList := upstreamListSource.Current().List
 
 	postStartFailure := func(err error) (StartResult, error) {
 		if ctx.Err() != nil {
@@ -53,6 +56,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	if err != nil {
 		return postStartFailure(err)
 	}
+	closeUpstreamListSource = false
 	cleanupEngine := true
 	defer func() {
 		if cleanupEngine {

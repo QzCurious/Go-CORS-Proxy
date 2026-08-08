@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -289,8 +290,11 @@ func (r *trafficRuntime) Close() error {
 }
 
 func (r *trafficRuntime) CloseTraffic() error {
-	_ = r.proxy.Close()
-	return r.pac.Close()
+	return errors.Join(
+		r.upstreamListSource.Close(),
+		r.proxy.Close(),
+		r.pac.Close(),
+	)
 }
 
 func (r *trafficRuntime) PACListen() string {
@@ -318,14 +322,7 @@ func (r *trafficRuntime) interceptionActive() bool {
 }
 
 func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
-	updates, err := r.upstreamListSource.Updates(ctx)
-	if err != nil {
-		select {
-		case errs <- serverError{source: "upstream-list", err: err}:
-		case <-ctx.Done():
-		}
-		return
-	}
+	updates := r.upstreamListSource.Updates()
 	for {
 		select {
 		case <-ctx.Done():

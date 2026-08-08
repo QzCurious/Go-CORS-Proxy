@@ -1,27 +1,16 @@
 package upstreamlist
 
 import (
-	"bytes"
-	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/latestvalue"
-	"github.com/fsnotify/fsnotify"
+	"github.com/QzCurious/seamless-cors/internal/lib/fileprojection"
 )
 
-const (
-	defaultUpstreamList = "# One upstream host or origin per line.\n# api.dev.example.com\n"
-
-	changeDebounce      = 100 * time.Millisecond
-	invalidConfirmation = time.Second
-	stableReadInterval  = 10 * time.Millisecond
-	stableReadAttempts  = 3
-)
+const defaultUpstreamList = "# One upstream host or origin per line.\n# api.dev.example.com\n"
 
 // DiagnosticKind classifies a runtime problem reported by a watched source.
 type DiagnosticKind uint8
@@ -38,21 +27,6 @@ type Diagnostic struct {
 	Err  error
 }
 
-// SameDiagnostics reports whether two diagnostics describe the same source
-// health state.
-func SameDiagnostics(left, right *Diagnostic) bool {
-	if left == nil || right == nil {
-		return left == right
-	}
-	if left.Kind != right.Kind {
-		return false
-	}
-	if left.Err == nil || right.Err == nil {
-		return left.Err == right.Err
-	}
-	return left.Err.Error() == right.Err.Error()
-}
-
 // State is a complete current-state snapshot. List remains the last-known-
 // good semantic value while Diagnostic is non-nil.
 type State struct {
@@ -60,332 +34,94 @@ type State struct {
 	Diagnostic *Diagnostic
 }
 
-// Source is a watched, file-backed semantic Upstream List source. The path is
-// supplied by Gateway; Source does not choose an application default.
+// Source adapts a generic File Projection into a semantic Upstream List
+// source with last-known-good behavior.
 type Source struct {
-	mu         sync.RWMutex
-	path       string
-	current    UpstreamList
-	hasCurrent bool
+	projection *fileprojection.Projection[UpstreamList]
+	updates    chan State
+	done       chan struct{}
+
+	mu      sync.RWMutex
+	current State
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// New bootstraps path and returns a source without reading or validating the
-// file. The caller owns the path policy; Source only cleans the supplied path.
-func New(path string) (*Source, error) {
+// Open bootstraps path, validates its initial contents, and begins observing
+// subsequent changes. The caller owns the path policy and Source lifetime.
+func Open(path string) (*Source, error) {
 	path = filepath.Clean(path)
 	if err := bootstrapFile(path, defaultUpstreamList); err != nil {
 		return nil, err
 	}
-	return &Source{path: path}, nil
-}
-
-// Current returns the newest successfully validated semantic value. The first
-// call reads and validates the ordinary file; later calls use the cache.
-func (s *Source) Current() (UpstreamList, error) {
-	s.mu.RLock()
-	if s.hasCurrent {
-		current := s.current
-		s.mu.RUnlock()
-		return current, nil
-	}
-	s.mu.RUnlock()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.hasCurrent {
-		return s.current, nil
-	}
-	current, err := loadUpstreamList(s.path)
-	if err != nil {
-		return UpstreamList{}, err
-	}
-	s.current = current
-	s.hasCurrent = true
-	return s.current, nil
-}
-
-// Updates starts one source observation and returns complete state snapshots.
-// Current must have succeeded before Updates is called. The returned channel
-// is receive-only to consumers and has capacity one.
-func (s *Source) Updates(ctx context.Context) (<-chan State, error) {
-	s.mu.RLock()
-	initialized := s.hasCurrent
-	s.mu.RUnlock()
-	if !initialized {
-		return nil, errors.New("Upstream List source must be initialized with Current before Updates")
-	}
-
-	output := make(chan State, 1)
-	go s.observe(ctx, output)
-	return output, nil
-}
-
-type sourceObserver struct {
-	source *Source
-	target string
-	dir    string
-
-	debounceTimer *time.Timer
-	debounceC     <-chan time.Time
-
-	confirmationTimer   *time.Timer
-	confirmationC       <-chan time.Time
-	confirmationOpen    bool
-	confirmationMatured bool
-
-	publishedDiagnostic *Diagnostic
-}
-
-func (s *Source) observe(ctx context.Context, output chan State) {
-	defer close(output)
-
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		publishObservationStopped(output, s, fmt.Errorf("Upstream List observation could not start: %w", err))
-		return
-	}
-	defer watcher.Close()
-
-	observer := &sourceObserver{
-		source: s,
-		target: s.path,
-		dir:    filepath.Dir(s.path),
-	}
-	defer observer.close()
-
-	if err := watcher.Add(observer.dir); err != nil {
-		publishObservationStopped(output, s, fmt.Errorf("Upstream List cannot observe %s: %w", observer.dir, err))
-		return
-	}
-
-	// The watcher is established before this reconciliation. This closes the
-	// Current-to-watch race: an edit after Current is either observed by
-	// fsnotify or found by this first full reread.
-	if observer.reconcile(ctx, output) {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-observer.debounceC:
-			observer.clearDebounce()
-			if observer.reconcile(ctx, output) {
-				return
-			}
-		case <-observer.confirmationC:
-			observer.clearConfirmation()
-			observer.confirmationMatured = true
-			if observer.reconcile(ctx, output) {
-				return
-			}
-		case event, ok := <-watcher.Events:
-			if !ok {
-				publishObservationStopped(output, s, errors.New("Upstream List observation stopped unexpectedly; later file edits will no longer be applied automatically"))
-				return
-			}
-			observer.handleEvent(event)
-		case watchErr, ok := <-watcher.Errors:
-			if !ok {
-				publishObservationStopped(output, s, errors.New("Upstream List observation stopped unexpectedly; later file edits will no longer be applied automatically"))
-				return
-			}
-			if errors.Is(watchErr, fsnotify.ErrEventOverflow) {
-				observer.scheduleReconciliation()
-				continue
-			}
-			publishObservationStopped(output, s, fmt.Errorf("Upstream List observation stopped unexpectedly; later file edits will no longer be applied automatically: %w", watchErr))
-			return
-		}
-	}
-}
-
-func (o *sourceObserver) handleEvent(event fsnotify.Event) {
-	if filepath.Clean(event.Name) != o.target {
-		return
-	}
-	o.cancelConfirmation()
-	o.scheduleReconciliation()
-}
-
-func (o *sourceObserver) scheduleReconciliation() {
-	if o.debounceTimer == nil {
-		o.debounceTimer = time.NewTimer(changeDebounce)
-		o.debounceC = o.debounceTimer.C
-		return
-	}
-	if !o.debounceTimer.Stop() {
-		select {
-		case <-o.debounceTimer.C:
-		default:
-		}
-	}
-	o.debounceTimer.Reset(changeDebounce)
-}
-
-func (o *sourceObserver) clearDebounce() {
-	o.debounceTimer = nil
-	o.debounceC = nil
-}
-
-func (o *sourceObserver) reconcile(ctx context.Context, output chan State) bool {
-	if ctx.Err() != nil {
-		return true
-	}
-
-	list, diagnostic := loadObservedUpstreamList(ctx, o.target)
-	if diagnostic != nil {
-		o.handleSourceError(output, *diagnostic)
-		return false
-	}
-
-	o.cancelConfirmation()
-	o.confirmationMatured = false
-
-	o.source.mu.Lock()
-	previous := o.source.current
-	changed := !sameUpstreamList(previous, list)
-	if changed {
-		// The cache is deliberately replaced before the complete state is
-		// published so Current and Updates observe one ordering.
-		o.source.current = list
-	}
-	current := o.source.current
-	o.source.mu.Unlock()
-
-	if !changed && o.publishedDiagnostic == nil {
-		return false
-	}
-	state := State{List: current}
-	if o.publishedDiagnostic != nil {
-		o.publishedDiagnostic = nil
-	}
-	latestvalue.Publish(output, state)
-	return false
-}
-
-func (o *sourceObserver) handleSourceError(output chan State, diagnostic Diagnostic) {
-	if !o.confirmationOpen {
-		o.beginConfirmation()
-		return
-	}
-	if !o.confirmationMatured {
-		return
-	}
-
-	if SameDiagnostics(o.publishedDiagnostic, &diagnostic) {
-		return
-	}
-	o.publishedDiagnostic = &diagnostic
-	latestvalue.Publish(output, o.source.currentState(&diagnostic))
-}
-
-func (o *sourceObserver) beginConfirmation() {
-	o.cancelConfirmation()
-	o.confirmationOpen = true
-	o.confirmationMatured = false
-	o.confirmationTimer = time.NewTimer(invalidConfirmation)
-	o.confirmationC = o.confirmationTimer.C
-}
-
-func (o *sourceObserver) cancelConfirmation() {
-	if o.confirmationTimer != nil {
-		if !o.confirmationTimer.Stop() {
-			select {
-			case <-o.confirmationTimer.C:
-			default:
-			}
-		}
-	}
-	o.confirmationTimer = nil
-	o.confirmationC = nil
-	o.confirmationOpen = false
-	o.confirmationMatured = false
-}
-
-func (o *sourceObserver) clearConfirmation() {
-	o.confirmationTimer = nil
-	o.confirmationC = nil
-}
-
-func (s *Source) currentState(diagnostic *Diagnostic) State {
-	s.mu.RLock()
-	list := s.current
-	s.mu.RUnlock()
-	return State{List: list, Diagnostic: diagnostic}
-}
-
-func publishObservationStopped(output chan State, source *Source, err error) {
-	diagnostic := &Diagnostic{
-		Kind: DiagnosticObservationStopped,
-		Err:  err,
-	}
-	latestvalue.Publish(output, source.currentState(diagnostic))
-}
-
-func (o *sourceObserver) close() {
-	if o.debounceTimer != nil {
-		o.debounceTimer.Stop()
-	}
-	if o.confirmationTimer != nil {
-		o.confirmationTimer.Stop()
-	}
-}
-
-func loadObservedUpstreamList(ctx context.Context, path string) (UpstreamList, *Diagnostic) {
-	data, err := readStableRegularFile(ctx, path)
-	if err != nil {
-		return UpstreamList{}, &Diagnostic{Kind: DiagnosticSourceUnavailable, Err: err}
-	}
-	list, err := decodeAndDeduplicate(data)
-	if err != nil {
-		return UpstreamList{}, &Diagnostic{Kind: DiagnosticInvalidSource, Err: err}
-	}
-	return list, nil
-}
-
-// readStableRegularFile avoids decoding the transient empty/truncated state
-// produced by in-place file writers. This matters during the initial
-// reconciliation, which can race with a write that happened before the
-// directory watcher was installed.
-func readStableRegularFile(ctx context.Context, path string) ([]byte, error) {
-	data, err := readRegularFile(path)
+	projection, err := fileprojection.Open(
+		path,
+		decodeAndDeduplicate,
+		sameUpstreamList,
+		fileprojection.Options{},
+	)
 	if err != nil {
 		return nil, err
 	}
-	for attempt := 1; attempt < stableReadAttempts; attempt++ {
-		timer := time.NewTimer(stableReadInterval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
 
-		current, err := readRegularFile(path)
-		if err != nil {
-			return nil, err
-		}
-		if bytes.Equal(data, current) {
-			return current, nil
-		}
-		data = current
+	s := &Source{
+		projection: projection,
+		updates:    make(chan State, 1),
+		done:       make(chan struct{}),
+		current:    State{List: projection.Current().Value},
 	}
-	return data, nil
+	go s.translate()
+	return s, nil
 }
 
-func loadUpstreamList(path string) (UpstreamList, error) {
-	data, err := readRegularFile(path)
-	if err != nil {
-		return UpstreamList{}, err
+func (s *Source) Current() State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.current
+}
+
+// Updates returns the single-consumer, latest-value stream of post-initial
+// complete source states.
+func (s *Source) Updates() <-chan State { return s.updates }
+
+func (s *Source) Close() error {
+	s.closeOnce.Do(func() {
+		s.closeErr = s.projection.Close()
+		<-s.done
+	})
+	return s.closeErr
+}
+
+func (s *Source) translate() {
+	defer close(s.done)
+	defer close(s.updates)
+	for result := range s.projection.Updates() {
+		s.mu.Lock()
+		state := State{List: s.current.List}
+		if result.Err == nil {
+			state.List = result.Value
+		} else {
+			state.Diagnostic = diagnosticFor(result.Err)
+		}
+		s.current = state
+		s.mu.Unlock()
+		latestvalue.Publish(s.updates, state)
 	}
-	return decodeAndDeduplicate(data)
+}
+
+func diagnosticFor(err error) *Diagnostic {
+	kind := DiagnosticObservationStopped
+	var projectionError *fileprojection.Error
+	if errors.As(err, &projectionError) {
+		switch projectionError.Kind {
+		case fileprojection.ErrorRead:
+			kind = DiagnosticSourceUnavailable
+		case fileprojection.ErrorProject:
+			kind = DiagnosticInvalidSource
+		}
+	}
+	return &Diagnostic{Kind: kind, Err: err}
 }
 
 func decodeAndDeduplicate(data []byte) (UpstreamList, error) {
@@ -470,17 +206,6 @@ func sameOriginSelectors(left, right []OriginSelector) bool {
 		}
 	}
 	return true
-}
-
-func readRegularFile(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s must be an ordinary file", path)
-	}
-	return os.ReadFile(path)
 }
 
 func bootstrapFile(path, content string) error {

@@ -305,8 +305,8 @@ A lifecycle rule where ready HTTPS Readiness allows HTTPS Interception State to 
 _Avoid_: Explicit Trusted HTTPS, Config File HTTPS toggle, intent-as-capability, silent trust installation
 
 **Upstream List Source**:
-The watched file-backed semantic source that bootstraps the user-managed Upstream List supplied by Gateway, validates and decodes it on first Current, then observes its parent directory and publishes complete latest-value Upstream List States. It retains the newest valid semantic list after runtime source failures and reports structured degraded diagnostics without choosing the application's path policy.
-_Avoid_: legacy configuration abstraction, external file-watcher boundary, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, event history, source-content fingerprint, configurable application default
+The file-backed semantic source that bootstraps the user-managed Upstream List supplied by Gateway, establishes observation, and validates its initial file projection before becoming available. It owns semantic identity, publishes complete latest-value Upstream List States from subsequent projections, retains the newest valid semantic list after runtime source failures, and reports structured degraded diagnostics without owning generic filesystem observation or choosing the application's path policy.
+_Avoid_: legacy configuration abstraction, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, event history, source-content identity, configurable application default
 
 **Upstream List State**:
 An immutable complete snapshot containing the newest valid Upstream List and an optional Upstream List Source diagnostic. Source representation, comments, whitespace, and equivalent normalized ordering are not state identity; unconsumed intermediate snapshots may be replaced by a newer state.
@@ -621,7 +621,7 @@ A persistent line-level diagnostic for an invalid Upstream List line that is ign
 _Avoid_: silent invalid entry, fatal line error, transient log warning, command replay, routing revision warning
 
 **Fatal Upstream List Error**:
-A last-known-good Upstream List Source behavior where a missing, unreadable, unsafe, or structurally undecodable Upstream List retains the newest valid list, publishes a structured degraded diagnostic after confirmation, and continues observing. Initial failure still stops Gateway startup; recovery publishes a healthy Upstream List State. Individual invalid lines are Upstream List Warnings rather than source-level errors.
+A last-known-good Upstream List Source behavior where a missing, unreadable, unsafe, or structurally undecodable Upstream List retains the newest valid list, immediately publishes a structured degraded diagnostic after debounced reconciliation, and continues observing. Initial failure still stops Gateway startup; later filesystem activity can publish recovery. Individual invalid lines are Upstream List Warnings rather than source-level errors.
 _Avoid_: stale valid routing discard, unreadable-as-empty, silent source failure, startup fallback to invalid state
 
 **Upstream List Entry**:

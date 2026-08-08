@@ -255,12 +255,12 @@ func mustDesiredList(t *testing.T, contents string) upstreamlist.UpstreamList {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source, err := upstreamlist.New(path)
+	source, err := upstreamlist.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := source.Current()
-	if err != nil {
+	list := source.Current().List
+	if err := source.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return list
