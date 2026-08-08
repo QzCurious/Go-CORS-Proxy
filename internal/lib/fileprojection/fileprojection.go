@@ -64,17 +64,21 @@ type Result[T any] struct {
 	Err   error
 }
 
+// Projection maintains the current projection of a file. Its embedded Stream
+// provides single-consumer, latest-value updates for post-initial results.
 type Projection[T any] struct {
+	conflatedstream.Stream[Result[T]]
+	resultPublisher conflatedstream.Publisher[Result[T]]
+
 	path     string
 	project  ProjectFunc[T]
 	equal    EqualFunc[T]
 	debounce time.Duration
 	watcher  *fsnotify.Watcher
 
-	latest  atomic.Pointer[Result[T]]
-	updates *conflatedstream.Stream[Result[T]]
-	stop    chan struct{}
-	done    chan struct{}
+	latest atomic.Pointer[Result[T]]
+	stop   chan struct{}
+	done   chan struct{}
 
 	hasSuccessfulFingerprint bool
 	successfulFingerprint    [sha256.Size]byte
@@ -112,15 +116,17 @@ func Open[T any](path string, project ProjectFunc[T], equal EqualFunc[T], option
 		return nil, &Error{Kind: ErrorObservation, Path: absolutePath, Err: err}
 	}
 
+	resultPublisher, resultStream := conflatedstream.New[Result[T]]()
 	p := &Projection[T]{
-		path:     absolutePath,
-		project:  project,
-		equal:    equal,
-		debounce: options.Debounce,
-		watcher:  watcher,
-		updates:  conflatedstream.New[Result[T]](),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		Stream:          resultStream,
+		resultPublisher: resultPublisher,
+		path:            absolutePath,
+		project:         project,
+		equal:           equal,
+		debounce:        options.Debounce,
+		watcher:         watcher,
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	initial := p.readAndProject()
 	if initial.Err != nil {
@@ -137,10 +143,6 @@ func (p *Projection[T]) Current() Result[T] {
 	return *p.latest.Load()
 }
 
-// Updates returns the single-consumer, latest-value stream of post-initial
-// projection results.
-func (p *Projection[T]) Updates() <-chan Result[T] { return p.updates.Updates() }
-
 func (p *Projection[T]) Close() error {
 	p.closeOnce.Do(func() {
 		close(p.stop)
@@ -152,7 +154,7 @@ func (p *Projection[T]) Close() error {
 
 func (p *Projection[T]) observe() {
 	defer close(p.done)
-	defer p.updates.Close()
+	defer p.resultPublisher.Close()
 
 	var timer *time.Timer
 	var timerC <-chan time.Time
@@ -270,7 +272,7 @@ func (p *Projection[T]) stopObservation(err error) {
 
 func (p *Projection[T]) publish(result Result[T]) {
 	p.store(result)
-	p.updates.Publish(result)
+	p.resultPublisher.Publish(result)
 }
 
 func (p *Projection[T]) store(result Result[T]) {

@@ -1,40 +1,47 @@
-// Package conflatedstream provides single-producer streams that retain only
-// the newest pending value.
+// Package conflatedstream provides single-producer, single-consumer streams
+// that retain only the newest pending value.
 package conflatedstream
 
-// Stream is a single-consumer stream that conflates pending values. When a
-// published value has not yet been received, the next publication replaces it.
-//
-// A Stream must be constructed with New. Its producer owns Publish and Close;
-// publishing after Close is invalid.
-type Stream[T any] struct {
-	updates chan T
+// New constructs producer and consumer capabilities sharing one stream.
+func New[T any]() (Publisher[T], Stream[T]) {
+	updates := make(chan T, 1)
+	return Publisher[T]{updates: updates}, Stream[T]{updates: updates}
 }
 
-// New constructs a Stream.
-func New[T any]() *Stream[T] {
-	return &Stream[T]{updates: make(chan T, 1)}
+// Stream is the consumer capability for a stream that conflates pending
+// values. When a published value has not yet been received, the next
+// publication replaces it.
+//
+// A Stream must be constructed with New and consumed by only one consumer.
+type Stream[T any] struct {
+	updates <-chan T
 }
 
 // Updates returns the stream's receive-only channel.
-func (s *Stream[T]) Updates() <-chan T { return s.updates }
+func (s Stream[T]) Updates() <-chan T { return s.updates }
+
+// Publisher is the producer capability for a Stream. Its owner must call
+// Close at most once and must not call Publish afterward.
+type Publisher[T any] struct {
+	updates chan T
+}
 
 // Publish makes value the pending value without waiting for the consumer.
-func (s *Stream[T]) Publish(value T) {
+func (p Publisher[T]) Publish(value T) {
 	select {
-	case s.updates <- value:
+	case p.updates <- value:
 		return
 	default:
 	}
 
 	select {
-	case <-s.updates:
+	case <-p.updates:
 	default:
 	}
 
-	s.updates <- value
+	p.updates <- value
 }
 
 // Close closes the stream. The producer must call Close at most once and must
 // not call Publish afterward.
-func (s *Stream[T]) Close() { close(s.updates) }
+func (p Publisher[T]) Close() { close(p.updates) }

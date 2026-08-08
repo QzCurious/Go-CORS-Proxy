@@ -37,9 +37,11 @@ type trafficRuntime struct {
 	pacRouting             *pacrouting.Routing
 	pac                    *http.Server
 	listeners              []net.Listener
-	desiredStates          *conflatedstream.Stream[managedpac.DesiredState]
 	publishMu              sync.Mutex
-	runtimeChanges         *conflatedstream.Stream[RuntimeChangeKind]
+	desiredStatePublisher  conflatedstream.Publisher[managedpac.DesiredState]
+	desiredStateStream     conflatedstream.Stream[managedpac.DesiredState]
+	runtimeChangePublisher conflatedstream.Publisher[RuntimeChangeKind]
+	runtimeChangeStream    conflatedstream.Stream[RuntimeChangeKind]
 	httpsWarningsRevision  uint64
 	now                    func() time.Time
 }
@@ -95,18 +97,22 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 	pacRouting := pacrouting.NewRouting(proxyListen)
 	pacRouting.Apply(initial.HostSelectors, initial.OriginSelectors, false)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
+	desiredStatePublisher, desiredStateStream := conflatedstream.New[managedpac.DesiredState]()
+	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
 	return &trafficRuntime{
-		upstreamListPath:    upstreamListPath,
-		upstreamListSource:  source,
-		currentUpstreamList: initial,
-		proxyHandler:        proxyHandler,
-		pacRouting:          pacRouting,
-		proxy:               &http.Server{Handler: proxyHandler},
-		pac:                 &http.Server{Handler: pacRouting.Handler()},
-		listeners:           []net.Listener{proxyListener, pacListener},
-		desiredStates:       conflatedstream.New[managedpac.DesiredState](),
-		runtimeChanges:      conflatedstream.New[RuntimeChangeKind](),
-		now:                 time.Now,
+		upstreamListPath:       upstreamListPath,
+		upstreamListSource:     source,
+		currentUpstreamList:    initial,
+		proxyHandler:           proxyHandler,
+		pacRouting:             pacRouting,
+		proxy:                  &http.Server{Handler: proxyHandler},
+		pac:                    &http.Server{Handler: pacRouting.Handler()},
+		listeners:              []net.Listener{proxyListener, pacListener},
+		desiredStatePublisher:  desiredStatePublisher,
+		desiredStateStream:     desiredStateStream,
+		runtimeChangePublisher: runtimeChangePublisher,
+		runtimeChangeStream:    runtimeChangeStream,
+		now:                    time.Now,
 	}, nil
 }
 
@@ -302,11 +308,11 @@ func (r *trafficRuntime) PACListen() string {
 }
 
 func (r *trafficRuntime) RuntimeChanges() <-chan RuntimeChangeKind {
-	return r.runtimeChanges.Updates()
+	return r.runtimeChangeStream.Updates()
 }
 
 func (r *trafficRuntime) DesiredStates() <-chan managedpac.DesiredState {
-	return r.desiredStates.Updates()
+	return r.desiredStateStream.Updates()
 }
 
 func (r *trafficRuntime) snapshot() runtimeState {
@@ -356,7 +362,7 @@ func (r *trafficRuntime) publishDesiredState() {
 	desired := r.currentDesiredState()
 	r.publishMu.Lock()
 	defer r.publishMu.Unlock()
-	r.desiredStates.Publish(desired)
+	r.desiredStatePublisher.Publish(desired)
 }
 
 func (r *trafficRuntime) currentDesiredState() managedpac.DesiredState {
@@ -379,15 +385,15 @@ func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
 		// expiry callback; conflation must not erase the request
 		// for Gateway to reassess UserCA.
 		select {
-		case pending := <-r.runtimeChanges.Updates():
+		case pending := <-r.runtimeChangeStream.Updates():
 			if pending == HTTPSDeadlineReached {
-				r.runtimeChanges.Publish(pending)
+				r.runtimeChangePublisher.Publish(pending)
 				return
 			}
 		default:
 		}
 	}
-	r.runtimeChanges.Publish(kind)
+	r.runtimeChangePublisher.Publish(kind)
 }
 
 func (r *trafficRuntime) SetUninstallWarning(err error) {

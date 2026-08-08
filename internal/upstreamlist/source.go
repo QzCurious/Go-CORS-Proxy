@@ -38,8 +38,10 @@ type State struct {
 // source with last-known-good behavior.
 type Source struct {
 	projection *fileprojection.Projection[UpstreamList]
-	updates    *conflatedstream.Stream[State]
-	done       chan struct{}
+
+	publisher conflatedstream.Publisher[State]
+	stream    conflatedstream.Stream[State]
+	done      chan struct{}
 
 	mu      sync.RWMutex
 	current State
@@ -65,9 +67,11 @@ func Open(path string) (*Source, error) {
 		return nil, err
 	}
 
+	publisher, stream := conflatedstream.New[State]()
 	s := &Source{
 		projection: projection,
-		updates:    conflatedstream.New[State](),
+		publisher:  publisher,
+		stream:     stream,
 		done:       make(chan struct{}),
 		current:    State{List: projection.Current().Value},
 	}
@@ -83,7 +87,7 @@ func (s *Source) Current() State {
 
 // Updates returns the single-consumer, latest-value stream of post-initial
 // complete source states.
-func (s *Source) Updates() <-chan State { return s.updates.Updates() }
+func (s *Source) Updates() <-chan State { return s.stream.Updates() }
 
 func (s *Source) Close() error {
 	s.closeOnce.Do(func() {
@@ -95,7 +99,7 @@ func (s *Source) Close() error {
 
 func (s *Source) translate() {
 	defer close(s.done)
-	defer s.updates.Close()
+	defer s.publisher.Close()
 	for result := range s.projection.Updates() {
 		s.mu.Lock()
 		state := State{List: s.current.List}
@@ -106,7 +110,7 @@ func (s *Source) translate() {
 		}
 		s.current = state
 		s.mu.Unlock()
-		s.updates.Publish(state)
+		s.publisher.Publish(state)
 	}
 }
 

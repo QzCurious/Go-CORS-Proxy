@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,16 @@ const projectionTestTimeout = 4 * time.Second
 
 var testOptions = fileprojection.Options{
 	Debounce: 20 * time.Millisecond,
+}
+
+func TestProjectionPromotesOnlyConsumerCapability(t *testing.T) {
+	projectionType := reflect.TypeOf((*fileprojection.Projection[string])(nil))
+	if _, ok := projectionType.MethodByName("Updates"); !ok {
+		t.Fatal("Projection does not promote Updates")
+	}
+	if _, ok := projectionType.MethodByName("Publish"); ok {
+		t.Fatal("Projection exposes Publish")
+	}
 }
 
 func TestOpenProjectsInitialOrdinaryFileWithoutPublishingIt(t *testing.T) {

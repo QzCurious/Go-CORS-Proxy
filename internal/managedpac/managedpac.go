@@ -169,7 +169,8 @@ type ManagedPAC struct {
 	admissionGeneration uint64
 	activeCancel        context.CancelFunc
 
-	desiredStates         *conflatedstream.Stream[DesiredState]
+	desiredStatePublisher conflatedstream.Publisher[DesiredState]
+	desiredStateStream    conflatedstream.Stream[DesiredState]
 	desiredWorkerDone     chan struct{}
 	desiredWorkerStop     chan struct{}
 	latestDesiredState    *DesiredState
@@ -185,9 +186,11 @@ func Open() *ManagedPAC {
 }
 
 func openWithSettings(settings systemSettings) *ManagedPAC {
+	desiredStatePublisher, desiredStateStream := conflatedstream.New[DesiredState]()
 	return &ManagedPAC{
-		settings:      settings,
-		desiredStates: conflatedstream.New[DesiredState](),
+		settings:              settings,
+		desiredStatePublisher: desiredStatePublisher,
+		desiredStateStream:    desiredStateStream,
 	}
 }
 
@@ -251,7 +254,7 @@ func (m *ManagedPAC) InstallDesired(ctx context.Context, serviceNames []string, 
 	m.mu.Lock()
 	m.latestDesiredState = &desired
 	m.serviceNames = append([]string(nil), selected...)
-	m.desiredStates.Publish(desired)
+	m.desiredStatePublisher.Publish(desired)
 	if publicationErr == nil {
 		m.lastPublishedPAC = &effective
 	}
@@ -286,7 +289,7 @@ func (m *ManagedPAC) PublishDesiredState(desired DesiredState) {
 		return
 	}
 	m.latestDesiredState = &desired
-	m.desiredStates.Publish(desired)
+	m.desiredStatePublisher.Publish(desired)
 	if m.desiredWorkerDone != nil {
 		m.mu.Unlock()
 		return
@@ -331,7 +334,7 @@ func (m *ManagedPAC) runDesiredReconciliation(done chan struct{}, stop <-chan st
 		select {
 		case <-stop:
 			return
-		case <-m.desiredStates.Updates():
+		case <-m.desiredStateStream.Updates():
 			succeeded := m.reconcileLatestDesiredState()
 			if succeeded {
 				if retry != nil {
