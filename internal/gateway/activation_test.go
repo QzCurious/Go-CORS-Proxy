@@ -72,6 +72,38 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 }
 
+func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	lifecycle, err := newLifecycle(
+		&lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}},
+		emptyTestUserCA{}, newCoordinator(filepath.Join(home, "runtime")), "",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creation, ok := first.(StartUpstreamListCreationConsentRequired)
+	if !ok {
+		t.Fatalf("first = %#v", first)
+	}
+	second, err := lifecycle.ExecuteStart(context.Background(), StartRequest{UpstreamListCreationConsent: &UpstreamListCreationConsentInput{
+		Decision: UpstreamListCreationAccepted, Fingerprint: creation.Consent.Fingerprint,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := second.(StartConsentRequired); !ok {
+		t.Fatalf("second = %#v", second)
+	}
+	if _, err := os.Stat(creation.Consent.Path); err != nil {
+		t.Fatalf("created file: %v", err)
+	}
+}
+
 func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
 	settings := &lifecycleTestSystemSettings{
 		clearErr: errors.New("cleanup denied"),
@@ -103,7 +135,7 @@ func TestExecuteStartStopsWhenNoManageablePACServiceExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +169,7 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 		t.Fatal(err)
 	}
 
-	result, err := executeAcceptedStart(lifecycle)
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}, ManagedPACConsent: &ManagedPACConsentInput{ServiceNames: []string{"Wi-Fi"}, Fingerprint: pacConsentFingerprint([]string{"Wi-Fi"})}})
 
 	if err != nil {
 		t.Fatal(err)

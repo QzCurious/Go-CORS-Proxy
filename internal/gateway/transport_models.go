@@ -64,10 +64,11 @@ type startSuccessBody struct {
 }
 
 type startFailureDetails struct {
-	ManagedPACConsent  *ManagedPACConsentDetail  `json:"managedPacConsent,omitempty"`
-	ManagedPACWarnings []ManagedPACWarningDetail `json:"managedPacWarnings,omitempty"`
-	Diagnostic         string                    `json:"diagnostic,omitempty"`
-	CleanupFailures    []CleanupFailureDetail    `json:"cleanupFailures,omitempty"`
+	UpstreamListCreationConsent *UpstreamListCreationConsent `json:"upstreamListCreationConsent,omitempty"`
+	ManagedPACConsent           *ManagedPACConsentDetail     `json:"managedPacConsent,omitempty"`
+	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
+	Diagnostic                  string                       `json:"diagnostic,omitempty"`
+	CleanupFailures             []CleanupFailureDetail       `json:"cleanupFailures,omitempty"`
 }
 
 type stopSuccessBody struct {
@@ -126,6 +127,9 @@ func (dto startSuccessBody) semantic() StartResult {
 func startFailureDetailsFrom(result StartResult) startFailureDetails {
 	details := startFailureDetails{}
 	switch typed := result.(type) {
+	case StartUpstreamListCreationConsentRequired:
+		consent := typed.Consent
+		details.UpstreamListCreationConsent = &consent
 	case StartConsentRequired:
 		consent := typed.Consent
 		details.ManagedPACConsent = &consent
@@ -144,6 +148,11 @@ func startFailureDetailsFrom(result StartResult) startFailureDetails {
 
 func (dto startFailureDetails) semantic(kind StartKind) StartResult {
 	switch kind {
+	case StartResultUpstreamListCreationConsentRequired:
+		if dto.UpstreamListCreationConsent == nil {
+			return nil
+		}
+		return StartUpstreamListCreationConsentRequired{Consent: *dto.UpstreamListCreationConsent}
 	case StartResultOwnerTransition:
 		return StartOwnerTransition{}
 	case StartResultConsentRequired:

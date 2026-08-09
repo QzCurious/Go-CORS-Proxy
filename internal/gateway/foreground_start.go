@@ -9,9 +9,10 @@ import (
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
 
 type StartHooks struct {
-	ConfirmManagedPAC    func(context.Context, ManagedPACConsentDetail) (bool, error)
-	Started              func(StartResult)
-	HTTPSWarningsChanged func([]HTTPSWarningDetail)
+	ConfirmUpstreamListCreation func(context.Context, UpstreamListCreationConsent) (bool, error)
+	ConfirmManagedPAC           func(context.Context, ManagedPACConsentDetail) (bool, error)
+	Started                     func(StartResult)
+	HTTPSWarningsChanged        func([]HTTPSWarningDetail)
 }
 
 func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
@@ -159,6 +160,20 @@ func executeStartLoop(
 			return nil, fmt.Errorf("gateway start returned nil result")
 		}
 		switch typed := result.(type) {
+		case StartUpstreamListCreationConsentRequired:
+			accepted := false
+			if hooks.ConfirmUpstreamListCreation != nil {
+				accepted, err = hooks.ConfirmUpstreamListCreation(ctx, typed.Consent)
+				if err != nil {
+					return result, err
+				}
+			}
+			input := &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}
+			if accepted {
+				input.Decision = UpstreamListCreationAccepted
+				input.Fingerprint = typed.Consent.Fingerprint
+			}
+			request.UpstreamListCreationConsent = input
 		case Started, AlreadyRunning,
 			StartStopCancelled, StartCleanupFailed, StartAlreadyMutating,
 			StartNoManageablePACServices, StartManagedPACInstallationFailed,

@@ -255,14 +255,11 @@ func mustDesiredList(t *testing.T, contents string) upstreamlist.UpstreamList {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source, err := upstreamlist.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
 	var list upstreamlist.UpstreamList
 	select {
-	case initial := <-source.Updates():
-		list = initial.List
+	case initial := <-source.Transitions():
+		list = initial.(upstreamlist.ListAccepted).List
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for initial Upstream List state")
 	}

@@ -81,7 +81,7 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial upstreamlist.State) (*trafficRuntime, error) {
+func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial upstreamlist.Transition) (*trafficRuntime, error) {
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -95,15 +95,23 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 	proxyListen := proxyListener.Addr().String()
 
 	pacRouting := pacrouting.NewRouting(proxyListen)
-	pacRouting.Apply(initial.List.HostSelectors, initial.List.OriginSelectors, false)
+	var initialList upstreamlist.UpstreamList
+	var initialDiagnostic *upstreamlist.Diagnostic
+	switch transition := initial.(type) {
+	case upstreamlist.ListAccepted:
+		initialList = transition.List
+	case upstreamlist.DiagnosticReported:
+		initialDiagnostic = &transition.Diagnostic
+	}
+	pacRouting.Apply(initialList.HostSelectors, initialList.OriginSelectors, false)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
 	desiredStatePublisher, desiredStateStream := conflatedstream.New[managedpac.DesiredState]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
 	return &trafficRuntime{
 		upstreamListPath:       upstreamListPath,
 		upstreamListSource:     source,
-		currentUpstreamList:    initial.List,
-		upstreamListDiagnostic: initial.Diagnostic,
+		currentUpstreamList:    initialList,
+		upstreamListDiagnostic: initialDiagnostic,
 		proxyHandler:           proxyHandler,
 		pacRouting:             pacRouting,
 		proxy:                  &http.Server{Handler: proxyHandler},
@@ -329,25 +337,31 @@ func (r *trafficRuntime) interceptionActive() bool {
 }
 
 func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
-	updates := r.upstreamListSource.Updates()
+	updates := r.upstreamListSource.Transitions()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case state, ok := <-updates:
+		case transition, ok := <-updates:
 			if !ok {
 				return
 			}
-			r.applyUpstreamListState(state)
+			r.applyUpstreamListTransition(transition)
 		}
 	}
 }
 
-func (r *trafficRuntime) applyUpstreamListState(state upstreamlist.State) {
+func (r *trafficRuntime) applyUpstreamListTransition(transition upstreamlist.Transition) {
 	r.mu.Lock()
-	r.currentUpstreamList = state.List
-	r.upstreamListDiagnostic = state.Diagnostic
-	routeChanged := r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
+	routeChanged := false
+	switch transition := transition.(type) {
+	case upstreamlist.ListAccepted:
+		r.currentUpstreamList = transition.List
+		r.upstreamListDiagnostic = nil
+		routeChanged = r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
+	case upstreamlist.DiagnosticReported:
+		r.upstreamListDiagnostic = &transition.Diagnostic
+	}
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)

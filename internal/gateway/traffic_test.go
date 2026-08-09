@@ -304,7 +304,7 @@ func httpsWarningDiagnostics(warnings []HTTPSWarningDetail) string {
 func upstreamListForTrafficTest(t *testing.T, contents string) upstreamlist.UpstreamList {
 	t.Helper()
 	_, snapshot, _ := createTrafficConfig(t, contents)
-	return snapshot.List
+	return snapshot.(upstreamlist.ListAccepted).List
 }
 
 func closeTrafficTestRuntime(runtime *trafficRuntime) {
@@ -320,13 +320,13 @@ func writeTrafficTestFile(t *testing.T, path, contents string) {
 	}
 }
 
-func createTrafficConfig(t *testing.T, upstreams string) (*upstreamlist.Source, upstreamlist.State, string) {
+func createTrafficConfig(t *testing.T, upstreams string) (*upstreamlist.Source, upstreamlist.Transition, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	return createTrafficConfigAtCurrentHome(t, upstreams)
 }
 
-func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*upstreamlist.Source, upstreamlist.State, string) {
+func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*upstreamlist.Source, upstreamlist.Transition, string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -338,16 +338,13 @@ func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*upstream
 		t.Fatal(err)
 	}
 	writeTrafficTestFile(t, upstreamPath, upstreams)
-	source, err := upstreamlist.Open(upstreamPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	source := upstreamlist.Open(upstreamPath, upstreamlist.CreationUndecided)
 	select {
-	case initial := <-source.Updates():
+	case initial := <-source.Transitions():
 		return source, initial, upstreamPath
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial Upstream List state")
-		return nil, upstreamlist.State{}, ""
+		return nil, nil, ""
 	}
 }
 

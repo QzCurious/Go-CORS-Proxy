@@ -3,207 +3,120 @@ package upstreamlist_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-const sourceTestTimeout = 4 * time.Second
+const timeout = 4 * time.Second
 
-func TestOpenBootstrapsAndProjectsMissingPath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "upstreams.txt")
-	source, initial := openSourceWithInitial(t, path)
+func TestMissingSourceStartsDegradedWithoutCreating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upstreams.txt")
+	source := upstreamlist.Open(path, upstreamlist.CreationDeclined)
 	defer source.Close()
+	diagnostic := requireDiagnostic(t, waitTransition(t, source.Transitions()))
+	if diagnostic.Kind != upstreamlist.DiagnosticSourceUnavailable {
+		t.Fatalf("kind = %v", diagnostic.Kind)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("source was created: %v", err)
+	}
+}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
+func TestAcceptedCreationCreatesImmediately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "upstreams.txt")
+	source := upstreamlist.Open(path, upstreamlist.CreationAccepted)
+	defer source.Close()
+	requireList(t, waitTransition(t, source.Transitions()))
+	if _, err := os.Lstat(path); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "One upstream host or origin per line") {
-		t.Fatalf("bootstrapped content = %q", data)
-	}
-	if initial.Diagnostic != nil || len(initial.List.HostSelectors)+len(initial.List.OriginSelectors) != 0 {
-		t.Fatalf("initial = %#v", initial)
-	}
 }
 
-func TestOpenRejectsInvalidInitialSource(t *testing.T) {
-	path := writeSourceFile(t, string([]byte{0xff}))
-	if _, err := upstreamlist.Open(path); err == nil {
-		t.Fatal("Open accepted invalid UTF-8")
-	}
-}
-
-func TestUpdatesStartsWithDeduplicatedInitialState(t *testing.T) {
-	path := writeSourceFile(t, "EXAMPLE.TEST\nexample.test\nhttps://EXAMPLE.TEST:0443\nhttps://example.test:443\n")
-	source, initial := openSourceWithInitial(t, path)
+func TestInvalidInitialSourceIsDegraded(t *testing.T) {
+	path := writeFile(t, string([]byte{0xff}))
+	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
 	defer source.Close()
-
-	list := initial.List
-	if len(list.HostSelectors) != 1 || list.HostSelectors[0].Hostname != "example.test" {
-		t.Fatalf("host selectors = %#v", list.HostSelectors)
-	}
-	if len(list.OriginSelectors) != 1 || list.OriginSelectors[0].Port != "443" {
-		t.Fatalf("origin selectors = %#v", list.OriginSelectors)
+	if got := requireDiagnostic(t, waitTransition(t, source.Transitions())).Kind; got != upstreamlist.DiagnosticInvalidSource {
+		t.Fatalf("kind = %v", got)
 	}
 }
 
-func TestUpdatesDoesNotRepeatInitialState(t *testing.T) {
-	source := openSource(t, writeSourceFile(t, "api.example.test\n"))
+func TestSemanticChangesAndRecoveryPublishListAccepted(t *testing.T) {
+	path := writeFile(t, "first.example.test\n")
+	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
 	defer source.Close()
-	assertNoState(t, source.Updates(), 250*time.Millisecond)
-}
-
-func TestRepresentationOnlyChangeIsSuppressed(t *testing.T) {
-	path := writeSourceFile(t, "api.example.test\n")
-	source := openSource(t, path)
-	defer source.Close()
-
-	writeFile(t, path, "# comment\nAPI.EXAMPLE.TEST\napi.example.test\n")
-	assertNoState(t, source.Updates(), 500*time.Millisecond)
-}
-
-func TestSemanticChangePublishes(t *testing.T) {
-	path := writeSourceFile(t, "first.example.test\n")
-	source := openSource(t, path)
-	defer source.Close()
-
-	writeFile(t, path, "second.example.test\n")
-	state := waitState(t, source.Updates())
-	if state.Diagnostic != nil || state.List.HostSelectors[0].Hostname != "second.example.test" {
-		t.Fatalf("state = %#v", state)
+	if got := requireList(t, waitTransition(t, source.Transitions())).HostSelectors[0].Hostname; got != "first.example.test" {
+		t.Fatalf("host = %q", got)
 	}
-}
-
-func TestWarningsOnlyChangePublishes(t *testing.T) {
-	path := writeSourceFile(t, "api.example.test\n")
-	source := openSource(t, path)
-	defer source.Close()
-
-	writeFile(t, path, "api.example.test\nbad/path\n")
-	state := waitState(t, source.Updates())
-	if state.Diagnostic != nil || len(state.List.Warnings) != 1 || len(state.List.HostSelectors)+len(state.List.OriginSelectors) != 1 {
-		t.Fatalf("state = %#v", state)
-	}
-}
-
-func TestRuntimeFailureRetainsLastKnownGoodAndRecovers(t *testing.T) {
-	path := writeSourceFile(t, "api.example.test\n")
-	source := openSource(t, path)
-	defer source.Close()
-
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	degraded := waitState(t, source.Updates())
-	if degraded.Diagnostic == nil || degraded.Diagnostic.Kind != upstreamlist.DiagnosticSourceUnavailable {
-		t.Fatalf("degraded = %#v", degraded)
-	}
-	if degraded.List.HostSelectors[0].Hostname != "api.example.test" {
-		t.Fatal("degraded state lost the last-known-good list")
-	}
-
-	writeFile(t, path, "api.example.test\n")
-	healthy := waitState(t, source.Updates())
-	if healthy.Diagnostic != nil || healthy.List.HostSelectors[0].Hostname != "api.example.test" {
-		t.Fatalf("healthy = %#v", healthy)
+	requireDiagnostic(t, waitTransition(t, source.Transitions()))
+	writeAt(t, path, "first.example.test\n")
+	if got := requireList(t, waitTransition(t, source.Transitions())).HostSelectors[0].Hostname; got != "first.example.test" {
+		t.Fatalf("host = %q", got)
 	}
 }
 
-func TestRepeatedFailuresAreNotSuppressed(t *testing.T) {
-	path := writeSourceFile(t, "api.example.test\n")
-	source := openSource(t, path)
+func TestContinuouslyHealthySemanticEqualityIsSuppressed(t *testing.T) {
+	path := writeFile(t, "api.example.test\n")
+	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
 	defer source.Close()
-
-	invalid := string([]byte{0xff})
-	writeFile(t, path, invalid)
-	first := waitState(t, source.Updates())
-	if first.Diagnostic == nil || first.Diagnostic.Kind != upstreamlist.DiagnosticInvalidSource {
-		t.Fatalf("first = %#v", first)
-	}
-	writeFile(t, path, invalid)
-	second := waitState(t, source.Updates())
-	if second.Diagnostic == nil || second.Diagnostic.Kind != upstreamlist.DiagnosticInvalidSource {
-		t.Fatalf("second = %#v", second)
-	}
-}
-
-func TestOpenRejectsSymlinkedSource(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "target.txt")
-	writeFile(t, target, "api.example.test\n")
-	path := filepath.Join(dir, "upstreams.txt")
-	if err := os.Symlink(target, path); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := upstreamlist.Open(path); err == nil || !strings.Contains(err.Error(), "ordinary file") {
-		t.Fatalf("Open error = %v", err)
-	}
-}
-
-func TestCloseClosesUpdates(t *testing.T) {
-	source := openSource(t, writeSourceFile(t, "api.example.test\n"))
-	if err := source.Close(); err != nil {
-		t.Fatal(err)
-	}
+	requireList(t, waitTransition(t, source.Transitions()))
+	writeAt(t, path, "# representation only\nAPI.EXAMPLE.TEST\n")
 	select {
-	case _, ok := <-source.Updates():
-		if ok {
-			t.Fatal("updates remained open")
-		}
-	case <-time.After(sourceTestTimeout):
-		t.Fatal("updates did not close")
+	case got := <-source.Transitions():
+		t.Fatalf("unexpected transition %#v", got)
+	case <-time.After(400 * time.Millisecond):
 	}
 }
 
-func openSource(t *testing.T, path string) *upstreamlist.Source {
-	t.Helper()
-	source, _ := openSourceWithInitial(t, path)
-	return source
-}
-
-func openSourceWithInitial(t *testing.T, path string) (*upstreamlist.Source, upstreamlist.State) {
-	t.Helper()
-	source, err := upstreamlist.Open(path)
-	if err != nil {
-		t.Fatal(err)
+func TestAssessmentDisclosesCreationConsequences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "nested", "upstreams.txt")
+	a := upstreamlist.AssessCreation(path)
+	if !a.Required || a.Path != path || a.DefaultContents == "" || len(a.MissingParentDirectories) != 2 || a.Fingerprint == "" {
+		t.Fatalf("assessment = %#v", a)
 	}
-	return source, waitState(t, source.Updates())
 }
 
-func waitState(t *testing.T, updates <-chan upstreamlist.State) upstreamlist.State {
+func waitTransition(t *testing.T, transitions <-chan upstreamlist.Transition) upstreamlist.Transition {
 	t.Helper()
 	select {
-	case state, ok := <-updates:
+	case value, ok := <-transitions:
 		if !ok {
-			t.Fatal("updates closed unexpectedly")
+			t.Fatal("transitions closed")
 		}
-		return state
-	case <-time.After(sourceTestTimeout):
-		t.Fatal("timed out waiting for source state")
-		return upstreamlist.State{}
+		return value
+	case <-time.After(timeout):
+		t.Fatal("timeout")
+		return nil
 	}
 }
-
-func assertNoState(t *testing.T, updates <-chan upstreamlist.State, duration time.Duration) {
+func requireList(t *testing.T, transition upstreamlist.Transition) upstreamlist.UpstreamList {
 	t.Helper()
-	select {
-	case state := <-updates:
-		t.Fatalf("unexpected state: %#v", state)
-	case <-time.After(duration):
+	value, ok := transition.(upstreamlist.ListAccepted)
+	if !ok {
+		t.Fatalf("transition = %#v", transition)
 	}
+	return value.List
 }
-
-func writeSourceFile(t *testing.T, contents string) string {
+func requireDiagnostic(t *testing.T, transition upstreamlist.Transition) upstreamlist.Diagnostic {
+	t.Helper()
+	value, ok := transition.(upstreamlist.DiagnosticReported)
+	if !ok {
+		t.Fatalf("transition = %#v", transition)
+	}
+	return value.Diagnostic
+}
+func writeFile(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "upstreams.txt")
-	writeFile(t, path, contents)
+	writeAt(t, path, contents)
 	return path
 }
-
-func writeFile(t *testing.T, path, contents string) {
+func writeAt(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)

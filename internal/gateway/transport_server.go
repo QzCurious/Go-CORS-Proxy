@@ -237,6 +237,8 @@ type failureRepresentation struct {
 
 func startFailureRepresentation(kind StartKind) failureRepresentation {
 	switch kind {
+	case StartResultUpstreamListCreationConsentRequired:
+		return failureRepresentation{http.StatusUnprocessableEntity, "Upstream List creation consent is required."}
 	case StartResultOwnerTransition:
 		return failureRepresentation{http.StatusServiceUnavailable, "Gateway ownership is transitioning; retry Start."}
 	case StartResultConsentRequired:

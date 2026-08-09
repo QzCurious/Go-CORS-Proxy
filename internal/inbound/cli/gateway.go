@@ -30,6 +30,9 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	stdout = writerOrDiscard(stdout)
 	liveWarnings := &liveHTTPSWarningRenderer{stdout: stdout}
 	hooks := gateway.StartHooks{
+		ConfirmUpstreamListCreation: func(ctx context.Context, detail gateway.UpstreamListCreationConsent) (bool, error) {
+			return confirmUpstreamListCreation(ctx, stdin, stdout, detail)
+		},
 		ConfirmManagedPAC: func(ctx context.Context, detail gateway.ManagedPACConsentDetail) (bool, error) {
 			return confirmManagedPACConsent(ctx, stdin, stdout, &detail)
 		},
@@ -70,6 +73,30 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 		return fmt.Errorf("gateway start failed: %s", failed.Diagnostic)
 	}
 	return fmt.Errorf("gateway start was not fulfilled: %s", result.Kind())
+}
+
+func confirmUpstreamListCreation(ctx context.Context, stdin io.Reader, stdout io.Writer, detail gateway.UpstreamListCreationConsent) (bool, error) {
+	fmt.Fprintf(stdout, "upstreams.txt is missing. Create %s with these default contents?\n\n%s", detail.Path, detail.DefaultContents)
+	if len(detail.MissingParentDirectories) > 0 {
+		fmt.Fprintf(stdout, "Missing parent directories that will also be created:\n  %s\n", strings.Join(detail.MissingParentDirectories, "\n  "))
+	}
+	fmt.Fprint(stdout, "Create it? [y/N] ")
+	answer := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdin)
+		if scanner.Scan() {
+			answer <- scanner.Text()
+		} else {
+			answer <- ""
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case value := <-answer:
+		value = strings.TrimSpace(strings.ToLower(value))
+		return value == "y" || value == "yes", nil
+	}
 }
 
 type serveCommand func(context.Context, func()) error

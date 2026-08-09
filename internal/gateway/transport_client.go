@@ -207,6 +207,7 @@ func decodeCommandFailure[K ~string, D, R any](
 func knownStartFailureKind(kind StartKind) bool {
 	switch kind {
 	case StartResultOwnerTransition,
+		StartResultUpstreamListCreationConsentRequired,
 		StartResultConsentRequired,
 		StartResultConsentDeclined,
 		StartResultNoManageablePACServices,

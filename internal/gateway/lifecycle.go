@@ -30,20 +30,22 @@ const (
 )
 
 const (
-	StartResultStarted                      StartKind = "started"
-	StartResultAlreadyRunning               StartKind = "already-running"
-	StartResultOwnerTransition              StartKind = "owner-transition"
-	StartResultConsentRequired              StartKind = "managed-pac-consent-required"
-	StartResultConsentDeclined              StartKind = "managed-pac-consent-declined"
-	StartResultNoManageablePACServices      StartKind = "no-manageable-pac-services"
-	StartResultManagedPACInstallationFailed StartKind = "managed-pac-installation-failed"
-	StartResultStartAlreadyMutating         StartKind = "start-already-mutating"
-	StartResultStopCancelled                StartKind = "stop-cancelled"
-	StartResultCleanupFailed                StartKind = "cleanup-failed"
+	StartResultStarted                             StartKind = "started"
+	StartResultAlreadyRunning                      StartKind = "already-running"
+	StartResultOwnerTransition                     StartKind = "owner-transition"
+	StartResultUpstreamListCreationConsentRequired StartKind = "upstream-list-creation-consent-required"
+	StartResultConsentRequired                     StartKind = "managed-pac-consent-required"
+	StartResultConsentDeclined                     StartKind = "managed-pac-consent-declined"
+	StartResultNoManageablePACServices             StartKind = "no-manageable-pac-services"
+	StartResultManagedPACInstallationFailed        StartKind = "managed-pac-installation-failed"
+	StartResultStartAlreadyMutating                StartKind = "start-already-mutating"
+	StartResultStopCancelled                       StartKind = "stop-cancelled"
+	StartResultCleanupFailed                       StartKind = "cleanup-failed"
 )
 
 type StartRequest struct {
-	ManagedPACConsent *ManagedPACConsentInput `json:"managedPacConsent,omitempty"`
+	UpstreamListCreationConsent *UpstreamListCreationConsentInput `json:"upstreamListCreationConsent,omitempty"`
+	ManagedPACConsent           *ManagedPACConsentInput           `json:"managedPacConsent,omitempty"`
 }
 
 // StartResult is the closed semantic result of a Start operation.  Concrete
@@ -65,6 +67,28 @@ type AlreadyRunning struct{}
 
 // StartOwnerTransition reports that ownership is being acquired or released.
 type StartOwnerTransition struct{}
+
+type StartUpstreamListCreationConsentRequired struct{ Consent UpstreamListCreationConsent }
+
+type UpstreamListCreationConsent struct {
+	Path                     string                          `json:"path"`
+	DefaultContents          string                          `json:"defaultContents"`
+	MissingParentDirectories []string                        `json:"missingParentDirectories,omitempty"`
+	Fingerprint              UpstreamListCreationFingerprint `json:"fingerprint"`
+}
+
+type UpstreamListCreationDecision string
+
+const (
+	UpstreamListCreationAccepted UpstreamListCreationDecision = "accepted"
+	UpstreamListCreationDeclined UpstreamListCreationDecision = "declined"
+)
+
+type UpstreamListCreationFingerprint string
+type UpstreamListCreationConsentInput struct {
+	Decision    UpstreamListCreationDecision    `json:"decision"`
+	Fingerprint UpstreamListCreationFingerprint `json:"fingerprint,omitempty"`
+}
 
 // StartConsentRequired reports the managed PAC services requiring confirmation.
 type StartConsentRequired struct {
@@ -119,8 +143,15 @@ func (StartOwnerTransition) Kind() StartKind { return StartResultOwnerTransition
 func (StartOwnerTransition) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultOwnerTransition)
 }
-func (StartOwnerTransition) startResult()    {}
-func (StartConsentRequired) Kind() StartKind { return StartResultConsentRequired }
+func (StartOwnerTransition) startResult() {}
+func (StartUpstreamListCreationConsentRequired) Kind() StartKind {
+	return StartResultUpstreamListCreationConsentRequired
+}
+func (StartUpstreamListCreationConsentRequired) Fulfillment() CommandFulfillment {
+	return CommandUnfulfilled
+}
+func (StartUpstreamListCreationConsentRequired) startResult() {}
+func (StartConsentRequired) Kind() StartKind                  { return StartResultConsentRequired }
 func (StartConsentRequired) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultConsentRequired)
 }
@@ -901,6 +932,8 @@ func upstreamListDiagnosticDetail(diagnostic *upstreamlist.Diagnostic) *Upstream
 		kind = "invalid-source"
 	case upstreamlist.DiagnosticSourceUnavailable:
 		kind = "source-unavailable"
+	case upstreamlist.DiagnosticObservationUncertain:
+		kind = "observation-uncertain"
 	case upstreamlist.DiagnosticObservationStopped:
 		kind = "observation-stopped"
 	}

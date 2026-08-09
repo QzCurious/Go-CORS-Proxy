@@ -73,7 +73,7 @@ A command behavior where the command becomes the Gateway Owner and starts the Ga
 _Avoid_: implicit gateway start, daemonized start, hidden lifecycle activation, stale-cache cleanup, OS PAC repair
 
 **Router-Hosted Start**:
-An HTTP start behavior where CLI or another client calls `POST /start` against an existing Gateway Owner, renders Managed PAC Consent when the result requires it, and retries with accepted consent to activate Gateway Runtime without creating a competing gateway process. The existing owner remains foreground, and an already-active runtime returns an idempotent start result.
+A start behavior where CLI or another client calls `POST /start` against an existing Gateway Owner, renders each independently required Start consent in its fixed order, and retries with accumulated decisions to activate Gateway Runtime without creating a competing gateway process. The existing owner remains foreground, and an already-active runtime returns an idempotent start result.
 _Avoid_: start plan, terminal prompt in serve, duplicate router start, serve-blocked start, split-brain gateway
 
 **Start-Hosted Router**:
@@ -317,16 +317,20 @@ A lifecycle rule where ready HTTPS Readiness allows HTTPS Interception State to 
 _Avoid_: Explicit Trusted HTTPS, Config File HTTPS toggle, intent-as-capability, silent trust installation
 
 **Upstream List Source**:
-The file-backed semantic source that bootstraps and continuously observes the user-managed Upstream List supplied by Gateway. It becomes available even when no valid projection exists, owns semantic identity, publishes complete latest-value Upstream List States, and reports structured degraded diagnostics without owning generic filesystem observation or choosing the application's path policy.
+The file-backed semantic source that applies consented Configuration Bootstrap and continuously observes the user-managed Upstream List supplied by Gateway. It remains available when observation cannot start or no valid projection exists, suppresses healthy semantic no-ops, emits `DiagnosticReported` without a list or diagnostic equality, and owns semantic identity without owning generic filesystem observation or choosing the application's path policy.
 _Avoid_: legacy configuration abstraction, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, event history, source-content identity, configurable application default
 
 **Upstream List State**:
-An immutable complete snapshot containing an effective Upstream List and an optional Upstream List Source diagnostic. The effective list is empty before the first valid projection and thereafter remains the newest valid projection during source degradation; source representation, comments, whitespace, and equivalent normalized ordering are not state identity, and unconsumed intermediate snapshots may be replaced by a newer state.
-_Avoid_: configuration event history, raw file content, file-change event, delta, command replay, watcher notification
+A Gateway-owned complete snapshot combining the latest `ListAccepted` received and adopted by Gateway with the current Upstream List Source Diagnostic. Its list is empty before the first adoption and remains unchanged through source degradation, while diagnostic changes do not imply routing changes.
+_Avoid_: configuration event history, raw file content, file-change event, command replay, watcher notification
+
+**Upstream List Source Transition**:
+A latest-value semantic report where `ListAccepted` causes Gateway to adopt a valid Upstream List and clear degradation, while `DiagnosticReported` retains Gateway's previously adopted list. Pending transitions replace one another wholesale; healthy semantic no-ops are suppressed, while the first valid projection after degradation always produces `ListAccepted` so Gateway converges even when an earlier valid transition was replaced.
+_Avoid_: complete source snapshot, standalone diagnostic-clear transition, diagnostic equality, failure-event history, raw file event, error-only channel, republished last-known-good list, unordered split streams
 
 **Upstream List Source Diagnostic**:
-A structured non-fatal runtime condition identifying invalid source content, temporarily unavailable or unsafe source state, or observation shutdown. The source retains its effective list while Gateway continues serving, stores, and presents the diagnostic with its underlying cause; file-state recovery publishes a healthy state even when the list itself is unchanged, while terminal observation requires resolving the cause and restarting Gateway.
-_Avoid_: fatal runtime source error, cause-free restart instruction, stale-list discard, silent unreadable source, Gateway-owned file validation
+A structured non-fatal runtime condition identifying invalid source content, temporarily unavailable or unsafe source state, uncertain continued observation, or observation shutdown. Gateway retains its accepted list, continues serving, and presents the underlying cause; a later observed user correction can produce a valid acceptance, while terminal observation requires the user to resolve the cause and restart Gateway.
+_Avoid_: fatal runtime source error, automatic file repair, creation-decision history, cause-free restart instruction, stale-list discard, silent unreadable source, Gateway-owned file validation
 
 **Gateway Control Command**:
 A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, UserCA install, and UserCA uninstall.
@@ -461,15 +465,15 @@ A gateway ownership rule where only one Gateway Owner may run for a user at a ti
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
 **Configuration Bootstrap**:
-An accepted start-only behavior that immediately and exclusively attempts to create the missing fixed Upstream List and required parent directories with the disclosed default contents. Creation is an independent authorized side effect that is neither deferred until Gateway Activation nor rolled back when a later Start decision prevents activation; a path that appears before creation is never replaced, and creation failure becomes Upstream List Source Degradation without preventing Start.
+An accepted start-only behavior that immediately and exclusively attempts to create the missing fixed Upstream List and required parent directories with the disclosed default contents. Creation is an independent authorized side effect that is neither deferred until Gateway Activation nor rolled back when a later Start decision prevents activation; a path that appears before creation is never replaced, while failure becomes Upstream List Source Degradation and preserves its actionable cause without preventing Start.
 _Avoid_: silent file creation, init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
 **Upstream List Creation Consent**:
-A user decision required when Start finds the fixed Upstream List missing, authorizing immediate exclusive creation at the disclosed path with the disclosed default contents independently from Managed PAC Consent. Declining preserves the missing path but allows Start to continue in Upstream List Source Degradation without asking again, while runtime disappearance never requests consent or recreates the file.
+A fingerprint-bound user decision required when the Upstream List module assesses the fixed path as missing, which Gateway presents at most once per Start Sequence and which authorizes immediate exclusive creation at the disclosed path with the disclosed default contents and any disclosed missing parent directories, independently from Managed PAC Consent. Declining preserves the missing path but allows that Start Sequence to continue degraded without asking again; a later Start reassesses, while runtime disappearance never requests consent or recreates the file or its parent.
 _Avoid_: combined Start consent, CLI-invented consent, consent error, overwrite authorization, runtime bootstrap, implicit default creation
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after PAC consent has succeeded and Gateway Runtime is serving. Upstream List Source diagnostics and Managed PAC publication warnings are included when available, while transient initial publication failure remains internal and is retried. It points to the Upstream List, HTTPS Readiness, current HTTPS and Managed PAC Warnings, and managed state instead of runtime listener endpoints.
+A start-time user-facing output behavior shown only after PAC assessment and any required decision permit activation and Gateway Runtime is serving. Upstream List Source diagnostics and Managed PAC publication warnings are included when available, while transient initial publication failure remains internal and is retried; guidance points to user-relevant state instead of runtime listener endpoints.
 _Avoid_: pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -481,11 +485,11 @@ An idempotent fulfilled start result where executing start against an active Gat
 _Avoid_: changed-means-fulfilled, duplicate runtime activation, start failure for active runtime, second owner
 
 **Execute-Time Start Assessment**:
-A start execution rule where an initial `ExecuteStart` attempt inspects every visible network service and returns an unfulfilled consent-required result with Managed PAC Consent Detail before mutating. An accepted retry fixes the agreed manageable service set; members that become absent or foreign remain selected but are skipped with Managed PAC Warnings, while excluded and newly appearing services do not join.
-_Avoid_: fulfilled assessment, successful start assessment, start plan, repeated consent loop, mutation-before-assessment, consent-time service expansion
+A start execution rule that presents independently required Upstream List Creation Consent and Managed PAC Consent at most once each in a fixed creation-then-PAC order. Accepted creation mutates immediately without changing PAC consent semantics; accepted PAC consent fixes the agreed manageable service set, whose members that become absent or foreign remain selected but are skipped with Managed PAC Warnings while excluded and newly appearing services do not join.
+_Avoid_: consent dependency, combined consent, fulfilled assessment, successful start assessment, start plan, repeated consent loop, consent-time service expansion
 
 **Single-Flight Start**:
-A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through Upstream List loading, HTTPS Readiness assessment, PAC assessment, Gateway Activation, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
+A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through Upstream List creation assessment and Source establishment, HTTPS Readiness assessment, PAC assessment, Gateway Activation, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
 _Avoid_: cross-command lifecycle lock, CA-command blocking, activation-only lock, queued start, duplicate mutation, competing activation, start plan reservation
 
 **Stop-Preempted Start**:
@@ -525,7 +529,7 @@ A lifecycle boundary where CA Trust Consent and Installed User CA mutation occur
 _Avoid_: start-time CA trust, stop-cancelled CA command, intent-triggered installation, route-dependent trust setup
 
 **Start Sequence Order**:
-A startup lifecycle order where Gateway Footprint Cleanup and Upstream List validation precede Managed PAC Consent assessment; HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; Gateway Runtime begins serving before Managed PAC installation; and Managed PAC owns retries when the initial publication is not healthy.
+A startup lifecycle order where Gateway Footprint Cleanup, the fixed Upstream List Creation Consent stage, immediate best-effort consented creation, and Source establishment precede the independent Managed PAC Consent stage. HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; Gateway Runtime begins serving before Managed PAC installation, whose unhealthy initial publication remains Managed PAC-owned retry work.
 _Avoid_: start-time CA installation, PAC-before-runtime serving, PAC-first start, cleanup-after-approval, start guidance before PAC installation
 
 **Minimal Command Surface**:
@@ -621,8 +625,8 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Upstream List**:
-The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Gateway resolves and supplies the cleaned absolute path; Upstream List Source reads and observes this ordinary-file source on the local filesystem.
-_Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
+The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Except for consented Configuration Bootstrap, seamless-cors only observes this ordinary-file source and never repairs, rewrites, or recreates it.
+_Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
 **Upstream List Comment**:
 A full-line or inline note in the Upstream List that is ignored during matching.
@@ -633,11 +637,11 @@ A valid Upstream List state with no active entries, including a file that contai
 _Avoid_: startup failure for no active entries, proxy-all fallback
 
 **Upstream List Warning**:
-A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing publish a new Upstream List State for successful startup and runtime status; warning-only changes do not publish a new Managed PAC desired input.
+A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing are semantic Upstream List changes eligible for acceptance and runtime status, while warning-only changes do not publish a new Managed PAC desired input.
 _Avoid_: silent invalid entry, fatal line error, transient log warning, command replay, routing revision warning
 
 **Upstream List Source Degradation**:
-A recoverable condition where the Upstream List Source is missing, unreadable, unsafe, or structurally undecodable. Before any valid projection, Gateway uses an empty effective Upstream List; afterward it retains the newest valid projection while reporting a structured diagnostic and continuously reconciling until healthy while filesystem observation remains active.
+A non-fatal condition where the Upstream List is missing, unreadable, unsafe, or structurally undecodable, or its continued observation is uncertain or stopped. Before Gateway receives any `ListAccepted` it uses an empty effective list; afterward it retains its most recently adopted list until a later `ListAccepted`, while terminal observation requires cause repair and Gateway restart.
 _Avoid_: Fatal Upstream List Error, startup failure, stale valid routing discard, unreadable-as-empty, silent source failure
 
 **Upstream List Entry**:
@@ -836,11 +840,11 @@ QA engineer: "Every supported platform needs a managed PAC adapter; platforms wi
 
 Developer: "After I update the Upstream List, do I need to restart the gateway?"
 
-QA engineer: "No, Gateway applies the newest Upstream List State to runtime routing and publishes a complete desired PAC snapshot."
+QA engineer: "No, Gateway adopts each received `ListAccepted`, retains that list on `DiagnosticReported`, and publishes a complete desired PAC snapshot when accepted routing changes."
 
 Developer: "What happens if I save an invalid config file while the gateway is running?"
 
-QA engineer: "Fatal Config Error reports the validation problem, performs Gateway Footprint Cleanup, and stops the gateway."
+QA engineer: "Upstream List Source Degradation reports the problem while Gateway retains its adopted list and continues serving; an observed valid user correction produces `ListAccepted`."
 
 Developer: "What if my config still has removed listener or managed-proxy settings?"
 
@@ -948,7 +952,7 @@ QA engineer: "Yes, Empty Upstream List is valid, so the gateway runs while PAC R
 
 Developer: "Do I need to run an init command first?"
 
-QA engineer: "No, Configuration Bootstrap creates the fixed Upstream List when missing, and Empty Upstream List lets that same start command keep running with no matched upstreams yet."
+QA engineer: "No. Start presents Upstream List Creation Consent once; acceptance immediately attempts exclusive Configuration Bootstrap, while decline or creation failure continues degraded with no matched upstreams."
 
 Developer: "Can I write just `api.dev.example.com`?"
 
@@ -968,7 +972,7 @@ QA engineer: "Line-Level Upstream Validation ignores that line, reports an Upstr
 
 Developer: "What if I save an invalid Upstream List while the gateway is running?"
 
-QA engineer: "Invalid lines produce Upstream List Warnings while valid entries are applied; Fatal Upstream List Error is reserved for a missing, unreadable, or structurally undecodable source."
+QA engineer: "Invalid lines produce Upstream List Warnings while valid entries are applied; a missing, unreadable, or structurally undecodable source produces non-fatal Upstream List Source Degradation."
 
 Developer: "Does `api.dev.example.com` include its subdomains?"
 

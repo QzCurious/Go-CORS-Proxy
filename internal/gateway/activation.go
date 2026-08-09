@@ -25,17 +25,18 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	if err != nil {
 		return nil, err
 	}
-	upstreamListSource, err := upstreamlist.Open(upstreamListPath)
-	if err != nil {
-		return nil, err
+	creationDecision, creationResult, err := assessUpstreamListCreation(upstreamListPath, request)
+	if err != nil || creationResult != nil {
+		return creationResult, err
 	}
+	upstreamListSource := upstreamlist.Open(upstreamListPath, creationDecision)
 	closeUpstreamListSource := true
 	defer func() {
 		if closeUpstreamListSource {
 			_ = upstreamListSource.Close()
 		}
 	}()
-	initialUpstreamState, ok := <-upstreamListSource.Updates()
+	initialUpstreamTransition, ok := <-upstreamListSource.Transitions()
 	if !ok {
 		return nil, fmt.Errorf("initialize upstream list: source closed before its initial state")
 	}
@@ -55,7 +56,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return assessmentResult, nil
 	}
 
-	engine, err := newRuntime(upstreamListPath, upstreamListSource, initialUpstreamState)
+	engine, err := newRuntime(upstreamListPath, upstreamListSource, initialUpstreamTransition)
 	if err != nil {
 		return postStartFailure(err)
 	}
@@ -184,16 +185,43 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 
 	state := engine.snapshot()
 	return Started{Guidance: StartGuidance{
-		UpstreamListPath:     upstreamListPath,
-		ManagedPACActive:     true,
-		ManagedPACServices:   pacInstall.State().ServiceNames(),
-		ManagedPACWarnings:   managedPACWarningDetails(pacInstall.Warnings()),
-		HTTPSReadiness:       state.HTTPSReadiness,
-		HTTPSInterception:    state.HTTPSInterception,
-		HTTPSIntent:          state.HTTPSIntent,
-		HTTPSWarnings:        state.HTTPSWarnings,
-		UpstreamListWarnings: upstreamListWarningDetails(initialUpstreamState.List.Warnings),
+		UpstreamListPath:       upstreamListPath,
+		ManagedPACActive:       true,
+		ManagedPACServices:     pacInstall.State().ServiceNames(),
+		ManagedPACWarnings:     managedPACWarningDetails(pacInstall.Warnings()),
+		HTTPSReadiness:         state.HTTPSReadiness,
+		HTTPSInterception:      state.HTTPSInterception,
+		HTTPSIntent:            state.HTTPSIntent,
+		HTTPSWarnings:          state.HTTPSWarnings,
+		UpstreamListWarnings:   state.UpstreamListWarnings,
+		UpstreamListDiagnostic: state.UpstreamListDiagnostic,
 	}}, nil
+}
+
+func assessUpstreamListCreation(path string, request StartRequest) (upstreamlist.CreationDecision, StartResult, error) {
+	assessment := upstreamlist.AssessCreation(path)
+	if !assessment.Required {
+		return upstreamlist.CreationUndecided, nil, nil
+	}
+	if request.UpstreamListCreationConsent == nil {
+		return upstreamlist.CreationUndecided, StartUpstreamListCreationConsentRequired{Consent: UpstreamListCreationConsent{
+			Path: assessment.Path, DefaultContents: assessment.DefaultContents,
+			MissingParentDirectories: assessment.MissingParentDirectories,
+			Fingerprint:              UpstreamListCreationFingerprint(assessment.Fingerprint),
+		}}, nil
+	}
+	input := request.UpstreamListCreationConsent
+	switch input.Decision {
+	case UpstreamListCreationDeclined:
+		return upstreamlist.CreationDeclined, nil, nil
+	case UpstreamListCreationAccepted:
+		if input.Fingerprint != UpstreamListCreationFingerprint(assessment.Fingerprint) {
+			return 0, nil, fmt.Errorf("Upstream List creation consent does not match the current creation assessment")
+		}
+		return upstreamlist.CreationAccepted, nil, nil
+	default:
+		return 0, nil, fmt.Errorf("invalid Upstream List creation decision %q", input.Decision)
+	}
 }
 
 func (s startSequence) acceptedManagedPACServices(ctx context.Context, request StartRequest) ([]string, StartResult, error) {
