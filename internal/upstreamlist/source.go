@@ -43,9 +43,6 @@ type Source struct {
 	stream    conflatedstream.Stream[State]
 	done      chan struct{}
 
-	mu      sync.RWMutex
-	current State
-
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -73,20 +70,13 @@ func Open(path string) (*Source, error) {
 		publisher:  publisher,
 		stream:     stream,
 		done:       make(chan struct{}),
-		current:    State{List: projection.Current().Value},
 	}
 	go s.translate()
 	return s, nil
 }
 
-func (s *Source) Current() State {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.current
-}
-
-// Updates returns the single-consumer, latest-value stream of post-initial
-// complete source states.
+// Updates returns the initial state followed by a single-consumer,
+// latest-value stream of complete source states.
 func (s *Source) Updates() <-chan State { return s.stream.Updates() }
 
 func (s *Source) Close() error {
@@ -101,15 +91,10 @@ func (s *Source) translate() {
 	defer close(s.done)
 	defer s.publisher.Close()
 	for result := range s.projection.Updates() {
-		s.mu.Lock()
-		state := State{List: s.current.List}
-		if result.Err == nil {
-			state.List = result.Value
-		} else {
+		state := State{List: result.Value}
+		if result.Err != nil {
 			state.Diagnostic = diagnosticFor(result.Err)
 		}
-		s.current = state
-		s.mu.Unlock()
 		s.publisher.Publish(state)
 	}
 }

@@ -259,7 +259,13 @@ func mustDesiredList(t *testing.T, contents string) upstreamlist.UpstreamList {
 	if err != nil {
 		t.Fatal(err)
 	}
-	list := source.Current().List
+	var list upstreamlist.UpstreamList
+	select {
+	case initial := <-source.Updates():
+		list = initial.List
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial Upstream List state")
+	}
 	if err := source.Close(); err != nil {
 		t.Fatal(err)
 	}

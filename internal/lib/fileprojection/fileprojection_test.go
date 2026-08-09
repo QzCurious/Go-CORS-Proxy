@@ -26,9 +26,12 @@ func TestProjectionPromotesOnlyConsumerCapability(t *testing.T) {
 	if _, ok := projectionType.MethodByName("Publish"); ok {
 		t.Fatal("Projection exposes Publish")
 	}
+	if _, ok := projectionType.MethodByName("Current"); ok {
+		t.Fatal("Projection exposes Current")
+	}
 }
 
-func TestOpenProjectsInitialOrdinaryFileWithoutPublishingIt(t *testing.T) {
+func TestUpdatesStartsWithInitialProjection(t *testing.T) {
 	path := writeFile(t, "INITIAL\n")
 	projection, err := openStrings(path)
 	if err != nil {
@@ -36,9 +39,9 @@ func TestOpenProjectsInitialOrdinaryFileWithoutPublishingIt(t *testing.T) {
 	}
 	defer projection.Close()
 
-	current := projection.Current()
-	if current.Err != nil || current.Value != "initial" {
-		t.Fatalf("current = %#v", current)
+	initial := waitResult(t, projection.Updates())
+	if initial.Err != nil || initial.Value != "initial" {
+		t.Fatalf("initial = %#v", initial)
 	}
 	assertNoResult(t, projection.Updates(), 150*time.Millisecond)
 }
@@ -66,7 +69,7 @@ func TestOpenRejectsSymlinkedSource(t *testing.T) {
 	assertProjectionError(t, err, fileprojection.ErrorRead)
 }
 
-func TestChangedProjectionPublishesAndAdvancesCurrentFirst(t *testing.T) {
+func TestChangedProjectionPublishes(t *testing.T) {
 	path := writeFile(t, "first")
 	projection := mustOpenStrings(t, path)
 	defer projection.Close()
@@ -75,9 +78,6 @@ func TestChangedProjectionPublishesAndAdvancesCurrentFirst(t *testing.T) {
 	result := waitResult(t, projection.Updates())
 	if result.Err != nil || result.Value != "second" {
 		t.Fatalf("result = %#v", result)
-	}
-	if current := projection.Current(); current != result {
-		t.Fatalf("current = %#v, published = %#v", current, result)
 	}
 }
 
@@ -88,9 +88,6 @@ func TestEqualProjectionSuppressesRepresentationOnlyChange(t *testing.T) {
 
 	rewriteFile(t, path, "value\n")
 	assertNoResult(t, projection.Updates(), 250*time.Millisecond)
-	if current := projection.Current(); current.Err != nil || current.Value != "value" {
-		t.Fatalf("current = %#v", current)
-	}
 }
 
 func TestProjectionFailurePublishesAfterDebounce(t *testing.T) {
@@ -102,8 +99,8 @@ func TestProjectionFailurePublishesAfterDebounce(t *testing.T) {
 	assertNoResult(t, projection.Updates(), 10*time.Millisecond)
 	result := waitResult(t, projection.Updates())
 	assertProjectionError(t, result.Err, fileprojection.ErrorProject)
-	if result.Value != "" {
-		t.Fatalf("failed value = %q", result.Value)
+	if result.Value != "valid" {
+		t.Fatalf("failed value = %q, want last successful value", result.Value)
 	}
 }
 
@@ -207,6 +204,10 @@ func mustOpenStrings(t *testing.T, path string) *fileprojection.Projection[strin
 	projection, err := openStrings(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	initial := waitResult(t, projection.Updates())
+	if initial.Err != nil {
+		t.Fatalf("initial projection = %#v", initial)
 	}
 	return projection
 }

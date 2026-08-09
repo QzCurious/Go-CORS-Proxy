@@ -9,15 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/fsnotify/fsnotify"
 )
 
-// Projection maintains the current projection of a file. Its embedded Stream
-// provides single-consumer, latest-value updates for post-initial results.
+// Projection maintains a stream of complete projection snapshots. Its embedded
+// Stream provides the initial snapshot followed by single-consumer,
+// latest-value updates.
 type Projection[T any] struct {
 	conflatedstream.Stream[Result[T]]
 	resultPublisher conflatedstream.Publisher[Result[T]]
@@ -28,9 +28,7 @@ type Projection[T any] struct {
 	debounce time.Duration
 	watcher  *fsnotify.Watcher
 
-	latest atomic.Pointer[Result[T]]
-	stop   chan struct{}
-	done   chan struct{}
+	done chan struct{}
 
 	hasSuccessfulFingerprint bool
 	successfulFingerprint    [sha256.Size]byte
@@ -82,27 +80,21 @@ func Open[T any](path string, project ProjectFunc[T], equal EqualFunc[T], option
 		equal:           equal,
 		debounce:        options.Debounce,
 		watcher:         watcher,
-		stop:            make(chan struct{}),
 		done:            make(chan struct{}),
 	}
-	initial := p.readAndProject()
+	initial := p.readAndProject(nil)
 	if initial.Err != nil {
 		_ = watcher.Close()
 		return nil, initial.Err
 	}
-	p.store(initial)
+	p.resultPublisher.Publish(initial)
 
-	go p.observe()
+	go p.observe(initial)
 	return p, nil
-}
-
-func (p *Projection[T]) Current() Result[T] {
-	return *p.latest.Load()
 }
 
 func (p *Projection[T]) Close() error {
 	p.closeOnce.Do(func() {
-		close(p.stop)
 		p.closeErr = p.watcher.Close()
 		<-p.done
 	})
@@ -156,7 +148,7 @@ func failure[T any](kind ErrorKind, path string, err error) Result[T] {
 	return Result[T]{Err: &Error{Kind: kind, Path: path, Err: err}}
 }
 
-func (p *Projection[T]) observe() {
+func (p *Projection[T]) observe(current Result[T]) {
 	defer close(p.done)
 	defer p.resultPublisher.Close()
 
@@ -184,16 +176,11 @@ func (p *Projection[T]) observe() {
 
 	for {
 		select {
-		case <-p.stop:
-			return
 		case <-timerC:
 			timerC = nil
-			p.reconcile()
+			current = p.reconcile(current)
 		case event, ok := <-p.watcher.Events:
 			if !ok {
-				if !p.stopping() {
-					p.stopObservation(errors.New("watcher event stream closed"))
-				}
 				return
 			}
 			if p.relevant(event) {
@@ -201,29 +188,15 @@ func (p *Projection[T]) observe() {
 			}
 		case err, ok := <-p.watcher.Errors:
 			if !ok {
-				if !p.stopping() {
-					p.stopObservation(errors.New("watcher error stream closed"))
-				}
 				return
 			}
 			if errors.Is(err, fsnotify.ErrEventOverflow) {
 				arm()
 				continue
 			}
-			if !p.stopping() {
-				p.stopObservation(err)
-			}
+			p.stopObservation(current, err)
 			return
 		}
-	}
-}
-
-func (p *Projection[T]) stopping() bool {
-	select {
-	case <-p.stop:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -235,29 +208,30 @@ func (p *Projection[T]) relevant(event fsnotify.Event) bool {
 	return event.Op&relevant != 0
 }
 
-func (p *Projection[T]) reconcile() {
-	result := p.readAndProject()
+func (p *Projection[T]) reconcile(current Result[T]) Result[T] {
+	result := p.readAndProject(&current)
 	if result.Err != nil {
 		p.hasSuccessfulFingerprint = false
+		result.Value = current.Value
 		p.publish(result)
-		return
+		return result
 	}
 
-	previous := p.latest.Load()
-	if previous.Err == nil && p.equal(previous.Value, result.Value) {
-		return
+	if current.Err == nil && p.equal(current.Value, result.Value) {
+		return current
 	}
 	p.publish(result)
+	return result
 }
 
-func (p *Projection[T]) readAndProject() Result[T] {
+func (p *Projection[T]) readAndProject(previous *Result[T]) Result[T] {
 	data, err := readOrdinaryFile(p.path)
 	if err != nil {
 		return failure[T](ErrorRead, p.path, err)
 	}
 	fingerprint := sha256.Sum256(data)
 	if p.hasSuccessfulFingerprint && p.successfulFingerprint == fingerprint {
-		return p.Current()
+		return *previous
 	}
 
 	value, err := p.project(data)
@@ -269,20 +243,15 @@ func (p *Projection[T]) readAndProject() Result[T] {
 	return Result[T]{Value: value}
 }
 
-func (p *Projection[T]) stopObservation(err error) {
+func (p *Projection[T]) stopObservation(current Result[T], err error) {
 	p.hasSuccessfulFingerprint = false
-	p.publish(failure[T](ErrorObservation, p.path, err))
+	result := failure[T](ErrorObservation, p.path, err)
+	result.Value = current.Value
+	p.publish(result)
 }
 
 func (p *Projection[T]) publish(result Result[T]) {
-	p.store(result)
 	p.resultPublisher.Publish(result)
-}
-
-func (p *Projection[T]) store(result Result[T]) {
-	snapshot := new(Result[T])
-	*snapshot = result
-	p.latest.Store(snapshot)
 }
 
 func readOrdinaryFile(path string) ([]byte, error) {

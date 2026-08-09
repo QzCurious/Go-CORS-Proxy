@@ -81,7 +81,7 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial upstreamlist.UpstreamList) (*trafficRuntime, error) {
+func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial upstreamlist.State) (*trafficRuntime, error) {
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -95,14 +95,15 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 	proxyListen := proxyListener.Addr().String()
 
 	pacRouting := pacrouting.NewRouting(proxyListen)
-	pacRouting.Apply(initial.HostSelectors, initial.OriginSelectors, false)
+	pacRouting.Apply(initial.List.HostSelectors, initial.List.OriginSelectors, false)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
 	desiredStatePublisher, desiredStateStream := conflatedstream.New[managedpac.DesiredState]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
 	return &trafficRuntime{
 		upstreamListPath:       upstreamListPath,
 		upstreamListSource:     source,
-		currentUpstreamList:    initial,
+		currentUpstreamList:    initial.List,
+		upstreamListDiagnostic: initial.Diagnostic,
 		proxyHandler:           proxyHandler,
 		pacRouting:             pacRouting,
 		proxy:                  &http.Server{Handler: proxyHandler},

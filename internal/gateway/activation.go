@@ -35,7 +35,10 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 			_ = upstreamListSource.Close()
 		}
 	}()
-	initialUpstreamList := upstreamListSource.Current().List
+	initialUpstreamState, ok := <-upstreamListSource.Updates()
+	if !ok {
+		return nil, fmt.Errorf("initialize upstream list: source closed before its initial state")
+	}
 
 	postStartFailure := func(err error) (StartResult, error) {
 		if ctx.Err() != nil {
@@ -52,7 +55,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		return assessmentResult, nil
 	}
 
-	engine, err := newRuntime(upstreamListPath, upstreamListSource, initialUpstreamList)
+	engine, err := newRuntime(upstreamListPath, upstreamListSource, initialUpstreamState)
 	if err != nil {
 		return postStartFailure(err)
 	}
@@ -189,7 +192,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 		HTTPSInterception:    state.HTTPSInterception,
 		HTTPSIntent:          state.HTTPSIntent,
 		HTTPSWarnings:        state.HTTPSWarnings,
-		UpstreamListWarnings: upstreamListWarningDetails(initialUpstreamList.Warnings),
+		UpstreamListWarnings: upstreamListWarningDetails(initialUpstreamState.List.Warnings),
 	}}, nil
 }
 

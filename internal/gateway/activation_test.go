@@ -354,7 +354,7 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 	defer deadline.Stop()
 	for {
 		state := engine.snapshot()
-		if state.HTTPSInterception == HTTPSInterceptionInactive {
+		if state.HTTPSInterception == HTTPSInterceptionInactive && inspectCalls.Load() >= 2 {
 			break
 		}
 		select {
@@ -362,9 +362,6 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 			t.Fatal("Gateway deadline timer did not deactivate HTTPS")
 		case <-time.After(10 * time.Millisecond):
 		}
-	}
-	if got := inspectCalls.Load(); got < 2 {
-		t.Fatalf("deadline timer inspections = %d, want fresh assessment", got)
 	}
 }
 

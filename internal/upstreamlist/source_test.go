@@ -14,7 +14,7 @@ const sourceTestTimeout = 4 * time.Second
 
 func TestOpenBootstrapsAndProjectsMissingPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "upstreams.txt")
-	source := openSource(t, path)
+	source, initial := openSourceWithInitial(t, path)
 	defer source.Close()
 
 	data, err := os.ReadFile(path)
@@ -24,8 +24,8 @@ func TestOpenBootstrapsAndProjectsMissingPath(t *testing.T) {
 	if !strings.Contains(string(data), "One upstream host or origin per line") {
 		t.Fatalf("bootstrapped content = %q", data)
 	}
-	if state := source.Current(); state.Diagnostic != nil || len(state.List.HostSelectors)+len(state.List.OriginSelectors) != 0 {
-		t.Fatalf("current = %#v", state)
+	if initial.Diagnostic != nil || len(initial.List.HostSelectors)+len(initial.List.OriginSelectors) != 0 {
+		t.Fatalf("initial = %#v", initial)
 	}
 }
 
@@ -36,12 +36,12 @@ func TestOpenRejectsInvalidInitialSource(t *testing.T) {
 	}
 }
 
-func TestCurrentContainsDeduplicatedInitialState(t *testing.T) {
+func TestUpdatesStartsWithDeduplicatedInitialState(t *testing.T) {
 	path := writeSourceFile(t, "EXAMPLE.TEST\nexample.test\nhttps://EXAMPLE.TEST:0443\nhttps://example.test:443\n")
-	source := openSource(t, path)
+	source, initial := openSourceWithInitial(t, path)
 	defer source.Close()
 
-	list := source.Current().List
+	list := initial.List
 	if len(list.HostSelectors) != 1 || list.HostSelectors[0].Hostname != "example.test" {
 		t.Fatalf("host selectors = %#v", list.HostSelectors)
 	}
@@ -50,7 +50,7 @@ func TestCurrentContainsDeduplicatedInitialState(t *testing.T) {
 	}
 }
 
-func TestUpdatesDoesNotRepublishInitialState(t *testing.T) {
+func TestUpdatesDoesNotRepeatInitialState(t *testing.T) {
 	source := openSource(t, writeSourceFile(t, "api.example.test\n"))
 	defer source.Close()
 	assertNoState(t, source.Updates(), 250*time.Millisecond)
@@ -65,7 +65,7 @@ func TestRepresentationOnlyChangeIsSuppressed(t *testing.T) {
 	assertNoState(t, source.Updates(), 500*time.Millisecond)
 }
 
-func TestSemanticChangeAdvancesCurrentBeforePublication(t *testing.T) {
+func TestSemanticChangePublishes(t *testing.T) {
 	path := writeSourceFile(t, "first.example.test\n")
 	source := openSource(t, path)
 	defer source.Close()
@@ -74,9 +74,6 @@ func TestSemanticChangeAdvancesCurrentBeforePublication(t *testing.T) {
 	state := waitState(t, source.Updates())
 	if state.Diagnostic != nil || state.List.HostSelectors[0].Hostname != "second.example.test" {
 		t.Fatalf("state = %#v", state)
-	}
-	if current := source.Current(); current.List.HostSelectors[0].Hostname != "second.example.test" {
-		t.Fatalf("current = %#v", current)
 	}
 }
 
@@ -163,11 +160,17 @@ func TestCloseClosesUpdates(t *testing.T) {
 
 func openSource(t *testing.T, path string) *upstreamlist.Source {
 	t.Helper()
+	source, _ := openSourceWithInitial(t, path)
+	return source
+}
+
+func openSourceWithInitial(t *testing.T, path string) (*upstreamlist.Source, upstreamlist.State) {
+	t.Helper()
 	source, err := upstreamlist.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return source
+	return source, waitState(t, source.Updates())
 }
 
 func waitState(t *testing.T, updates <-chan upstreamlist.State) upstreamlist.State {
