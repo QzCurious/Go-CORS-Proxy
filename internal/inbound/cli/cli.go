@@ -18,15 +18,17 @@ const usage = `Usage:
   seamless-cors version
 `
 
-// Run dispatches the v1 Minimal Command Surface.
-func Run(args []string, stdout, stderr io.Writer) error {
+// Run translates one CLI invocation into calls to the appropriate inward
+// module. It renders command failures to stderr; callers use the returned
+// error only to select a nonzero process exit status.
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	return run(args, stdout, stderr, commandHandlers{
-		install:   Install,
-		uninstall: Uninstall,
-		serve:     Serve,
-		start:     Start,
-		stop:      Stop,
-		status:    Status,
+		install:   install,
+		uninstall: func(stdout, stderr io.Writer) error { return uninstall(stdin, stdout, stderr) },
+		serve:     serve,
+		start:     func(stdout, stderr io.Writer) error { return start(stdin, stdout, stderr) },
+		stop:      stop,
+		status:    runStatus,
 	})
 }
 

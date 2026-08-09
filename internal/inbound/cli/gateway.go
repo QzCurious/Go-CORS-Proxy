@@ -16,21 +16,13 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/gateway"
 )
 
-var ErrManagedPACConsentDeclined = errors.New("Managed PAC consent declined")
+var errManagedPACConsentDeclined = errors.New("Managed PAC consent declined")
 
 type startCommand func(context.Context, gateway.StartHooks) (gateway.StartResult, error)
 
-func Start(stdout, _ io.Writer) error {
+func start(stdin io.Reader, stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return StartWithContextAndInput(ctx, os.Stdin, stdout)
-}
-
-func StartWithContext(ctx context.Context, stdout io.Writer) error {
-	return StartWithContextAndInput(ctx, nil, stdout)
-}
-
-func StartWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	return startWithContextAndInput(ctx, stdin, stdout, gateway.Start)
 }
 
@@ -63,7 +55,7 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 		return fmt.Errorf("Gateway Ownership is transitioning; retry start")
 	}
 	if result.Kind() == gateway.StartResultConsentDeclined {
-		return ErrManagedPACConsentDeclined
+		return errManagedPACConsentDeclined
 	}
 	if cleanup, ok := result.(gateway.StartCleanupFailed); ok {
 		return fmt.Errorf("gateway start cleanup failed: %s", cleanupFailureText(cleanup.Failures))
@@ -82,13 +74,9 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 
 type serveCommand func(context.Context, func()) error
 
-func Serve(stdout, _ io.Writer) error {
+func serve(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return ServeWithContext(ctx, stdout)
-}
-
-func ServeWithContext(ctx context.Context, stdout io.Writer) error {
 	return serveWithContext(ctx, stdout, gateway.Serve)
 }
 
@@ -102,7 +90,7 @@ func serveWithContext(ctx context.Context, stdout io.Writer, command serveComman
 
 type stopCommand func(context.Context) (gateway.StopResult, error)
 
-func Stop(stdout, _ io.Writer) error {
+func stop(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return stopGateway(ctx, stdout)
@@ -127,7 +115,7 @@ func stopGatewayWithCommand(ctx context.Context, stdout io.Writer, command stopC
 
 type statusCommand func(context.Context) (gateway.StatusResult, error)
 
-func Status(stdout, _ io.Writer) error {
+func runStatus(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return status(ctx, stdout)
@@ -155,13 +143,9 @@ func statusWithCommand(ctx context.Context, stdout io.Writer, command statusComm
 
 type installCACommand func(context.Context) (gateway.InstallResult, error)
 
-func Install(stdout, _ io.Writer) error {
+func install(stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return InstallCA(ctx, stdout)
-}
-
-func InstallCA(ctx context.Context, stdout io.Writer) error {
 	return installCAWithCommand(ctx, stdout, gateway.InstallCA)
 }
 
@@ -193,17 +177,9 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 
 type uninstallCACommand func(context.Context, gateway.UninstallRequest) (gateway.UninstallResult, error)
 
-func Uninstall(stdout, _ io.Writer) error {
+func uninstall(stdin io.Reader, stdout, _ io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return UninstallCAWithInput(ctx, os.Stdin, stdout)
-}
-
-func UninstallCA(ctx context.Context, stdout io.Writer) error {
-	return UninstallCAWithInput(ctx, os.Stdin, stdout)
-}
-
-func UninstallCAWithInput(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	return uninstallCAWithCommand(ctx, stdin, stdout, gateway.UninstallCA)
 }
 

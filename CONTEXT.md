@@ -9,8 +9,20 @@ A local DEV/QA network tool that sits between the browser and configured upstrea
 _Avoid_: generic proxy, CORS middleware
 
 **Gateway Module**:
-The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands together with their semantic results, fulfillment, state classifications, and details for CLI and HTTP control surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing; control surfaces translate Gateway semantics without redefining them.
+The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands together with their semantic results, fulfillment, state classifications, and details for CLI and HTTP Gateway Control Surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing; Inbound Adapters translate Gateway semantics without redefining them.
 _Avoid_: surface-owned outcome, CLI result classification, HTTP-defined command semantics, Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
+
+**Inbound Adapter**:
+An architectural role that translates an external interaction into calls through an inward module interface and translates the result back without being imported by that module. The CLI Inbound Adapter and the Gateway Router are Inbound Adapters even though they serve different Gateway Control Surfaces and live at different seams.
+_Avoid_: controller layer, delivery layer, outer module imported by Gateway, directory-only classification
+
+**CLI Inbound Adapter**:
+The terminal-facing Inbound Adapter that translates seamless-cors process arguments, terminal input, and process signals into calls to the appropriate Gateway or Version Module, then renders the result as terminal output and command failure. It does not own Gateway command semantics or process composition.
+_Avoid_: CLI-owned Gateway semantics, command service, composition root, Gateway-only adapter
+
+**Gateway Control Surface**:
+A user-facing interaction surface through which a Gateway Control Command is issued and its outcome is presented. CLI and authenticated local HTTP are Gateway Control Surfaces; this product role is distinct from the architectural Inbound Adapter role.
+_Avoid_: Inbound Adapter, Gateway Module interface, transport protocol
 
 **Gateway Feature Orchestration**:
 A rule that only the Gateway Module orders and combines facts and mutations across the Upstream List Source, UserCA, Managed PAC, and Gateway Runtime; feature modules never call one another. Gateway may establish result ordering without waiting for an independent feature mutation to settle.
@@ -21,7 +33,7 @@ A concurrency rule where each feature module serializes only its own mutations w
 _Avoid_: cross-feature mutex, global lifecycle lock, UserCA-blocked configuration, PAC-blocked UserCA mutation
 
 **Surface-Neutral Command Result**:
-The authoritative semantic outcome of a Gateway Module operation, describing successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting. Every anticipated command condition produces such a result, while an error means the Gateway could not produce a semantic outcome; every control surface translates results and errors into its own representation.
+The authoritative semantic outcome of a Gateway Module operation, describing successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting. Every anticipated command condition produces such a result, while an error means the Gateway could not produce a semantic outcome; every Inbound Adapter translates results and errors into its Gateway Control Surface representation.
 _Avoid_: CLI output, HTTP response model, shared wire model, semantic sentinel error, stringly command result, terminal error text
 
 **Command Fulfillment**:
@@ -53,7 +65,7 @@ The process-bootstrap role that establishes and keeps a Gateway Owner available 
 _Avoid_: CLI-owned Start semantics, implicit serve command, HTTP process bootstrap, Gateway Runtime
 
 **Gateway Runtime**:
-The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, the watched Upstream List Source, runtime close behavior, and fatal runtime error reporting without installing or unsetting OS PAC state.
+The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, the watched Upstream List Source, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. Feature degradation never ends Gateway Runtime; explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
 _Avoid_: lifecycle facade, command router, OS proxy manager, cleanup owner
 
 **Router-Only Serve**:
@@ -305,27 +317,27 @@ A lifecycle rule where ready HTTPS Readiness allows HTTPS Interception State to 
 _Avoid_: Explicit Trusted HTTPS, Config File HTTPS toggle, intent-as-capability, silent trust installation
 
 **Upstream List Source**:
-The file-backed semantic source that bootstraps the user-managed Upstream List supplied by Gateway, establishes observation, and validates its initial file projection before becoming available. It owns semantic identity, publishes complete latest-value Upstream List States from subsequent projections, retains the newest valid semantic list after runtime source failures, and reports structured degraded diagnostics without owning generic filesystem observation or choosing the application's path policy.
+The file-backed semantic source that bootstraps and continuously observes the user-managed Upstream List supplied by Gateway. It becomes available even when no valid projection exists, owns semantic identity, publishes complete latest-value Upstream List States, and reports structured degraded diagnostics without owning generic filesystem observation or choosing the application's path policy.
 _Avoid_: legacy configuration abstraction, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, event history, source-content identity, configurable application default
 
 **Upstream List State**:
-An immutable complete snapshot containing the newest valid Upstream List and an optional Upstream List Source diagnostic. Source representation, comments, whitespace, and equivalent normalized ordering are not state identity; unconsumed intermediate snapshots may be replaced by a newer state.
+An immutable complete snapshot containing an effective Upstream List and an optional Upstream List Source diagnostic. The effective list is empty before the first valid projection and thereafter remains the newest valid projection during source degradation; source representation, comments, whitespace, and equivalent normalized ordering are not state identity, and unconsumed intermediate snapshots may be replaced by a newer state.
 _Avoid_: configuration event history, raw file content, file-change event, delta, command replay, watcher notification
 
 **Upstream List Source Diagnostic**:
-A structured runtime condition identifying invalid source content, temporarily unavailable or unsafe source state, or observation shutdown. The source retains last-known-good routing while Gateway stores and presents the current diagnostic; recovery publishes a healthy state even when the list itself is unchanged.
-_Avoid_: fatal runtime source error, stale-list discard, silent unreadable source, Gateway-owned file validation
+A structured non-fatal runtime condition identifying invalid source content, temporarily unavailable or unsafe source state, or observation shutdown. The source retains its effective list while Gateway continues serving, stores, and presents the diagnostic with its underlying cause; file-state recovery publishes a healthy state even when the list itself is unchanged, while terminal observation requires resolving the cause and restarting Gateway.
+_Avoid_: fatal runtime source error, cause-free restart instruction, stale-list discard, silent unreadable source, Gateway-owned file validation
 
 **Gateway Control Command**:
 A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, UserCA install, and UserCA uninstall.
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, loads the Upstream List, assesses HTTPS Readiness without mutating trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
+The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, establishes the Upstream List Source even when degraded, assesses HTTPS Readiness without mutating trust, and then attempts Gateway Activation. Direct start removes stale owner state before claiming ownership, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
 _Avoid_: start-time CA installation, public raw activation, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
-The internal operation that assesses Managed PAC Consent, begins serving Gateway Runtime with its assessed HTTPS Readiness, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, Upstream List validation, readiness assessment, or traffic-before-PAC ordering.
+The internal operation that assesses Managed PAC Consent, begins serving Gateway Runtime with its assessed HTTPS Readiness, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, Upstream List Source establishment, readiness assessment, or traffic-before-PAC ordering.
 _Avoid_: public activation command, CA installation, CA Trust Consent, lifecycle activation, runtime startup, command rendering, lifecycle orchestration package
 
 **Automatic Listeners**:
@@ -449,11 +461,15 @@ A gateway ownership rule where only one Gateway Owner may run for a user at a ti
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
 **Configuration Bootstrap**:
-A start-only behavior where the fixed Upstream List is created automatically when missing before validation continues, including required parent directories. The same start command continues with an Empty Upstream List, while passive reads remain non-mutating and an existing unsafe, non-file, or unreadable Upstream List remains an error.
-_Avoid_: init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
+An accepted start-only behavior that immediately and exclusively attempts to create the missing fixed Upstream List and required parent directories with the disclosed default contents. Creation is an independent authorized side effect that is neither deferred until Gateway Activation nor rolled back when a later Start decision prevents activation; a path that appears before creation is never replaced, and creation failure becomes Upstream List Source Degradation without preventing Start.
+_Avoid_: silent file creation, init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
+
+**Upstream List Creation Consent**:
+A user decision required when Start finds the fixed Upstream List missing, authorizing immediate exclusive creation at the disclosed path with the disclosed default contents independently from Managed PAC Consent. Declining preserves the missing path but allows Start to continue in Upstream List Source Degradation without asking again, while runtime disappearance never requests consent or recreates the file.
+_Avoid_: combined Start consent, CLI-invented consent, consent error, overwrite authorization, runtime bootstrap, implicit default creation
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after PAC consent has succeeded and Gateway Runtime is serving. Managed PAC publication warnings are included when available, while transient initial publication failure remains internal and is retried. It points to the Upstream List, HTTPS Readiness, current HTTPS and Managed PAC Warnings, and managed state instead of runtime listener endpoints.
+A start-time user-facing output behavior shown only after PAC consent has succeeded and Gateway Runtime is serving. Upstream List Source diagnostics and Managed PAC publication warnings are included when available, while transient initial publication failure remains internal and is retried. It points to the Upstream List, HTTPS Readiness, current HTTPS and Managed PAC Warnings, and managed state instead of runtime listener endpoints.
 _Avoid_: pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -620,9 +636,9 @@ _Avoid_: startup failure for no active entries, proxy-all fallback
 A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing publish a new Upstream List State for successful startup and runtime status; warning-only changes do not publish a new Managed PAC desired input.
 _Avoid_: silent invalid entry, fatal line error, transient log warning, command replay, routing revision warning
 
-**Fatal Upstream List Error**:
-A last-known-good Upstream List Source behavior where a missing, unreadable, unsafe, or structurally undecodable Upstream List retains the newest valid list, immediately publishes a structured degraded diagnostic after debounced reconciliation, and continues observing. Initial failure still stops Gateway startup; later filesystem activity can publish recovery. Individual invalid lines are Upstream List Warnings rather than source-level errors.
-_Avoid_: stale valid routing discard, unreadable-as-empty, silent source failure, startup fallback to invalid state
+**Upstream List Source Degradation**:
+A recoverable condition where the Upstream List Source is missing, unreadable, unsafe, or structurally undecodable. Before any valid projection, Gateway uses an empty effective Upstream List; afterward it retains the newest valid projection while reporting a structured diagnostic and continuously reconciling until healthy while filesystem observation remains active.
+_Avoid_: Fatal Upstream List Error, startup failure, stale valid routing discard, unreadable-as-empty, silent source failure
 
 **Upstream List Entry**:
 A normalized routing value decoded by the Upstream List module as either a Host Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
