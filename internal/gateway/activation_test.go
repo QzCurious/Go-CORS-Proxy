@@ -104,6 +104,22 @@ func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testi
 	}
 }
 
+func TestBootstrapFailureWarningAttachesToTheCurrentStartResult(t *testing.T) {
+	bootstrapErr := errors.New("bootstrap denied")
+	result := withUpstreamListBootstrapWarning(StartConsentRequired{}, bootstrapErr)
+
+	consent, ok := result.(StartConsentRequired)
+	if !ok {
+		t.Fatalf("result = %#v", result)
+	}
+	if warning := consent.BootstrapWarning(); warning == nil || warning.Cause != bootstrapErr.Error() {
+		t.Fatalf("bootstrap warning = %#v", warning)
+	}
+	if warning := (AlreadyRunning{}).BootstrapWarning(); warning != nil {
+		t.Fatalf("unrelated result warning = %#v", warning)
+	}
+}
+
 func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
 	settings := &lifecycleTestSystemSettings{
 		clearErr: errors.New("cleanup denied"),

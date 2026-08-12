@@ -255,7 +255,7 @@ func mustDesiredList(t *testing.T, contents string) upstreamlist.UpstreamList {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
+	source := upstreamlist.Open(path)
 	var list upstreamlist.UpstreamList
 	select {
 	case initial := <-source.Transitions():

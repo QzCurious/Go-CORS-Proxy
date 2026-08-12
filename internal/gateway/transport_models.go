@@ -59,16 +59,18 @@ func newRouterError(status int, message string, errs ...error) *gatewayErrorResp
 }
 
 type startSuccessBody struct {
-	Changed  bool                 `json:"changed"`
-	Guidance *StartGuidanceDetail `json:"guidance,omitempty"`
+	Changed                      bool                                `json:"changed"`
+	Guidance                     *StartGuidanceDetail                `json:"guidance,omitempty"`
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail `json:"upstreamListBootstrapWarning,omitempty"`
 }
 
 type startFailureDetails struct {
-	UpstreamListCreationConsent *UpstreamListCreationConsent `json:"upstreamListCreationConsent,omitempty"`
-	ManagedPACConsent           *ManagedPACConsentDetail     `json:"managedPacConsent,omitempty"`
-	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
-	Diagnostic                  string                       `json:"diagnostic,omitempty"`
-	CleanupFailures             []CleanupFailureDetail       `json:"cleanupFailures,omitempty"`
+	UpstreamListCreationConsent  *UpstreamListCreationConsent        `json:"upstreamListCreationConsent,omitempty"`
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail `json:"upstreamListBootstrapWarning,omitempty"`
+	ManagedPACConsent            *ManagedPACConsentDetail            `json:"managedPacConsent,omitempty"`
+	ManagedPACWarnings           []ManagedPACWarningDetail           `json:"managedPacWarnings,omitempty"`
+	Diagnostic                   string                              `json:"diagnostic,omitempty"`
+	CleanupFailures              []CleanupFailureDetail              `json:"cleanupFailures,omitempty"`
 }
 
 type stopSuccessBody struct {
@@ -105,7 +107,7 @@ func startSuccessBodyFrom(result StartResult) startSuccessBody {
 	switch typed := result.(type) {
 	case Started:
 		guidance := typed.Guidance
-		return startSuccessBody{Changed: true, Guidance: &guidance}
+		return startSuccessBody{Changed: true, Guidance: &guidance, UpstreamListBootstrapWarning: typed.UpstreamListBootstrapWarning}
 	case AlreadyRunning:
 		return startSuccessBody{}
 	default:
@@ -121,11 +123,11 @@ func (dto startSuccessBody) semantic() StartResult {
 	if dto.Guidance != nil {
 		guidance = *dto.Guidance
 	}
-	return Started{Guidance: guidance}
+	return Started{Guidance: guidance, UpstreamListBootstrapWarning: dto.UpstreamListBootstrapWarning}
 }
 
 func startFailureDetailsFrom(result StartResult) startFailureDetails {
-	details := startFailureDetails{}
+	details := startFailureDetails{UpstreamListBootstrapWarning: result.BootstrapWarning()}
 	switch typed := result.(type) {
 	case StartUpstreamListCreationConsentRequired:
 		consent := typed.Consent
@@ -159,22 +161,22 @@ func (dto startFailureDetails) semantic(kind StartKind) StartResult {
 		if dto.ManagedPACConsent == nil {
 			return nil
 		}
-		return StartConsentRequired{Consent: *dto.ManagedPACConsent}
+		return StartConsentRequired{Consent: *dto.ManagedPACConsent, UpstreamListBootstrapWarning: dto.UpstreamListBootstrapWarning}
 	case StartResultConsentDeclined:
 		return StartConsentDeclined{}
 	case StartResultNoManageablePACServices:
 		if dto.ManagedPACConsent == nil {
 			return nil
 		}
-		return StartNoManageablePACServices{Consent: *dto.ManagedPACConsent}
+		return StartNoManageablePACServices{Consent: *dto.ManagedPACConsent, UpstreamListBootstrapWarning: dto.UpstreamListBootstrapWarning}
 	case StartResultManagedPACInstallationFailed:
-		return StartManagedPACInstallationFailed{Warnings: dto.ManagedPACWarnings, Diagnostic: dto.Diagnostic}
+		return StartManagedPACInstallationFailed{Warnings: dto.ManagedPACWarnings, Diagnostic: dto.Diagnostic, UpstreamListBootstrapWarning: dto.UpstreamListBootstrapWarning}
 	case StartResultStartAlreadyMutating:
-		return StartAlreadyMutating{}
+		return StartAlreadyMutating{UpstreamListBootstrapWarning: dto.UpstreamListBootstrapWarning}
 	case StartResultStopCancelled:
-		return StartStopCancelled{}
+		return StartStopCancelled{UpstreamListBootstrapWarning: dto.UpstreamListBootstrapWarning}
 	case StartResultCleanupFailed:
-		return StartCleanupFailed{Warnings: dto.ManagedPACWarnings, Failures: dto.CleanupFailures}
+		return StartCleanupFailed{Warnings: dto.ManagedPACWarnings, Failures: dto.CleanupFailures, UpstreamListBootstrapWarning: dto.UpstreamListBootstrapWarning}
 	default:
 		return nil
 	}

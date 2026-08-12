@@ -19,31 +19,31 @@ import (
 )
 
 type trafficRuntime struct {
-	mu                     sync.RWMutex
-	upstreamListPath       string
-	upstreamListSource     *upstreamlist.Source
-	currentUpstreamList    upstreamlist.UpstreamList
-	upstreamListDiagnostic *upstreamlist.Diagnostic
-	userCA                 userca.Snapshot
-	readinessError         error
-	interceptionState      HTTPSInterceptionState
-	interceptionError      error
-	userCAOperationWarning *HTTPSWarningDetail
-	proxyCore              *corsproxy.Core
-	proxyHandler           *dynamicHTTPHandler
-	proxyConfigured        bool
-	httpsWarnings          []HTTPSWarningDetail
-	proxy                  *http.Server
-	pacRouting             *pacrouting.Routing
-	pac                    *http.Server
-	listeners              []net.Listener
-	publishMu              sync.Mutex
-	desiredStatePublisher  conflatedstream.Publisher[managedpac.DesiredState]
-	desiredStateStream     conflatedstream.Stream[managedpac.DesiredState]
-	runtimeChangePublisher conflatedstream.Publisher[RuntimeChangeKind]
-	runtimeChangeStream    conflatedstream.Stream[RuntimeChangeKind]
-	httpsWarningsRevision  uint64
-	now                    func() time.Time
+	mu                      sync.RWMutex
+	upstreamListPath        string
+	upstreamListSource      *upstreamlist.Source
+	currentUpstreamList     upstreamlist.UpstreamList
+	upstreamListDegradation *upstreamlist.SourceDegraded
+	userCA                  userca.Snapshot
+	readinessError          error
+	interceptionState       HTTPSInterceptionState
+	interceptionError       error
+	userCAOperationWarning  *HTTPSWarningDetail
+	proxyCore               *corsproxy.Core
+	proxyHandler            *dynamicHTTPHandler
+	proxyConfigured         bool
+	httpsWarnings           []HTTPSWarningDetail
+	proxy                   *http.Server
+	pacRouting              *pacrouting.Routing
+	pac                     *http.Server
+	listeners               []net.Listener
+	publishMu               sync.Mutex
+	desiredStatePublisher   conflatedstream.Publisher[managedpac.DesiredState]
+	desiredStateStream      conflatedstream.Stream[managedpac.DesiredState]
+	runtimeChangePublisher  conflatedstream.Publisher[RuntimeChangeKind]
+	runtimeChangeStream     conflatedstream.Stream[RuntimeChangeKind]
+	httpsWarningsRevision   uint64
+	now                     func() time.Time
 }
 
 // RuntimeChangeKind identifies the current-state concern invalidated by a
@@ -96,32 +96,32 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 
 	pacRouting := pacrouting.NewRouting(proxyListen)
 	var initialList upstreamlist.UpstreamList
-	var initialDiagnostic *upstreamlist.Diagnostic
+	var initialDegradation *upstreamlist.SourceDegraded
 	switch transition := initial.(type) {
 	case upstreamlist.ListAccepted:
 		initialList = transition.List
-	case upstreamlist.DiagnosticReported:
-		initialDiagnostic = &transition.Diagnostic
+	case upstreamlist.SourceDegraded:
+		initialDegradation = &transition
 	}
 	pacRouting.Apply(initialList.HostSelectors, initialList.OriginSelectors, false)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
 	desiredStatePublisher, desiredStateStream := conflatedstream.New[managedpac.DesiredState]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
 	return &trafficRuntime{
-		upstreamListPath:       upstreamListPath,
-		upstreamListSource:     source,
-		currentUpstreamList:    initialList,
-		upstreamListDiagnostic: initialDiagnostic,
-		proxyHandler:           proxyHandler,
-		pacRouting:             pacRouting,
-		proxy:                  &http.Server{Handler: proxyHandler},
-		pac:                    &http.Server{Handler: pacRouting.Handler()},
-		listeners:              []net.Listener{proxyListener, pacListener},
-		desiredStatePublisher:  desiredStatePublisher,
-		desiredStateStream:     desiredStateStream,
-		runtimeChangePublisher: runtimeChangePublisher,
-		runtimeChangeStream:    runtimeChangeStream,
-		now:                    time.Now,
+		upstreamListPath:        upstreamListPath,
+		upstreamListSource:      source,
+		currentUpstreamList:     initialList,
+		upstreamListDegradation: initialDegradation,
+		proxyHandler:            proxyHandler,
+		pacRouting:              pacRouting,
+		proxy:                   &http.Server{Handler: proxyHandler},
+		pac:                     &http.Server{Handler: pacRouting.Handler()},
+		listeners:               []net.Listener{proxyListener, pacListener},
+		desiredStatePublisher:   desiredStatePublisher,
+		desiredStateStream:      desiredStateStream,
+		runtimeChangePublisher:  runtimeChangePublisher,
+		runtimeChangeStream:     runtimeChangeStream,
+		now:                     time.Now,
 	}, nil
 }
 
@@ -357,10 +357,10 @@ func (r *trafficRuntime) applyUpstreamListTransition(transition upstreamlist.Tra
 	switch transition := transition.(type) {
 	case upstreamlist.ListAccepted:
 		r.currentUpstreamList = transition.List
-		r.upstreamListDiagnostic = nil
+		r.upstreamListDegradation = nil
 		routeChanged = r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
-	case upstreamlist.DiagnosticReported:
-		r.upstreamListDiagnostic = &transition.Diagnostic
+	case upstreamlist.SourceDegraded:
+		r.upstreamListDegradation = &transition
 	}
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
@@ -368,7 +368,7 @@ func (r *trafficRuntime) applyUpstreamListTransition(transition upstreamlist.Tra
 	if routeChanged {
 		r.publishDesiredState()
 	}
-	// Source emits only changed lists or diagnostics, so every received state
+	// Source emits only changed lists or degradation errors, so every received state
 	// invalidates the complete runtime status snapshot.
 	r.publishRuntimeChange(RuntimeStatusChanged)
 }
@@ -459,17 +459,17 @@ func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
 }
 
 type runtimeState struct {
-	HTTPSWarningsRevision  uint64
-	ProxyListen            string
-	PACListen              string
-	UpstreamList           string
-	HTTPSReadiness         HTTPSReadinessStatus
-	HTTPSInterception      HTTPSInterceptionState
-	HTTPSIntent            bool
-	HTTPSWarnings          []HTTPSWarningDetail
-	UpstreamCount          int
-	UpstreamListWarnings   []UpstreamListWarningDetail
-	UpstreamListDiagnostic *UpstreamListDiagnosticDetail
+	HTTPSWarningsRevision   uint64
+	ProxyListen             string
+	PACListen               string
+	UpstreamList            string
+	HTTPSReadiness          HTTPSReadinessStatus
+	HTTPSInterception       HTTPSInterceptionState
+	HTTPSIntent             bool
+	HTTPSWarnings           []HTTPSWarningDetail
+	UpstreamCount           int
+	UpstreamListWarnings    []UpstreamListWarningDetail
+	UpstreamListDegradation *UpstreamListDegradationDetail
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
@@ -487,17 +487,17 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		}}
 	}
 	return runtimeState{
-		HTTPSWarningsRevision:  r.httpsWarningsRevision,
-		ProxyListen:            r.listeners[0].Addr().String(),
-		PACListen:              r.listeners[1].Addr().String(),
-		UpstreamList:           r.upstreamListPath,
-		HTTPSReadiness:         readiness,
-		HTTPSInterception:      interception,
-		HTTPSIntent:            upstreamList.HTTPSIntent(),
-		HTTPSWarnings:          warnings,
-		UpstreamCount:          len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
-		UpstreamListWarnings:   upstreamListWarningDetails(upstreamList.Warnings),
-		UpstreamListDiagnostic: upstreamListDiagnosticDetail(r.upstreamListDiagnostic),
+		HTTPSWarningsRevision:   r.httpsWarningsRevision,
+		ProxyListen:             r.listeners[0].Addr().String(),
+		PACListen:               r.listeners[1].Addr().String(),
+		UpstreamList:            r.upstreamListPath,
+		HTTPSReadiness:          readiness,
+		HTTPSInterception:       interception,
+		HTTPSIntent:             upstreamList.HTTPSIntent(),
+		HTTPSWarnings:           warnings,
+		UpstreamCount:           len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
+		UpstreamListWarnings:    upstreamListWarningDetails(upstreamList.Warnings),
+		UpstreamListDegradation: upstreamListDegradationDetail(r.upstreamListDegradation),
 	}
 }
 

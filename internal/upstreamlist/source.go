@@ -13,67 +13,6 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 )
 
-const defaultUpstreamList = "# One upstream host or origin per line.\n# api.dev.example.com\n"
-
-type DiagnosticKind uint8
-
-const (
-	DiagnosticInvalidSource DiagnosticKind = iota + 1
-	DiagnosticSourceUnavailable
-	DiagnosticObservationUncertain
-	DiagnosticObservationStopped
-)
-
-type Diagnostic struct {
-	Kind DiagnosticKind
-	Err  error
-}
-
-type Transition interface{ upstreamListTransition() }
-type ListAccepted struct{ List UpstreamList }
-type DiagnosticReported struct{ Diagnostic Diagnostic }
-
-func (ListAccepted) upstreamListTransition()       {}
-func (DiagnosticReported) upstreamListTransition() {}
-
-type CreationFingerprint string
-type CreationAssessment struct {
-	Required                 bool
-	Path                     string
-	DefaultContents          string
-	MissingParentDirectories []string
-	Fingerprint              CreationFingerprint
-}
-type CreationDecision uint8
-
-const (
-	CreationUndecided CreationDecision = iota
-	CreationAccepted
-	CreationDeclined
-)
-
-func AssessCreation(path string) CreationAssessment {
-	path = filepath.Clean(path)
-	assessment := CreationAssessment{Path: path, DefaultContents: defaultUpstreamList}
-	if _, err := os.Lstat(path); !os.IsNotExist(err) {
-		return assessment
-	}
-	assessment.Required = true
-	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
-		if _, err := os.Lstat(parent); err == nil {
-			break
-		}
-		assessment.MissingParentDirectories = append(assessment.MissingParentDirectories, parent)
-		next := filepath.Dir(parent)
-		if next == parent {
-			break
-		}
-	}
-	sum := sha256.Sum256([]byte(path + "\x00" + defaultUpstreamList))
-	assessment.Fingerprint = CreationFingerprint(hex.EncodeToString(sum[:]))
-	return assessment
-}
-
 type Source struct {
 	observation *fileobservation.Observation
 	publisher   conflatedstream.Publisher[Transition]
@@ -83,20 +22,23 @@ type Source struct {
 	closeErr    error
 }
 
-func Open(path string, decision CreationDecision) *Source {
+type Transition interface{ upstreamListTransition() }
+type ListAccepted struct{ List UpstreamList }
+type SourceDegraded struct{ Err error }
+
+func (ListAccepted) upstreamListTransition()   {}
+func (SourceDegraded) upstreamListTransition() {}
+
+func (e SourceDegraded) Error() string { return e.Err.Error() }
+func (e SourceDegraded) Unwrap() error { return e.Err }
+
+func Open(path string) *Source {
 	path = filepath.Clean(path)
-	var creationErr error
-	if decision == CreationAccepted {
-		creationErr = createFile(path, defaultUpstreamList)
-	}
 	publisher, stream := conflatedstream.New[Transition]()
 	s := &Source{publisher: publisher, stream: stream, done: make(chan struct{})}
 	observation, err := fileobservation.Open(path, fileobservation.Options{})
 	if err != nil {
-		if creationErr != nil {
-			err = errors.Join(creationErr, err)
-		}
-		publisher.Publish(DiagnosticReported{Diagnostic{Kind: DiagnosticObservationStopped, Err: err}})
+		publisher.Publish(SourceDegraded{Err: err})
 		publisher.Close()
 		close(s.done)
 		return s
@@ -104,12 +46,12 @@ func Open(path string, decision CreationDecision) *Source {
 	s.observation = observation
 	first, ok := <-observation.Results()
 	if !ok {
-		publisher.Publish(DiagnosticReported{Diagnostic{Kind: DiagnosticObservationStopped, Err: errors.New("upstream list observation stopped before its first result")}})
+		publisher.Publish(SourceDegraded{Err: errors.New("upstream list observation stopped before its first result")})
 		publisher.Close()
 		close(s.done)
 		return s
 	}
-	go s.translate(first, creationErr)
+	go s.translate(first)
 	return s
 }
 
@@ -125,55 +67,41 @@ func (s *Source) Close() error {
 	return s.closeErr
 }
 
-func (s *Source) translate(first fileobservation.Result, creationErr error) {
-	defer close(s.done)
-	defer s.publisher.Close()
-	var last UpstreamList
-	hasLast, degraded := false, false
-	handle := func(result fileobservation.Result) {
-		if result.Err != nil {
-			degraded = true
-			err := result.Err
-			if creationErr != nil {
-				err = creationErr
-				creationErr = nil
-			}
-			s.publisher.Publish(DiagnosticReported{Diagnostic: *diagnosticFor(err)})
-			return
-		}
-		creationErr = nil
-		list, err := decodeAndDeduplicate(result.Contents)
-		if err != nil {
-			degraded = true
-			s.publisher.Publish(DiagnosticReported{Diagnostic{Kind: DiagnosticInvalidSource, Err: err}})
-			return
-		}
-		if !degraded && hasLast && sameUpstreamList(last, list) {
-			return
-		}
-		last, hasLast, degraded = list, true, false
-		s.publisher.Publish(ListAccepted{List: list})
-	}
-	handle(first)
-	for result := range s.observation.Results() {
-		handle(result)
-	}
+type BootstrapFingerprint string
+type BootstrapAssessment struct {
+	Required                 bool
+	Path                     string
+	DefaultContents          string
+	MissingParentDirectories []string
+	Fingerprint              BootstrapFingerprint
 }
 
-func diagnosticFor(err error) *Diagnostic {
-	kind := DiagnosticObservationStopped
-	var observationError *fileobservation.Error
-	if errors.As(err, &observationError) {
-		switch observationError.Kind {
-		case fileobservation.ErrorRead:
-			kind = DiagnosticSourceUnavailable
-		case fileobservation.ErrorObservationUncertain:
-			kind = DiagnosticObservationUncertain
-		}
-	} else {
-		kind = DiagnosticSourceUnavailable
+const defaultUpstreamList = "# One upstream host or origin per line.\n# api.dev.example.com\n"
+
+func AssessBootstrap(path string) BootstrapAssessment {
+	path = filepath.Clean(path)
+	assessment := BootstrapAssessment{Path: path, DefaultContents: defaultUpstreamList}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		return assessment
 	}
-	return &Diagnostic{Kind: kind, Err: err}
+	assessment.Required = true
+	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
+		if _, err := os.Lstat(parent); err == nil {
+			break
+		}
+		assessment.MissingParentDirectories = append(assessment.MissingParentDirectories, parent)
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+	}
+	sum := sha256.Sum256([]byte(path + "\x00" + defaultUpstreamList))
+	assessment.Fingerprint = BootstrapFingerprint(hex.EncodeToString(sum[:]))
+	return assessment
+}
+
+func Bootstrap(path string) error {
+	return createFile(filepath.Clean(path), defaultUpstreamList)
 }
 
 type creationError struct {
@@ -210,6 +138,35 @@ func createFile(path, content string) error {
 		return &creationError{path, err}
 	}
 	return nil
+}
+
+func (s *Source) translate(first fileobservation.Result) {
+	defer close(s.done)
+	defer s.publisher.Close()
+	var last UpstreamList
+	hasLast, degraded := false, false
+	handle := func(result fileobservation.Result) {
+		if result.Err != nil {
+			degraded = true
+			s.publisher.Publish(SourceDegraded{Err: result.Err})
+			return
+		}
+		list, err := decodeAndDeduplicate(result.Contents)
+		if err != nil {
+			degraded = true
+			s.publisher.Publish(SourceDegraded{Err: err})
+			return
+		}
+		if !degraded && hasLast && sameUpstreamList(last, list) {
+			return
+		}
+		last, hasLast, degraded = list, true, false
+		s.publisher.Publish(ListAccepted{List: list})
+	}
+	handle(first)
+	for result := range s.observation.Results() {
+		handle(result)
+	}
 }
 
 func decodeAndDeduplicate(data []byte) (UpstreamList, error) {

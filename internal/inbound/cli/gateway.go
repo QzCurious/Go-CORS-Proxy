@@ -330,6 +330,7 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 	if result == nil {
 		return
 	}
+	renderUpstreamListBootstrapWarning(stdout, result.BootstrapWarning())
 	switch result.Kind() {
 	case gateway.StartResultStarted:
 		if started, ok := result.(gateway.Started); ok {
@@ -347,7 +348,7 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
-			renderUpstreamListDiagnostic(stdout, guidance.UpstreamListDiagnostic)
+			renderUpstreamListDegradation(stdout, guidance.UpstreamListDegradation)
 			renderUpstreamListWarnings(stdout, guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
@@ -474,7 +475,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		}
 		fmt.Fprintf(stdout, "upstream-list: %s\n", result.Runtime.UpstreamListPath)
 		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
-		renderUpstreamListDiagnostic(stdout, result.Runtime.UpstreamListDiagnostic)
+		renderUpstreamListDegradation(stdout, result.Runtime.UpstreamListDegradation)
 		renderUpstreamListWarnings(stdout, result.Runtime.UpstreamListWarnings)
 		if result.Runtime.ManagedPACActive {
 			fmt.Fprintln(stdout, "managed-pac: active")
@@ -542,11 +543,18 @@ func renderUpstreamListWarnings(stdout io.Writer, warnings []gateway.UpstreamLis
 	}
 }
 
-func renderUpstreamListDiagnostic(stdout io.Writer, diagnostic *gateway.UpstreamListDiagnosticDetail) {
-	if diagnostic == nil {
+func renderUpstreamListBootstrapWarning(stdout io.Writer, warning *gateway.UpstreamListBootstrapWarningDetail) {
+	if warning == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "warning: upstream-list %s: %s\n", diagnostic.Kind, diagnostic.Diagnostic)
+	fmt.Fprintf(stdout, "warning: upstream-list bootstrap failed: %s\n", warning.Cause)
+}
+
+func renderUpstreamListDegradation(stdout io.Writer, degradation *gateway.UpstreamListDegradationDetail) {
+	if degradation == nil {
+		return
+	}
+	fmt.Fprintf(stdout, "warning: upstream-list source degraded: %s\n", degradation.Cause)
 }
 
 func cleanupFailureText(failures []gateway.CleanupFailureDetail) string {

@@ -14,7 +14,14 @@ type startSequence struct {
 
 // Execute runs the Start Sequence. UserCA inspection is read-only; trust
 // installation remains an explicit lifecycle command.
-func (s startSequence) Execute(ctx context.Context, request StartRequest) (StartResult, error) {
+func (s startSequence) Execute(ctx context.Context, request StartRequest) (result StartResult, resultErr error) {
+	var bootstrapErr error
+	defer func() {
+		if bootstrapErr != nil && result != nil {
+			result = withUpstreamListBootstrapWarning(result, bootstrapErr)
+		}
+	}()
+
 	if !s.lifecycle.takeStartCleanupComplete() {
 		if failure := cleanManagedPAC(ctx, s.lifecycle.managedPAC); failure != nil {
 			return StartCleanupFailed{Failures: []CleanupFailure{*failure}}, nil
@@ -25,11 +32,14 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 	if err != nil {
 		return nil, err
 	}
-	creationDecision, creationResult, err := assessUpstreamListCreation(upstreamListPath, request)
+	bootstrap, creationResult, err := assessUpstreamListBootstrap(upstreamListPath, request)
 	if err != nil || creationResult != nil {
 		return creationResult, err
 	}
-	upstreamListSource := upstreamlist.Open(upstreamListPath, creationDecision)
+	if bootstrap {
+		bootstrapErr = upstreamlist.Bootstrap(upstreamListPath)
+	}
+	upstreamListSource := upstreamlist.Open(upstreamListPath)
 	closeUpstreamListSource := true
 	defer func() {
 		if closeUpstreamListSource {
@@ -185,26 +195,26 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (Start
 
 	state := engine.snapshot()
 	return Started{Guidance: StartGuidance{
-		UpstreamListPath:       upstreamListPath,
-		ManagedPACActive:       true,
-		ManagedPACServices:     pacInstall.State().ServiceNames(),
-		ManagedPACWarnings:     managedPACWarningDetails(pacInstall.Warnings()),
-		HTTPSReadiness:         state.HTTPSReadiness,
-		HTTPSInterception:      state.HTTPSInterception,
-		HTTPSIntent:            state.HTTPSIntent,
-		HTTPSWarnings:          state.HTTPSWarnings,
-		UpstreamListWarnings:   state.UpstreamListWarnings,
-		UpstreamListDiagnostic: state.UpstreamListDiagnostic,
+		UpstreamListPath:        upstreamListPath,
+		ManagedPACActive:        true,
+		ManagedPACServices:      pacInstall.State().ServiceNames(),
+		ManagedPACWarnings:      managedPACWarningDetails(pacInstall.Warnings()),
+		HTTPSReadiness:          state.HTTPSReadiness,
+		HTTPSInterception:       state.HTTPSInterception,
+		HTTPSIntent:             state.HTTPSIntent,
+		HTTPSWarnings:           state.HTTPSWarnings,
+		UpstreamListWarnings:    state.UpstreamListWarnings,
+		UpstreamListDegradation: state.UpstreamListDegradation,
 	}}, nil
 }
 
-func assessUpstreamListCreation(path string, request StartRequest) (upstreamlist.CreationDecision, StartResult, error) {
-	assessment := upstreamlist.AssessCreation(path)
+func assessUpstreamListBootstrap(path string, request StartRequest) (bool, StartResult, error) {
+	assessment := upstreamlist.AssessBootstrap(path)
 	if !assessment.Required {
-		return upstreamlist.CreationUndecided, nil, nil
+		return false, nil, nil
 	}
 	if request.UpstreamListCreationConsent == nil {
-		return upstreamlist.CreationUndecided, StartUpstreamListCreationConsentRequired{Consent: UpstreamListCreationConsent{
+		return false, StartUpstreamListCreationConsentRequired{Consent: UpstreamListCreationConsent{
 			Path: assessment.Path, DefaultContents: assessment.DefaultContents,
 			MissingParentDirectories: assessment.MissingParentDirectories,
 			Fingerprint:              UpstreamListCreationFingerprint(assessment.Fingerprint),
@@ -213,14 +223,43 @@ func assessUpstreamListCreation(path string, request StartRequest) (upstreamlist
 	input := request.UpstreamListCreationConsent
 	switch input.Decision {
 	case UpstreamListCreationDeclined:
-		return upstreamlist.CreationDeclined, nil, nil
+		return false, nil, nil
 	case UpstreamListCreationAccepted:
 		if input.Fingerprint != UpstreamListCreationFingerprint(assessment.Fingerprint) {
-			return 0, nil, fmt.Errorf("Upstream List creation consent does not match the current creation assessment")
+			return false, nil, fmt.Errorf("Upstream List creation consent does not match the current bootstrap assessment")
 		}
-		return upstreamlist.CreationAccepted, nil, nil
+		return true, nil, nil
 	default:
-		return 0, nil, fmt.Errorf("invalid Upstream List creation decision %q", input.Decision)
+		return false, nil, fmt.Errorf("invalid Upstream List creation decision %q", input.Decision)
+	}
+}
+
+func withUpstreamListBootstrapWarning(result StartResult, err error) StartResult {
+	warning := &UpstreamListBootstrapWarningDetail{Cause: err.Error()}
+	switch typed := result.(type) {
+	case Started:
+		typed.UpstreamListBootstrapWarning = warning
+		return typed
+	case StartConsentRequired:
+		typed.UpstreamListBootstrapWarning = warning
+		return typed
+	case StartNoManageablePACServices:
+		typed.UpstreamListBootstrapWarning = warning
+		return typed
+	case StartManagedPACInstallationFailed:
+		typed.UpstreamListBootstrapWarning = warning
+		return typed
+	case StartAlreadyMutating:
+		typed.UpstreamListBootstrapWarning = warning
+		return typed
+	case StartStopCancelled:
+		typed.UpstreamListBootstrapWarning = warning
+		return typed
+	case StartCleanupFailed:
+		typed.UpstreamListBootstrapWarning = warning
+		return typed
+	default:
+		return result
 	}
 }
 

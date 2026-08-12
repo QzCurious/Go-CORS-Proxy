@@ -49,7 +49,7 @@ func TestStartFailureReturnsSemanticResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"code":"managed-pac-installation-failed","message":"Gateway Start was not fulfilled.","details":{"diagnostic":"PAC install failed"}}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"managed-pac-installation-failed","message":"Gateway Start was not fulfilled.","details":{"diagnostic":"PAC install failed","upstreamListBootstrapWarning":{"cause":"bootstrap denied"}}}}`))
 	}))
 	defer server.Close()
 	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
@@ -59,7 +59,7 @@ func TestStartFailureReturnsSemanticResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	failed, ok := result.(StartManagedPACInstallationFailed)
-	if !ok || failed.Diagnostic != "PAC install failed" {
+	if !ok || failed.Diagnostic != "PAC install failed" || failed.BootstrapWarning() == nil || failed.BootstrapWarning().Cause != "bootstrap denied" {
 		t.Fatalf("result = %#v", result)
 	}
 }

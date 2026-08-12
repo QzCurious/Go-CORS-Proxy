@@ -53,13 +53,15 @@ type StartRequest struct {
 type StartResult interface {
 	Kind() StartKind
 	Fulfillment() CommandFulfillment
+	BootstrapWarning() *UpstreamListBootstrapWarningDetail
 	startResult()
 }
 
 // Started reports that the runtime was started and includes the initial
 // guidance snapshot.
 type Started struct {
-	Guidance StartGuidance
+	Guidance                     StartGuidance
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
 }
 
 // AlreadyRunning reports that a runtime was already active.
@@ -92,7 +94,8 @@ type UpstreamListCreationConsentInput struct {
 
 // StartConsentRequired reports the managed PAC services requiring confirmation.
 type StartConsentRequired struct {
-	Consent ManagedPACConsent
+	Consent                      ManagedPACConsent
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
 }
 
 // StartConsentDeclined reports that managed PAC consent was declined.
@@ -101,27 +104,38 @@ type StartConsentDeclined struct{}
 // StartNoManageablePACServices reports that managed PAC inspection found no
 // services that can be managed.  Consent contains the inspection snapshot.
 type StartNoManageablePACServices struct {
-	Consent ManagedPACConsent
+	Consent                      ManagedPACConsent
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
 }
 
 // StartManagedPACInstallationFailed reports a failed PAC installation and any
 // warnings produced while attempting it.
 type StartManagedPACInstallationFailed struct {
-	Warnings   []ManagedPACWarningDetail
-	Diagnostic string
+	Warnings                     []ManagedPACWarningDetail
+	Diagnostic                   string
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
 }
 
 // StartAlreadyMutating reports that another start/CA mutation is in progress.
-type StartAlreadyMutating struct{}
+type StartAlreadyMutating struct {
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+}
 
 // StartStopCancelled reports that Stop cancelled the Start operation.
-type StartStopCancelled struct{}
+type StartStopCancelled struct {
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+}
 
 // StartCleanupFailed reports cleanup failures.  Warnings are retained when
 // they were produced by a failed Managed PAC installation before cleanup.
 type StartCleanupFailed struct {
-	Failures []CleanupFailure
-	Warnings []ManagedPACWarningDetail
+	Failures                     []CleanupFailure
+	Warnings                     []ManagedPACWarningDetail
+	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+}
+
+type UpstreamListBootstrapWarningDetail struct {
+	Cause string `json:"cause"`
 }
 
 func startFulfillment(kind StartKind) CommandFulfillment {
@@ -133,39 +147,54 @@ func startFulfillment(kind StartKind) CommandFulfillment {
 
 func (Started) Kind() StartKind                 { return StartResultStarted }
 func (Started) Fulfillment() CommandFulfillment { return startFulfillment(StartResultStarted) }
-func (Started) startResult()                    {}
-func (AlreadyRunning) Kind() StartKind          { return StartResultAlreadyRunning }
+func (r Started) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return r.UpstreamListBootstrapWarning
+}
+func (Started) startResult()           {}
+func (AlreadyRunning) Kind() StartKind { return StartResultAlreadyRunning }
 func (AlreadyRunning) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultAlreadyRunning)
 }
-func (AlreadyRunning) startResult()          {}
-func (StartOwnerTransition) Kind() StartKind { return StartResultOwnerTransition }
+func (AlreadyRunning) BootstrapWarning() *UpstreamListBootstrapWarningDetail { return nil }
+func (AlreadyRunning) startResult()                                          {}
+func (StartOwnerTransition) Kind() StartKind                                 { return StartResultOwnerTransition }
 func (StartOwnerTransition) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultOwnerTransition)
 }
-func (StartOwnerTransition) startResult() {}
+func (StartOwnerTransition) BootstrapWarning() *UpstreamListBootstrapWarningDetail { return nil }
+func (StartOwnerTransition) startResult()                                          {}
 func (StartUpstreamListCreationConsentRequired) Kind() StartKind {
 	return StartResultUpstreamListCreationConsentRequired
 }
 func (StartUpstreamListCreationConsentRequired) Fulfillment() CommandFulfillment {
 	return CommandUnfulfilled
 }
+func (StartUpstreamListCreationConsentRequired) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return nil
+}
 func (StartUpstreamListCreationConsentRequired) startResult() {}
 func (StartConsentRequired) Kind() StartKind                  { return StartResultConsentRequired }
 func (StartConsentRequired) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultConsentRequired)
+}
+func (r StartConsentRequired) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return r.UpstreamListBootstrapWarning
 }
 func (StartConsentRequired) startResult()    {}
 func (StartConsentDeclined) Kind() StartKind { return StartResultConsentDeclined }
 func (StartConsentDeclined) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultConsentDeclined)
 }
-func (StartConsentDeclined) startResult() {}
+func (StartConsentDeclined) BootstrapWarning() *UpstreamListBootstrapWarningDetail { return nil }
+func (StartConsentDeclined) startResult()                                          {}
 func (StartNoManageablePACServices) Kind() StartKind {
 	return StartResultNoManageablePACServices
 }
 func (StartNoManageablePACServices) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultNoManageablePACServices)
+}
+func (r StartNoManageablePACServices) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return r.UpstreamListBootstrapWarning
 }
 func (StartNoManageablePACServices) startResult() {}
 func (StartManagedPACInstallationFailed) Kind() StartKind {
@@ -174,20 +203,32 @@ func (StartManagedPACInstallationFailed) Kind() StartKind {
 func (StartManagedPACInstallationFailed) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultManagedPACInstallationFailed)
 }
+func (r StartManagedPACInstallationFailed) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return r.UpstreamListBootstrapWarning
+}
 func (StartManagedPACInstallationFailed) startResult() {}
 func (StartAlreadyMutating) Kind() StartKind           { return StartResultStartAlreadyMutating }
 func (StartAlreadyMutating) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultStartAlreadyMutating)
+}
+func (r StartAlreadyMutating) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return r.UpstreamListBootstrapWarning
 }
 func (StartAlreadyMutating) startResult()  {}
 func (StartStopCancelled) Kind() StartKind { return StartResultStopCancelled }
 func (StartStopCancelled) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultStopCancelled)
 }
+func (r StartStopCancelled) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return r.UpstreamListBootstrapWarning
+}
 func (StartStopCancelled) startResult()    {}
 func (StartCleanupFailed) Kind() StartKind { return StartResultCleanupFailed }
 func (StartCleanupFailed) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultCleanupFailed)
+}
+func (r StartCleanupFailed) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+	return r.UpstreamListBootstrapWarning
 }
 func (StartCleanupFailed) startResult() {}
 
@@ -230,16 +271,16 @@ type ManagedPACConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidance struct {
-	UpstreamListPath       string                        `json:"upstreamListPath"`
-	ManagedPACActive       bool                          `json:"managedPacActive"`
-	ManagedPACServices     []string                      `json:"managedPacServices,omitempty"`
-	HTTPSReadiness         HTTPSReadinessStatus          `json:"httpsReadiness"`
-	HTTPSInterception      HTTPSInterceptionState        `json:"httpsInterception"`
-	HTTPSIntent            bool                          `json:"httpsIntent"`
-	HTTPSWarnings          []HTTPSWarningDetail          `json:"httpsWarnings,omitempty"`
-	ManagedPACWarnings     []ManagedPACWarningDetail     `json:"managedPacWarnings,omitempty"`
-	UpstreamListWarnings   []UpstreamListWarningDetail   `json:"upstreamListWarnings,omitempty"`
-	UpstreamListDiagnostic *UpstreamListDiagnosticDetail `json:"upstreamListDiagnostic,omitempty"`
+	UpstreamListPath        string                         `json:"upstreamListPath"`
+	ManagedPACActive        bool                           `json:"managedPacActive"`
+	ManagedPACServices      []string                       `json:"managedPacServices,omitempty"`
+	HTTPSReadiness          HTTPSReadinessStatus           `json:"httpsReadiness"`
+	HTTPSInterception       HTTPSInterceptionState         `json:"httpsInterception"`
+	HTTPSIntent             bool                           `json:"httpsIntent"`
+	HTTPSWarnings           []HTTPSWarningDetail           `json:"httpsWarnings,omitempty"`
+	ManagedPACWarnings      []ManagedPACWarningDetail      `json:"managedPacWarnings,omitempty"`
+	UpstreamListWarnings    []UpstreamListWarningDetail    `json:"upstreamListWarnings,omitempty"`
+	UpstreamListDegradation *UpstreamListDegradationDetail `json:"upstreamListDegradation,omitempty"`
 }
 
 // StartGuidanceDetail is retained as a representation-oriented alias for
@@ -252,9 +293,8 @@ type UpstreamListWarningDetail struct {
 	Diagnostic string `json:"diagnostic"`
 }
 
-type UpstreamListDiagnosticDetail struct {
-	Kind       string `json:"kind"`
-	Diagnostic string `json:"diagnostic"`
+type UpstreamListDegradationDetail struct {
+	Cause string `json:"cause"`
 }
 
 type StopResultKind string
@@ -402,19 +442,19 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen            string                        `json:"proxyListen"`
-	PACListen              string                        `json:"pacListen"`
-	UpstreamListPath       string                        `json:"upstreamListPath"`
-	UpstreamCount          int                           `json:"upstreamCount"`
-	UpstreamListWarnings   []UpstreamListWarningDetail   `json:"upstreamListWarnings,omitempty"`
-	UpstreamListDiagnostic *UpstreamListDiagnosticDetail `json:"upstreamListDiagnostic,omitempty"`
-	HTTPSReadiness         HTTPSReadinessStatus          `json:"httpsReadiness"`
-	HTTPSInterception      HTTPSInterceptionState        `json:"httpsInterception"`
-	HTTPSIntent            bool                          `json:"httpsIntent"`
-	HTTPSWarnings          []HTTPSWarningDetail          `json:"httpsWarnings,omitempty"`
-	ManagedPACActive       bool                          `json:"managedPacActive"`
-	ManagedPACServices     []string                      `json:"managedPacServices,omitempty"`
-	ManagedPACWarnings     []ManagedPACWarningDetail     `json:"managedPacWarnings,omitempty"`
+	ProxyListen             string                         `json:"proxyListen"`
+	PACListen               string                         `json:"pacListen"`
+	UpstreamListPath        string                         `json:"upstreamListPath"`
+	UpstreamCount           int                            `json:"upstreamCount"`
+	UpstreamListWarnings    []UpstreamListWarningDetail    `json:"upstreamListWarnings,omitempty"`
+	UpstreamListDegradation *UpstreamListDegradationDetail `json:"upstreamListDegradation,omitempty"`
+	HTTPSReadiness          HTTPSReadinessStatus           `json:"httpsReadiness"`
+	HTTPSInterception       HTTPSInterceptionState         `json:"httpsInterception"`
+	HTTPSIntent             bool                           `json:"httpsIntent"`
+	HTTPSWarnings           []HTTPSWarningDetail           `json:"httpsWarnings,omitempty"`
+	ManagedPACActive        bool                           `json:"managedPacActive"`
+	ManagedPACServices      []string                       `json:"managedPacServices,omitempty"`
+	ManagedPACWarnings      []ManagedPACWarningDetail      `json:"managedPacWarnings,omitempty"`
 }
 
 type HTTPSReadinessStatus string
@@ -885,19 +925,19 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
-			ProxyListen:            state.ProxyListen,
-			PACListen:              state.PACListen,
-			UpstreamListPath:       state.UpstreamList,
-			UpstreamCount:          state.UpstreamCount,
-			UpstreamListWarnings:   state.UpstreamListWarnings,
-			UpstreamListDiagnostic: state.UpstreamListDiagnostic,
-			HTTPSReadiness:         state.HTTPSReadiness,
-			HTTPSInterception:      state.HTTPSInterception,
-			HTTPSIntent:            state.HTTPSIntent,
-			HTTPSWarnings:          state.HTTPSWarnings,
-			ManagedPACActive:       managedPACActive,
-			ManagedPACServices:     managedPACServiceNames,
-			ManagedPACWarnings:     managedPACWarningSnapshot,
+			ProxyListen:             state.ProxyListen,
+			PACListen:               state.PACListen,
+			UpstreamListPath:        state.UpstreamList,
+			UpstreamCount:           state.UpstreamCount,
+			UpstreamListWarnings:    state.UpstreamListWarnings,
+			UpstreamListDegradation: state.UpstreamListDegradation,
+			HTTPSReadiness:          state.HTTPSReadiness,
+			HTTPSInterception:       state.HTTPSInterception,
+			HTTPSIntent:             state.HTTPSIntent,
+			HTTPSWarnings:           state.HTTPSWarnings,
+			ManagedPACActive:        managedPACActive,
+			ManagedPACServices:      managedPACServiceNames,
+			ManagedPACWarnings:      managedPACWarningSnapshot,
 		}
 		return result, nil
 	}
@@ -922,24 +962,13 @@ func upstreamListWarningDetails(warnings []upstreamlist.Warning) []UpstreamListW
 	return details
 }
 
-func upstreamListDiagnosticDetail(diagnostic *upstreamlist.Diagnostic) *UpstreamListDiagnosticDetail {
-	if diagnostic == nil {
+func upstreamListDegradationDetail(degradation *upstreamlist.SourceDegraded) *UpstreamListDegradationDetail {
+	if degradation == nil {
 		return nil
 	}
-	kind := "unknown"
-	switch diagnostic.Kind {
-	case upstreamlist.DiagnosticInvalidSource:
-		kind = "invalid-source"
-	case upstreamlist.DiagnosticSourceUnavailable:
-		kind = "source-unavailable"
-	case upstreamlist.DiagnosticObservationUncertain:
-		kind = "observation-uncertain"
-	case upstreamlist.DiagnosticObservationStopped:
-		kind = "observation-stopped"
-	}
-	detail := &UpstreamListDiagnosticDetail{Kind: kind}
-	if diagnostic.Err != nil {
-		detail.Diagnostic = diagnostic.Err.Error()
+	detail := &UpstreamListDegradationDetail{}
+	if degradation.Err != nil {
+		detail.Cause = degradation.Err.Error()
 	}
 	return detail
 }

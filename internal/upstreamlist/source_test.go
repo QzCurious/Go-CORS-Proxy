@@ -1,6 +1,7 @@
 package upstreamlist_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,39 +14,48 @@ const timeout = 4 * time.Second
 
 func TestMissingSourceStartsDegradedWithoutCreating(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upstreams.txt")
-	source := upstreamlist.Open(path, upstreamlist.CreationDeclined)
+	source := upstreamlist.Open(path)
 	defer source.Close()
-	diagnostic := requireDiagnostic(t, waitTransition(t, source.Transitions()))
-	if diagnostic.Kind != upstreamlist.DiagnosticSourceUnavailable {
-		t.Fatalf("kind = %v", diagnostic.Kind)
+	degradation := requireDegradation(t, waitTransition(t, source.Transitions()))
+	if !errors.Is(degradation, degradation.Err) {
+		t.Fatalf("degradation does not unwrap its cause: %v", degradation)
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("source was created: %v", err)
 	}
 }
 
-func TestAcceptedCreationCreatesImmediately(t *testing.T) {
+func TestBootstrapCreatesImmediately(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "upstreams.txt")
-	source := upstreamlist.Open(path, upstreamlist.CreationAccepted)
-	defer source.Close()
-	requireList(t, waitTransition(t, source.Transitions()))
+	if err := upstreamlist.Bootstrap(path); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Lstat(path); err != nil {
 		t.Fatal(err)
 	}
 }
 
+func TestBootstrapReturnsCreationFailure(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parent, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "upstreams.txt")
+	if err := upstreamlist.Bootstrap(path); err == nil {
+		t.Fatal("Bootstrap succeeded through a non-directory parent")
+	}
+}
+
 func TestInvalidInitialSourceIsDegraded(t *testing.T) {
 	path := writeFile(t, string([]byte{0xff}))
-	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
+	source := upstreamlist.Open(path)
 	defer source.Close()
-	if got := requireDiagnostic(t, waitTransition(t, source.Transitions())).Kind; got != upstreamlist.DiagnosticInvalidSource {
-		t.Fatalf("kind = %v", got)
-	}
+	requireDegradation(t, waitTransition(t, source.Transitions()))
 }
 
 func TestSemanticChangesAndRecoveryPublishListAccepted(t *testing.T) {
 	path := writeFile(t, "first.example.test\n")
-	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
+	source := upstreamlist.Open(path)
 	defer source.Close()
 	if got := requireList(t, waitTransition(t, source.Transitions())).HostSelectors[0].Hostname; got != "first.example.test" {
 		t.Fatalf("host = %q", got)
@@ -53,7 +63,7 @@ func TestSemanticChangesAndRecoveryPublishListAccepted(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	requireDiagnostic(t, waitTransition(t, source.Transitions()))
+	requireDegradation(t, waitTransition(t, source.Transitions()))
 	writeAt(t, path, "first.example.test\n")
 	if got := requireList(t, waitTransition(t, source.Transitions())).HostSelectors[0].Hostname; got != "first.example.test" {
 		t.Fatalf("host = %q", got)
@@ -62,7 +72,7 @@ func TestSemanticChangesAndRecoveryPublishListAccepted(t *testing.T) {
 
 func TestContinuouslyHealthySemanticEqualityIsSuppressed(t *testing.T) {
 	path := writeFile(t, "api.example.test\n")
-	source := upstreamlist.Open(path, upstreamlist.CreationUndecided)
+	source := upstreamlist.Open(path)
 	defer source.Close()
 	requireList(t, waitTransition(t, source.Transitions()))
 	writeAt(t, path, "# representation only\nAPI.EXAMPLE.TEST\n")
@@ -75,7 +85,7 @@ func TestContinuouslyHealthySemanticEqualityIsSuppressed(t *testing.T) {
 
 func TestAssessmentDisclosesCreationConsequences(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "nested", "upstreams.txt")
-	a := upstreamlist.AssessCreation(path)
+	a := upstreamlist.AssessBootstrap(path)
 	if !a.Required || a.Path != path || a.DefaultContents == "" || len(a.MissingParentDirectories) != 2 || a.Fingerprint == "" {
 		t.Fatalf("assessment = %#v", a)
 	}
@@ -102,13 +112,16 @@ func requireList(t *testing.T, transition upstreamlist.Transition) upstreamlist.
 	}
 	return value.List
 }
-func requireDiagnostic(t *testing.T, transition upstreamlist.Transition) upstreamlist.Diagnostic {
+func requireDegradation(t *testing.T, transition upstreamlist.Transition) upstreamlist.SourceDegraded {
 	t.Helper()
-	value, ok := transition.(upstreamlist.DiagnosticReported)
+	value, ok := transition.(upstreamlist.SourceDegraded)
 	if !ok {
 		t.Fatalf("transition = %#v", transition)
 	}
-	return value.Diagnostic
+	if value.Err == nil {
+		t.Fatal("degradation has no error")
+	}
+	return value
 }
 func writeFile(t *testing.T, contents string) string {
 	t.Helper()

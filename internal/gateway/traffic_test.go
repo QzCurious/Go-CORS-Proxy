@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,19 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
+
+func TestRuntimeRetainsSourceDegradationCause(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, upstreamlist.SourceDegraded{Err: errors.New("source unavailable")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	degradation := runtime.snapshot().UpstreamListDegradation
+	if degradation == nil || degradation.Cause != "source unavailable" {
+		t.Fatalf("source degradation = %#v", degradation)
+	}
+}
 
 func TestPACPublicationInputIgnoresRepresentationAndWarningOnlyChanges(t *testing.T) {
 	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
@@ -338,7 +352,7 @@ func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*upstream
 		t.Fatal(err)
 	}
 	writeTrafficTestFile(t, upstreamPath, upstreams)
-	source := upstreamlist.Open(upstreamPath, upstreamlist.CreationUndecided)
+	source := upstreamlist.Open(upstreamPath)
 	select {
 	case initial := <-source.Transitions():
 		return source, initial, upstreamPath
