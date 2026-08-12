@@ -1,7 +1,6 @@
 package upstreamlist_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,13 +11,13 @@ import (
 
 const timeout = 4 * time.Second
 
-func TestMissingSourceStartsDegradedWithoutCreating(t *testing.T) {
+func TestMissingSourceReportsReadFailureWithoutCreating(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upstreams.txt")
 	source := upstreamlist.Open(path)
 	defer source.Close()
-	degradation := requireDegradation(t, waitTransition(t, source.Transitions()))
-	if !errors.Is(degradation, degradation.Err) {
-		t.Fatalf("degradation does not unwrap its cause: %v", degradation)
+	diagnostic := requireObservationError(t, waitTransition(t, source.Transitions()))
+	if diagnostic.Kind != upstreamlist.ObservationReadFailed {
+		t.Fatalf("kind = %q", diagnostic.Kind)
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("source was created: %v", err)
@@ -46,14 +45,14 @@ func TestBootstrapReturnsCreationFailure(t *testing.T) {
 	}
 }
 
-func TestInvalidInitialSourceIsDegraded(t *testing.T) {
+func TestInvalidInitialSourceReportsInvalidFormat(t *testing.T) {
 	path := writeFile(t, string([]byte{0xff}))
 	source := upstreamlist.Open(path)
 	defer source.Close()
-	requireDegradation(t, waitTransition(t, source.Transitions()))
+	requireInvalidFormat(t, waitTransition(t, source.Transitions()))
 }
 
-func TestSemanticChangesAndRecoveryPublishListAccepted(t *testing.T) {
+func TestChangesAndRecoveryPublishProjection(t *testing.T) {
 	path := writeFile(t, "first.example.test\n")
 	source := upstreamlist.Open(path)
 	defer source.Close()
@@ -63,23 +62,22 @@ func TestSemanticChangesAndRecoveryPublishListAccepted(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	requireDegradation(t, waitTransition(t, source.Transitions()))
+	requireObservationError(t, waitTransition(t, source.Transitions()))
 	writeAt(t, path, "first.example.test\n")
 	if got := requireList(t, waitTransition(t, source.Transitions())).HostSelectors[0].Hostname; got != "first.example.test" {
 		t.Fatalf("host = %q", got)
 	}
 }
 
-func TestContinuouslyHealthySemanticEqualityIsSuppressed(t *testing.T) {
+func TestDistinctContentsPublishSemanticallyEqualProjection(t *testing.T) {
 	path := writeFile(t, "api.example.test\n")
 	source := upstreamlist.Open(path)
 	defer source.Close()
 	requireList(t, waitTransition(t, source.Transitions()))
 	writeAt(t, path, "# representation only\nAPI.EXAMPLE.TEST\n")
-	select {
-	case got := <-source.Transitions():
-		t.Fatalf("unexpected transition %#v", got)
-	case <-time.After(400 * time.Millisecond):
+	projection := requireList(t, waitTransition(t, source.Transitions()))
+	if got := projection.HostSelectors[0].Hostname; got != "api.example.test" {
+		t.Fatalf("host = %q", got)
 	}
 }
 
@@ -106,20 +104,31 @@ func waitTransition(t *testing.T, transitions <-chan upstreamlist.Transition) up
 }
 func requireList(t *testing.T, transition upstreamlist.Transition) upstreamlist.UpstreamList {
 	t.Helper()
-	value, ok := transition.(upstreamlist.ListAccepted)
+	value, ok := transition.(upstreamlist.Projection)
 	if !ok {
 		t.Fatalf("transition = %#v", transition)
 	}
 	return value.List
 }
-func requireDegradation(t *testing.T, transition upstreamlist.Transition) upstreamlist.SourceDegraded {
+func requireInvalidFormat(t *testing.T, transition upstreamlist.Transition) upstreamlist.InvalidFormat {
 	t.Helper()
-	value, ok := transition.(upstreamlist.SourceDegraded)
+	value, ok := transition.(upstreamlist.InvalidFormat)
 	if !ok {
 		t.Fatalf("transition = %#v", transition)
 	}
 	if value.Err == nil {
-		t.Fatal("degradation has no error")
+		t.Fatal("invalid format has no error")
+	}
+	return value
+}
+func requireObservationError(t *testing.T, transition upstreamlist.Transition) upstreamlist.ObservationError {
+	t.Helper()
+	value, ok := transition.(upstreamlist.ObservationError)
+	if !ok {
+		t.Fatalf("transition = %#v", transition)
+	}
+	if value.Err == nil {
+		t.Fatal("observation error has no cause")
 	}
 	return value
 }

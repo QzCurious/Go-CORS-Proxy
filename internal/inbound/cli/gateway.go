@@ -348,7 +348,7 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
-			renderUpstreamListDegradation(stdout, guidance.UpstreamListDegradation)
+			renderUpstreamListDiagnostics(stdout, guidance.UpstreamListDiagnostics)
 			renderUpstreamListWarnings(stdout, guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
@@ -475,7 +475,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		}
 		fmt.Fprintf(stdout, "upstream-list: %s\n", result.Runtime.UpstreamListPath)
 		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
-		renderUpstreamListDegradation(stdout, result.Runtime.UpstreamListDegradation)
+		renderUpstreamListDiagnostics(stdout, result.Runtime.UpstreamListDiagnostics)
 		renderUpstreamListWarnings(stdout, result.Runtime.UpstreamListWarnings)
 		if result.Runtime.ManagedPACActive {
 			fmt.Fprintln(stdout, "managed-pac: active")
@@ -550,11 +550,23 @@ func renderUpstreamListBootstrapWarning(stdout io.Writer, warning *gateway.Upstr
 	fmt.Fprintf(stdout, "warning: upstream-list bootstrap failed: %s\n", warning.Cause)
 }
 
-func renderUpstreamListDegradation(stdout io.Writer, degradation *gateway.UpstreamListDegradationDetail) {
-	if degradation == nil {
+func renderUpstreamListDiagnostics(stdout io.Writer, diagnostics *gateway.UpstreamListDiagnosticsDetail) {
+	if diagnostics == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "warning: upstream-list source degraded: %s\n", degradation.Cause)
+	if observation := diagnostics.ObservationError; observation != nil {
+		fmt.Fprintf(stdout, "warning: upstream-list observation %s: %s\n", observation.Kind, observation.Cause)
+		switch observation.Kind {
+		case gateway.UpstreamListObservationStopped:
+			fmt.Fprintln(stdout, "action: repair the upstream-list source and restart the gateway")
+		default:
+			fmt.Fprintln(stdout, "action: check that the upstream-list file remains readable and observable")
+		}
+	}
+	if invalid := diagnostics.InvalidFormat; invalid != nil {
+		fmt.Fprintf(stdout, "warning: invalid upstream-list format: %s\n", invalid.Cause)
+		fmt.Fprintln(stdout, "action: save the upstream-list file as valid UTF-8")
+	}
 }
 
 func cleanupFailureText(failures []gateway.CleanupFailureDetail) string {

@@ -9,45 +9,54 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 )
 
 type Source struct {
 	observation *fileobservation.Observation
-	publisher   conflatedstream.Publisher[Transition]
-	stream      conflatedstream.Stream[Transition]
+	transitions chan Transition
 	done        chan struct{}
+	closing     chan struct{}
 	closeOnce   sync.Once
 	closeErr    error
 }
 
 type Transition interface{ upstreamListTransition() }
-type ListAccepted struct{ List UpstreamList }
-type SourceDegraded struct{ Err error }
+type Projection struct{ List UpstreamList }
+type InvalidFormat struct{ Err error }
 
-func (ListAccepted) upstreamListTransition()   {}
-func (SourceDegraded) upstreamListTransition() {}
+type ObservationErrorKind string
 
-func (e SourceDegraded) Error() string { return e.Err.Error() }
-func (e SourceDegraded) Unwrap() error { return e.Err }
+const (
+	ObservationReadFailed ObservationErrorKind = "read-failed"
+	ObservationUncertain  ObservationErrorKind = "observation-uncertain"
+	ObservationStopped    ObservationErrorKind = "observation-stopped"
+)
+
+type ObservationError struct {
+	Kind ObservationErrorKind
+	Err  error
+}
+
+func (Projection) upstreamListTransition()       {}
+func (InvalidFormat) upstreamListTransition()    {}
+func (ObservationError) upstreamListTransition() {}
 
 func Open(path string) *Source {
 	path = filepath.Clean(path)
-	publisher, stream := conflatedstream.New[Transition]()
-	s := &Source{publisher: publisher, stream: stream, done: make(chan struct{})}
+	s := &Source{transitions: make(chan Transition, 1), done: make(chan struct{}), closing: make(chan struct{})}
 	observation, err := fileobservation.Open(path, fileobservation.Options{})
 	if err != nil {
-		publisher.Publish(SourceDegraded{Err: err})
-		publisher.Close()
+		s.transitions <- ObservationError{Kind: ObservationStopped, Err: err}
+		close(s.transitions)
 		close(s.done)
 		return s
 	}
 	s.observation = observation
 	first, ok := <-observation.Results()
 	if !ok {
-		publisher.Publish(SourceDegraded{Err: errors.New("upstream list observation stopped before its first result")})
-		publisher.Close()
+		s.transitions <- ObservationError{Kind: ObservationStopped, Err: errors.New("upstream list observation stopped before its first result")}
+		close(s.transitions)
 		close(s.done)
 		return s
 	}
@@ -55,10 +64,11 @@ func Open(path string) *Source {
 	return s
 }
 
-func (s *Source) Transitions() <-chan Transition { return s.stream.Updates() }
+func (s *Source) Transitions() <-chan Transition { return s.transitions }
 
 func (s *Source) Close() error {
 	s.closeOnce.Do(func() {
+		close(s.closing)
 		if s.observation != nil {
 			s.closeErr = s.observation.Close()
 		}
@@ -142,31 +152,44 @@ func createFile(path, content string) error {
 
 func (s *Source) translate(first fileobservation.Result) {
 	defer close(s.done)
-	defer s.publisher.Close()
-	var last UpstreamList
-	hasLast, degraded := false, false
+	defer close(s.transitions)
 	handle := func(result fileobservation.Result) {
 		if result.Err != nil {
-			degraded = true
-			s.publisher.Publish(SourceDegraded{Err: result.Err})
+			s.transitions <- observationError(result.Err)
 			return
 		}
 		list, err := decodeAndDeduplicate(result.Contents)
 		if err != nil {
-			degraded = true
-			s.publisher.Publish(SourceDegraded{Err: err})
+			s.transitions <- InvalidFormat{Err: err}
 			return
 		}
-		if !degraded && hasLast && sameUpstreamList(last, list) {
-			return
-		}
-		last, hasLast, degraded = list, true, false
-		s.publisher.Publish(ListAccepted{List: list})
+		s.transitions <- Projection{List: list}
 	}
 	handle(first)
 	for result := range s.observation.Results() {
 		handle(result)
 	}
+	select {
+	case <-s.closing:
+	default:
+		s.transitions <- ObservationError{Kind: ObservationStopped, Err: errors.New("upstream list observation stopped")}
+	}
+}
+
+func observationError(err error) ObservationError {
+	kind := ObservationStopped
+	var observed *fileobservation.Error
+	if errors.As(err, &observed) {
+		switch observed.Kind {
+		case fileobservation.ErrorRead:
+			kind = ObservationReadFailed
+		case fileobservation.ErrorObservationUncertain:
+			kind = ObservationUncertain
+		case fileobservation.ErrorObservationStopped:
+			kind = ObservationStopped
+		}
+	}
+	return ObservationError{Kind: kind, Err: err}
 }
 
 func decodeAndDeduplicate(data []byte) (UpstreamList, error) {
@@ -195,46 +218,4 @@ func deduplicate(parsed parsedUpstreamList) UpstreamList {
 		}
 	}
 	return UpstreamList{HostSelectors: hosts, OriginSelectors: origins, Warnings: parsed.Warnings}
-}
-
-func sameUpstreamList(left, right UpstreamList) bool {
-	if !sameHostSelectors(left.HostSelectors, right.HostSelectors) || !sameOriginSelectors(left.OriginSelectors, right.OriginSelectors) || len(left.Warnings) != len(right.Warnings) {
-		return false
-	}
-	for i := range left.Warnings {
-		if left.Warnings[i] != right.Warnings[i] {
-			return false
-		}
-	}
-	return true
-}
-func sameHostSelectors(left, right []HostSelector) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	set := make(map[HostSelector]struct{}, len(left))
-	for _, v := range left {
-		set[v] = struct{}{}
-	}
-	for _, v := range right {
-		if _, ok := set[v]; !ok {
-			return false
-		}
-	}
-	return true
-}
-func sameOriginSelectors(left, right []OriginSelector) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	set := make(map[OriginSelector]struct{}, len(left))
-	for _, v := range left {
-		set[v] = struct{}{}
-	}
-	for _, v := range right {
-		if _, ok := set[v]; !ok {
-			return false
-		}
-	}
-	return true
 }

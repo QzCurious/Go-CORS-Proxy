@@ -65,7 +65,7 @@ The process-bootstrap role that establishes and keeps a Gateway Owner available 
 _Avoid_: CLI-owned Start semantics, implicit serve command, HTTP process bootstrap, Gateway Runtime
 
 **Gateway Runtime**:
-The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, the watched Upstream List Source, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. Feature degradation never ends Gateway Runtime; explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
+The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, the watched Upstream List Source, idempotent runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. Feature diagnostics never end Gateway Runtime; explicit Gateway stop or an irrecoverable proxy, PAC, or internal Source protocol failure ends it coherently.
 _Avoid_: lifecycle facade, command router, OS proxy manager, cleanup owner
 
 **Router-Only Serve**:
@@ -317,16 +317,32 @@ A lifecycle rule where ready HTTPS Readiness allows HTTPS Interception State to 
 _Avoid_: Explicit Trusted HTTPS, Config File HTTPS toggle, intent-as-capability, silent trust installation
 
 **Upstream List Source**:
-The file-backed semantic source that continuously observes the user-managed Upstream List supplied by Gateway after any separately orchestrated Configuration Bootstrap. It remains available when observation cannot start or no valid projection exists, suppresses healthy semantic no-ops, reports degradation as an error transition without a list or error equality, and owns semantic identity without owning generic filesystem observation or choosing the application's path policy.
-_Avoid_: legacy configuration abstraction, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, event history, source-content identity, configurable application default
+The long-lived read-only projection source that observes the user-managed Upstream List after any separately orchestrated Configuration Bootstrap. It reports an ordered Projection for every distinct successfully projectable content version plus Invalid Format assessments and Observation Errors without creating, repairing, or rewriting configuration; Gateway Runtime alone opens, consumes, and closes it independently of listener serving.
+_Avoid_: legacy configuration abstraction, raw filesystem event API, platform-specific watcher abstraction, consumer-owned config deduplication, semantic Projection suppression, generic latest-value stream, event history, configurable application default, Start-owned Source
 
 **Upstream List State**:
-A Gateway-owned complete snapshot combining the latest `ListAccepted` received and adopted by Gateway with the current Upstream List Source Degradation. Its list is empty before the first adoption and remains unchanged through source degradation, while degradation changes do not imply routing changes.
-_Avoid_: configuration event history, raw file content, file-change event, command replay, watcher notification
+A Gateway-owned complete snapshot combining the effective Upstream List, latest projection assessment, and current observation diagnostic. Its effective list is empty before the first Projection and remains unchanged through Invalid Format or Observation Error, while diagnostic changes do not imply routing changes.
+_Avoid_: configuration event history, raw file content, file-change event, command replay, watcher notification, failure-invalidated routing
 
 **Upstream List Source Transition**:
-A latest-value semantic report where `ListAccepted` causes Gateway to adopt a valid Upstream List and clear degradation, while the custom `SourceDegraded` error retains Gateway's previously adopted list. Pending transitions replace one another wholesale; healthy semantic no-ops are suppressed, while the first valid projection after degradation always produces `ListAccepted` so Gateway converges even when an earlier valid transition was replaced.
-_Avoid_: complete source snapshot, standalone degradation-clear transition, error equality, failure-event history, raw file event, separate error channel, republished last-known-good list, unordered split streams
+One member of the ordered sealed Source sum: Projection replaces the effective Upstream List and clears projection and observation diagnostics; Invalid Format retains the effective list because readable contents could not produce a complete projection; Observation Error retains both the effective list and latest projection assessment because observation could not reliably assess the file. Diagnostic variants carry causes without being operation errors; transitions are not generically conflated, correctly reported terminal Observation Error remains non-fatal, and unknown variants or unannounced terminal closure are internal protocol violations rather than observation failures.
+_Avoid_: complete source snapshot, generic degradation transition, latest-value conflation, failure-event history, raw file event, separate error channel, republished last-known-good list, unordered split streams
+
+**Upstream List Projection**:
+A complete valid semantic projection of one distinct successfully projectable Upstream List content version that replaces Gateway's effective Upstream List and clears prior projection and observation diagnostics, even when semantically equal to the preceding Projection. Malformed individual selectors remain Upstream List Warnings inside the Projection rather than making the whole Projection invalid.
+_Avoid_: Valid Projection, Upstream List State, partial projection, warning-free list, source snapshot
+
+**Invalid Upstream List Format**:
+A non-fatal projection assessment where the file was read but its complete contents could not produce an Upstream List Projection, currently because they are invalid UTF-8. Gateway retains its effective Upstream List and clears any earlier Observation Error because the successful read proves observation recovered; malformed individual selectors instead produce warnings within a Projection.
+_Avoid_: Observation Error, invalid selector warning, empty replacement list, fatal parse error, partial projection
+
+**Upstream List Observation Error**:
+A non-fatal diagnostic that the program-to-file observation mechanism could not reliably assess the Upstream List. Gateway retains both its effective Upstream List and latest projection assessment until the next successful read clears the diagnostic, while terminal observation failure requires repair plus Gateway restart.
+_Avoid_: Invalid Upstream List Format, routing invalidation, empty replacement list, fatal runtime error, generic Source degradation
+
+**Upstream List Observation Error Kind**:
+The Source-owned classification of an Observation Error as recoverable `read-failed`, recoverable `observation-uncertain`, or terminal `observation-stopped`; inability to establish observation initially is stopped. The classification preserves Source semantics without exposing its filesystem observation mechanism.
+_Avoid_: raw watcher error kind, message-parsed classification, one generic observation failure, retryability inferred from cause
 
 **Gateway Control Command**:
 A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, UserCA install, and UserCA uninstall.
@@ -469,15 +485,15 @@ The Upstream List module's disclosure of whether Configuration Bootstrap is requ
 _Avoid_: Gateway-owned file assessment, start plan, generic file existence check, mutable template
 
 **Configuration Bootstrap Warning**:
-A surface-neutral, non-persistent Start warning containing the actionable cause of a failed authorized Configuration Bootstrap attempt. It appears only on the Start result produced by that attempt, is absent after successful bootstrap, and remains independent from any Upstream List Source Degradation observed afterward.
-_Avoid_: runtime state, successful-bootstrap notice, Upstream List Source Degradation, merged bootstrap and source error, warning replay
+A surface-neutral, non-persistent Start warning containing the actionable cause of a failed authorized Configuration Bootstrap attempt. It appears only on the Start result produced by that attempt, is absent after successful bootstrap, and remains independent from any Upstream List Diagnostics observed afterward.
+_Avoid_: runtime state, successful-bootstrap notice, Upstream List Diagnostics, merged bootstrap and source error, warning replay
 
 **Upstream List Creation Consent**:
 A fingerprint-bound user decision required when the Upstream List module assesses the fixed path as missing, which Gateway presents at most once per Start Sequence and which authorizes immediate exclusive creation at the disclosed path with the disclosed default contents and any disclosed missing parent directories, independently from Managed PAC Consent. Declining preserves the missing path but allows that Start Sequence to continue degraded without asking again; a later Start reassesses, while runtime disappearance never requests consent or recreates the file or its parent.
 _Avoid_: combined Start consent, CLI-invented consent, consent error, overwrite authorization, runtime bootstrap, implicit default creation
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after PAC assessment and any required decision permit activation and Gateway Runtime is serving. Current Upstream List Source Degradation and Managed PAC publication warnings are included when available, while transient initial publication failure remains internal and is retried; guidance points to user-relevant state instead of runtime listener endpoints.
+A start-time user-facing output behavior shown only after PAC assessment and any required decision permit activation and Gateway Runtime is serving. Current Upstream List Diagnostics and Managed PAC publication warnings are included when available, while transient initial publication failure remains internal and is retried; guidance points to user-relevant state instead of runtime listener endpoints.
 _Avoid_: pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -644,9 +660,9 @@ _Avoid_: startup failure for no active entries, proxy-all fallback
 A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing are semantic Upstream List changes eligible for acceptance and runtime status, while warning-only changes do not publish a new Managed PAC desired input.
 _Avoid_: silent invalid entry, fatal line error, transient log warning, command replay, routing revision warning
 
-**Upstream List Source Degradation**:
-A non-fatal condition where the Upstream List is missing, unreadable, unsafe, or structurally undecodable, or its continued observation is uncertain or stopped. Before Gateway receives any `ListAccepted` it uses an empty effective list; afterward it retains its most recently adopted list until a later `ListAccepted`, while terminal observation requires cause repair and Gateway restart.
-_Avoid_: Fatal Upstream List Error, startup failure, stale valid routing discard, unreadable-as-empty, silent source failure
+**Upstream List Diagnostics**:
+An optional surface-neutral compound detail containing the current Invalid Upstream List Format cause and Upstream List Observation Error kind and cause independently, omitted when neither diagnostic exists. Before Gateway receives any Projection it uses an empty effective list; afterward diagnostics never replace its effective list, while terminal observation requires repair plus Gateway restart.
+_Avoid_: Upstream List Source Degradation, singular cause, undifferentiated internal transition, Fatal Upstream List Error, startup failure, stale valid routing discard, unreadable-as-empty, silent source failure
 
 **Upstream List Entry**:
 A normalized routing value decoded by the Upstream List module as either a Host Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
@@ -844,11 +860,11 @@ QA engineer: "Every supported platform needs a managed PAC adapter; platforms wi
 
 Developer: "After I update the Upstream List, do I need to restart the gateway?"
 
-QA engineer: "No, Gateway adopts each received `ListAccepted`, retains that list on `SourceDegraded`, and publishes a complete desired PAC snapshot when accepted routing changes."
+QA engineer: "No, Gateway adopts each Upstream List Projection, retains that list through Invalid Format or Observation Error, and publishes a complete desired PAC snapshot when projected routing changes."
 
 Developer: "What happens if I save an invalid config file while the gateway is running?"
 
-QA engineer: "Upstream List Source Degradation reports the problem while Gateway retains its adopted list and continues serving; an observed valid user correction produces `ListAccepted`."
+QA engineer: "Upstream List Diagnostics report Invalid Format and Observation Error independently while Gateway retains its effective list and continues serving; an observed valid user correction produces a Projection."
 
 Developer: "What if my config still has removed listener or managed-proxy settings?"
 
@@ -976,7 +992,7 @@ QA engineer: "Line-Level Upstream Validation ignores that line, reports an Upstr
 
 Developer: "What if I save an invalid Upstream List while the gateway is running?"
 
-QA engineer: "Invalid lines produce Upstream List Warnings while valid entries are applied; a missing, unreadable, or structurally undecodable source produces non-fatal Upstream List Source Degradation."
+QA engineer: "Invalid lines produce Upstream List Warnings while valid entries are applied; whole-file format failure or unreliable observation produces non-fatal Upstream List Diagnostics."
 
 Developer: "Does `api.dev.example.com` include its subdomains?"
 

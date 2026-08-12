@@ -280,7 +280,7 @@ type StartGuidance struct {
 	HTTPSWarnings           []HTTPSWarningDetail           `json:"httpsWarnings,omitempty"`
 	ManagedPACWarnings      []ManagedPACWarningDetail      `json:"managedPacWarnings,omitempty"`
 	UpstreamListWarnings    []UpstreamListWarningDetail    `json:"upstreamListWarnings,omitempty"`
-	UpstreamListDegradation *UpstreamListDegradationDetail `json:"upstreamListDegradation,omitempty"`
+	UpstreamListDiagnostics *UpstreamListDiagnosticsDetail `json:"upstreamListDiagnostics,omitempty"`
 }
 
 // StartGuidanceDetail is retained as a representation-oriented alias for
@@ -293,8 +293,26 @@ type UpstreamListWarningDetail struct {
 	Diagnostic string `json:"diagnostic"`
 }
 
-type UpstreamListDegradationDetail struct {
+type UpstreamListDiagnosticsDetail struct {
+	InvalidFormat    *InvalidUpstreamListFormatDetail    `json:"invalidFormat,omitempty"`
+	ObservationError *UpstreamListObservationErrorDetail `json:"observationError,omitempty"`
+}
+
+type InvalidUpstreamListFormatDetail struct {
 	Cause string `json:"cause"`
+}
+
+type UpstreamListObservationErrorKind string
+
+const (
+	UpstreamListObservationReadFailed UpstreamListObservationErrorKind = "read-failed"
+	UpstreamListObservationUncertain  UpstreamListObservationErrorKind = "observation-uncertain"
+	UpstreamListObservationStopped    UpstreamListObservationErrorKind = "observation-stopped"
+)
+
+type UpstreamListObservationErrorDetail struct {
+	Kind  UpstreamListObservationErrorKind `json:"kind"`
+	Cause string                           `json:"cause"`
 }
 
 type StopResultKind string
@@ -447,7 +465,7 @@ type RuntimeStatusDetail struct {
 	UpstreamListPath        string                         `json:"upstreamListPath"`
 	UpstreamCount           int                            `json:"upstreamCount"`
 	UpstreamListWarnings    []UpstreamListWarningDetail    `json:"upstreamListWarnings,omitempty"`
-	UpstreamListDegradation *UpstreamListDegradationDetail `json:"upstreamListDegradation,omitempty"`
+	UpstreamListDiagnostics *UpstreamListDiagnosticsDetail `json:"upstreamListDiagnostics,omitempty"`
 	HTTPSReadiness          HTTPSReadinessStatus           `json:"httpsReadiness"`
 	HTTPSInterception       HTTPSInterceptionState         `json:"httpsInterception"`
 	HTTPSIntent             bool                           `json:"httpsIntent"`
@@ -930,7 +948,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			UpstreamListPath:        state.UpstreamList,
 			UpstreamCount:           state.UpstreamCount,
 			UpstreamListWarnings:    state.UpstreamListWarnings,
-			UpstreamListDegradation: state.UpstreamListDegradation,
+			UpstreamListDiagnostics: state.UpstreamListDiagnostics,
 			HTTPSReadiness:          state.HTTPSReadiness,
 			HTTPSInterception:       state.HTTPSInterception,
 			HTTPSIntent:             state.HTTPSIntent,
@@ -962,13 +980,22 @@ func upstreamListWarningDetails(warnings []upstreamlist.Warning) []UpstreamListW
 	return details
 }
 
-func upstreamListDegradationDetail(degradation *upstreamlist.SourceDegraded) *UpstreamListDegradationDetail {
-	if degradation == nil {
+func upstreamListDiagnosticsDetail(invalid *upstreamlist.InvalidFormat, observation *upstreamlist.ObservationError) *UpstreamListDiagnosticsDetail {
+	if invalid == nil && observation == nil {
 		return nil
 	}
-	detail := &UpstreamListDegradationDetail{}
-	if degradation.Err != nil {
-		detail.Cause = degradation.Err.Error()
+	detail := &UpstreamListDiagnosticsDetail{}
+	if invalid != nil {
+		detail.InvalidFormat = &InvalidUpstreamListFormatDetail{}
+		if invalid.Err != nil {
+			detail.InvalidFormat.Cause = invalid.Err.Error()
+		}
+	}
+	if observation != nil {
+		detail.ObservationError = &UpstreamListObservationErrorDetail{Kind: UpstreamListObservationErrorKind(observation.Kind)}
+		if observation.Err != nil {
+			detail.ObservationError.Cause = observation.Err.Error()
+		}
 	}
 	return detail
 }

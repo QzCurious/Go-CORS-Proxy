@@ -227,8 +227,8 @@ func TestInstallUsesOnlyUserCAAndDoesNotBootstrapUpstreamList(t *testing.T) {
 }
 
 func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
-	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, snapshot)
+	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,8 +255,8 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 }
 
 func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
+	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,8 +294,8 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 }
 
 func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
+	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,8 +325,8 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 }
 
 func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
+	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,8 +367,8 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 }
 
 func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
+	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,8 +503,8 @@ func TestAdmittedCAOperationIgnoresRequestCancellation(t *testing.T) {
 }
 
 func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) {
-	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, snapshot)
+	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path)
 	if err != nil {
 		t.Fatal(err)
 	}

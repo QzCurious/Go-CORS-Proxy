@@ -259,7 +259,7 @@ func mustDesiredList(t *testing.T, contents string) upstreamlist.UpstreamList {
 	var list upstreamlist.UpstreamList
 	select {
 	case initial := <-source.Transitions():
-		list = initial.(upstreamlist.ListAccepted).List
+		list = initial.(upstreamlist.Projection).List
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for initial Upstream List state")
 	}

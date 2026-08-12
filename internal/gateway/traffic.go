@@ -19,31 +19,39 @@ import (
 )
 
 type trafficRuntime struct {
-	mu                      sync.RWMutex
-	upstreamListPath        string
-	upstreamListSource      *upstreamlist.Source
-	currentUpstreamList     upstreamlist.UpstreamList
-	upstreamListDegradation *upstreamlist.SourceDegraded
-	userCA                  userca.Snapshot
-	readinessError          error
-	interceptionState       HTTPSInterceptionState
-	interceptionError       error
-	userCAOperationWarning  *HTTPSWarningDetail
-	proxyCore               *corsproxy.Core
-	proxyHandler            *dynamicHTTPHandler
-	proxyConfigured         bool
-	httpsWarnings           []HTTPSWarningDetail
-	proxy                   *http.Server
-	pacRouting              *pacrouting.Routing
-	pac                     *http.Server
-	listeners               []net.Listener
-	publishMu               sync.Mutex
-	desiredStatePublisher   conflatedstream.Publisher[managedpac.DesiredState]
-	desiredStateStream      conflatedstream.Stream[managedpac.DesiredState]
-	runtimeChangePublisher  conflatedstream.Publisher[RuntimeChangeKind]
-	runtimeChangeStream     conflatedstream.Stream[RuntimeChangeKind]
-	httpsWarningsRevision   uint64
-	now                     func() time.Time
+	mu                       sync.RWMutex
+	upstreamListPath         string
+	upstreamListSource       *upstreamlist.Source
+	currentUpstreamList      upstreamlist.UpstreamList
+	invalidUpstreamFormat    *upstreamlist.InvalidFormat
+	upstreamObservationError *upstreamlist.ObservationError
+	userCA                   userca.Snapshot
+	readinessError           error
+	interceptionState        HTTPSInterceptionState
+	interceptionError        error
+	userCAOperationWarning   *HTTPSWarningDetail
+	proxyCore                *corsproxy.Core
+	proxyHandler             *dynamicHTTPHandler
+	proxyConfigured          bool
+	httpsWarnings            []HTTPSWarningDetail
+	proxy                    *http.Server
+	pacRouting               *pacrouting.Routing
+	pac                      *http.Server
+	listeners                []net.Listener
+	publishMu                sync.Mutex
+	desiredStatePublisher    conflatedstream.Publisher[managedpac.DesiredState]
+	desiredStateStream       conflatedstream.Stream[managedpac.DesiredState]
+	runtimeChangePublisher   conflatedstream.Publisher[RuntimeChangeKind]
+	runtimeChangeStream      conflatedstream.Stream[RuntimeChangeKind]
+	httpsWarningsRevision    uint64
+	now                      func() time.Time
+	sourceDone               chan struct{}
+	sourceTerminalReported   bool
+	fatal                    chan error
+	closeOnce                sync.Once
+	closeDone                chan struct{}
+	closeErr                 error
+	closing                  bool
 }
 
 // RuntimeChangeKind identifies the current-state concern invalidated by a
@@ -81,7 +89,7 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial upstreamlist.Transition) (*trafficRuntime, error) {
+func newRuntime(upstreamListPath string) (_ *trafficRuntime, resultErr error) {
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -91,38 +99,52 @@ func newRuntime(upstreamListPath string, source *upstreamlist.Source, initial up
 		proxyListener.Close()
 		return nil, fmt.Errorf("PAC listener unavailable: %w", err)
 	}
+	rollback := true
+	defer func() {
+		if rollback {
+			_ = proxyListener.Close()
+			_ = pacListener.Close()
+		}
+	}()
 
 	proxyListen := proxyListener.Addr().String()
 
 	pacRouting := pacrouting.NewRouting(proxyListen)
-	var initialList upstreamlist.UpstreamList
-	var initialDegradation *upstreamlist.SourceDegraded
-	switch transition := initial.(type) {
-	case upstreamlist.ListAccepted:
-		initialList = transition.List
-	case upstreamlist.SourceDegraded:
-		initialDegradation = &transition
-	}
-	pacRouting.Apply(initialList.HostSelectors, initialList.OriginSelectors, false)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
 	desiredStatePublisher, desiredStateStream := conflatedstream.New[managedpac.DesiredState]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
-	return &trafficRuntime{
-		upstreamListPath:        upstreamListPath,
-		upstreamListSource:      source,
-		currentUpstreamList:     initialList,
-		upstreamListDegradation: initialDegradation,
-		proxyHandler:            proxyHandler,
-		pacRouting:              pacRouting,
-		proxy:                   &http.Server{Handler: proxyHandler},
-		pac:                     &http.Server{Handler: pacRouting.Handler()},
-		listeners:               []net.Listener{proxyListener, pacListener},
-		desiredStatePublisher:   desiredStatePublisher,
-		desiredStateStream:      desiredStateStream,
-		runtimeChangePublisher:  runtimeChangePublisher,
-		runtimeChangeStream:     runtimeChangeStream,
-		now:                     time.Now,
-	}, nil
+	r := &trafficRuntime{
+		upstreamListPath:       upstreamListPath,
+		proxyHandler:           proxyHandler,
+		pacRouting:             pacRouting,
+		proxy:                  &http.Server{Handler: proxyHandler},
+		pac:                    &http.Server{Handler: pacRouting.Handler()},
+		listeners:              []net.Listener{proxyListener, pacListener},
+		desiredStatePublisher:  desiredStatePublisher,
+		desiredStateStream:     desiredStateStream,
+		runtimeChangePublisher: runtimeChangePublisher,
+		runtimeChangeStream:    runtimeChangeStream,
+		now:                    time.Now,
+		sourceDone:             make(chan struct{}),
+		fatal:                  make(chan error, 1),
+		closeDone:              make(chan struct{}),
+	}
+	r.upstreamListSource = upstreamlist.Open(upstreamListPath)
+	initial, ok := <-r.upstreamListSource.Transitions()
+	if !ok {
+		_ = r.upstreamListSource.Close()
+		return nil, fmt.Errorf("initialize upstream list: source closed before its initial state")
+	}
+	if err := r.adoptUpstreamListTransition(initial, false); err != nil {
+		_ = r.upstreamListSource.Close()
+		return nil, err
+	}
+	if diagnostic, ok := initial.(upstreamlist.ObservationError); ok && diagnostic.Kind == upstreamlist.ObservationStopped {
+		r.sourceTerminalReported = true
+	}
+	go r.consumeUpstreamList()
+	rollback = false
+	return r, nil
 }
 
 func (r *trafficRuntime) SetInitialHTTPSReadiness(assessment userca.Assessment, assessmentErr error) error {
@@ -251,8 +273,7 @@ func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) 
 			return err
 		}
 	}
-	errs := make(chan serverError, 3)
-	go r.watchUpstreamList(ctx, errs)
+	errs := make(chan serverError, 2)
 	go func() {
 		errs <- serverError{source: "proxy", err: r.proxy.Serve(r.listeners[0])}
 	}()
@@ -278,6 +299,9 @@ func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) 
 			return nil
 		}
 		return serverErr.err
+	case err := <-r.fatal:
+		_ = r.Close()
+		return err
 	}
 }
 
@@ -305,11 +329,17 @@ func (r *trafficRuntime) Close() error {
 }
 
 func (r *trafficRuntime) CloseTraffic() error {
-	return errors.Join(
-		r.upstreamListSource.Close(),
-		r.proxy.Close(),
-		r.pac.Close(),
-	)
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		r.closing = true
+		r.mu.Unlock()
+		r.closeErr = r.upstreamListSource.Close()
+		<-r.sourceDone
+		r.closeErr = errors.Join(r.closeErr, r.proxy.Close(), r.pac.Close())
+		close(r.closeDone)
+	})
+	<-r.closeDone
+	return r.closeErr
 }
 
 func (r *trafficRuntime) PACListen() string {
@@ -336,34 +366,49 @@ func (r *trafficRuntime) interceptionActive() bool {
 	return r.interceptionState == HTTPSInterceptionActive
 }
 
-func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
-	updates := r.upstreamListSource.Transitions()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case transition, ok := <-updates:
-			if !ok {
-				return
-			}
-			r.applyUpstreamListTransition(transition)
+func (r *trafficRuntime) consumeUpstreamList() {
+	defer close(r.sourceDone)
+	terminalReported := r.sourceTerminalReported
+	for transition := range r.upstreamListSource.Transitions() {
+		if diagnostic, ok := transition.(upstreamlist.ObservationError); ok && diagnostic.Kind == upstreamlist.ObservationStopped {
+			terminalReported = true
 		}
+		if err := r.adoptUpstreamListTransition(transition, true); err != nil {
+			r.reportFatal(err)
+			return
+		}
+	}
+	r.mu.RLock()
+	closing := r.closing
+	r.mu.RUnlock()
+	if !closing && !terminalReported {
+		r.reportFatal(errors.New("upstream list source closed without terminal observation error"))
 	}
 }
 
-func (r *trafficRuntime) applyUpstreamListTransition(transition upstreamlist.Transition) {
+func (r *trafficRuntime) adoptUpstreamListTransition(transition upstreamlist.Transition, publish bool) error {
 	r.mu.Lock()
 	routeChanged := false
 	switch transition := transition.(type) {
-	case upstreamlist.ListAccepted:
+	case upstreamlist.Projection:
 		r.currentUpstreamList = transition.List
-		r.upstreamListDegradation = nil
+		r.invalidUpstreamFormat = nil
+		r.upstreamObservationError = nil
 		routeChanged = r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
-	case upstreamlist.SourceDegraded:
-		r.upstreamListDegradation = &transition
+	case upstreamlist.InvalidFormat:
+		r.invalidUpstreamFormat = &transition
+		r.upstreamObservationError = nil
+	case upstreamlist.ObservationError:
+		r.upstreamObservationError = &transition
+	default:
+		r.mu.Unlock()
+		return fmt.Errorf("unsupported upstream list transition %T", transition)
 	}
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
+	if !publish {
+		return nil
+	}
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	if routeChanged {
 		r.publishDesiredState()
@@ -371,6 +416,14 @@ func (r *trafficRuntime) applyUpstreamListTransition(transition upstreamlist.Tra
 	// Source emits only changed lists or degradation errors, so every received state
 	// invalidates the complete runtime status snapshot.
 	r.publishRuntimeChange(RuntimeStatusChanged)
+	return nil
+}
+
+func (r *trafficRuntime) reportFatal(err error) {
+	select {
+	case r.fatal <- err:
+	default:
+	}
 }
 
 func (r *trafficRuntime) publishDesiredState() {
@@ -469,7 +522,7 @@ type runtimeState struct {
 	HTTPSWarnings           []HTTPSWarningDetail
 	UpstreamCount           int
 	UpstreamListWarnings    []UpstreamListWarningDetail
-	UpstreamListDegradation *UpstreamListDegradationDetail
+	UpstreamListDiagnostics *UpstreamListDiagnosticsDetail
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
@@ -497,7 +550,7 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		HTTPSWarnings:           warnings,
 		UpstreamCount:           len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
 		UpstreamListWarnings:    upstreamListWarningDetails(upstreamList.Warnings),
-		UpstreamListDegradation: upstreamListDegradationDetail(r.upstreamListDegradation),
+		UpstreamListDiagnostics: upstreamListDiagnosticsDetail(r.invalidUpstreamFormat, r.upstreamObservationError),
 	}
 }
 
