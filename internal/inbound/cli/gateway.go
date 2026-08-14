@@ -330,7 +330,7 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 	if result == nil {
 		return
 	}
-	renderUpstreamListBootstrapWarning(stdout, result.BootstrapWarning())
+	renderUpstreamListCreationWarning(stdout, result.UpstreamListCreationWarningDetail())
 	switch result.Kind() {
 	case gateway.StartResultStarted:
 		if started, ok := result.(gateway.Started); ok {
@@ -543,11 +543,11 @@ func renderUpstreamListWarnings(stdout io.Writer, warnings []gateway.UpstreamLis
 	}
 }
 
-func renderUpstreamListBootstrapWarning(stdout io.Writer, warning *gateway.UpstreamListBootstrapWarningDetail) {
+func renderUpstreamListCreationWarning(stdout io.Writer, warning *gateway.UpstreamListCreationWarningDetail) {
 	if warning == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "warning: upstream-list bootstrap failed: %s\n", warning.Cause)
+	fmt.Fprintf(stdout, "warning: upstream-list creation failed: %s\n", warning.Cause)
 }
 
 func renderUpstreamListDegradation(stdout io.Writer, degradation *gateway.UpstreamListDegradationDetail) {

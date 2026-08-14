@@ -103,7 +103,7 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
 	var out bytes.Buffer
 	result := gateway.StartNoManageablePACServices{
-		UpstreamListBootstrapWarning: &gateway.UpstreamListBootstrapWarningDetail{Cause: "create denied"},
+		UpstreamListCreationWarning: &gateway.UpstreamListCreationWarningDetail{Cause: "create denied"},
 	}
 	err := startWithContextAndInput(context.Background(), nil, &out, func(_ context.Context, hooks gateway.StartHooks) (gateway.StartResult, error) {
 		hooks.Started(result)
@@ -116,7 +116,7 @@ func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
 	if !strings.Contains(out.String(), "could not start") {
 		t.Fatalf("start output = %q", out.String())
 	}
-	if !strings.Contains(out.String(), "warning: upstream-list bootstrap failed: create denied") {
+	if !strings.Contains(out.String(), "warning: upstream-list creation failed: create denied") {
 		t.Fatalf("start output = %q", out.String())
 	}
 }

@@ -377,7 +377,7 @@ The gateway module behind the Proxy Listener that owns CORS repair, Local Prefli
 _Avoid_: Upstream List admission module, PAC Routing module, generic proxy
 
 **Home Config Directory**:
-The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Gateway owns the Upstream List path policy and observation lifecycle, while the Upstream List module owns Configuration Bootstrap assessment and execution; Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
+The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Gateway owns the Upstream List path policy, creation assessment and execution, and observation lifecycle; Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
 _Avoid_: platform-native app config directory
 
 **Runtime State Directory**:
@@ -480,20 +480,16 @@ _Avoid_: silent cleanup failure, false cleanup success, manual OS instructions f
 A gateway ownership rule where only one Gateway Owner may run for a user at a time, with the Gateway State Cache used as the first signal that an owner may already be active.
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
-**Configuration Bootstrap**:
-An Upstream List module operation that Gateway separately authorizes and orchestrates during Start to immediately and exclusively attempt creation of the missing fixed Upstream List and required parent directories with the disclosed default contents. Failure returns its actionable cause for Gateway to report without preventing Start; Gateway subsequently establishes observation independently, and creation is neither deferred until Gateway Activation nor rolled back when a later Start decision prevents activation.
-_Avoid_: silent file creation, init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
+**Upstream List Creation**:
+A Gateway-owned Start operation that assesses the fixed Upstream List path and, after Upstream List Creation Consent, immediately and exclusively attempts creation of the missing file and required parent directories with the Upstream List module's exact default contents. Failure returns its actionable cause without preventing Start; Gateway subsequently establishes observation independently, and creation is neither deferred until Gateway Activation nor rolled back when a later Start decision prevents activation.
+_Avoid_: Configuration Bootstrap, silent file creation, init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
-**Configuration Bootstrap Assessment**:
-The Upstream List module's disclosure of whether Configuration Bootstrap is required and, when required, the fixed path, exact default contents, missing parent directories, and consent fingerprint. Gateway uses the assessment to request Upstream List Creation Consent without reproducing feature-specific creation consequences.
-_Avoid_: Gateway-owned file assessment, start plan, generic file existence check, mutable template
-
-**Configuration Bootstrap Warning**:
-A surface-neutral, non-persistent Start warning containing the actionable cause of a failed authorized Configuration Bootstrap attempt. It appears only on the Start result produced by that attempt, is absent after successful bootstrap, and remains independent from any Upstream List Sync State observed afterward.
-_Avoid_: runtime state, successful-bootstrap notice, Upstream List Sync State, merged bootstrap and observation error, warning replay
+**Upstream List Creation Warning**:
+A surface-neutral, non-persistent Start warning containing the actionable cause of a failed authorized Upstream List Creation attempt. It appears only on the Start result produced by that attempt, is absent after successful creation, and remains independent from any Upstream List Sync State observed afterward.
+_Avoid_: runtime state, successful-creation notice, Upstream List Sync State, merged creation and observation error, warning replay
 
 **Upstream List Creation Consent**:
-A fingerprint-bound user decision required when the Upstream List module assesses the fixed path as missing, which Gateway presents at most once per Start Sequence and which authorizes immediate exclusive creation at the disclosed path with the disclosed default contents and any disclosed missing parent directories, independently from Managed PAC Consent. Declining preserves the missing path but allows that Start Sequence to continue degraded without asking again; a later Start reassesses, while runtime disappearance never requests consent or recreates the file or its parent.
+A fingerprint-bound user decision required when Gateway assesses the fixed path as missing, presented at most once per Start Sequence and authorizing immediate exclusive creation at the disclosed path with the Upstream List module's disclosed default contents and any disclosed missing parent directories, independently from Managed PAC Consent. Declining preserves the missing path but allows that Start Sequence to continue degraded without asking again; a later Start reassesses, while runtime disappearance never requests consent or recreates the file or its parent.
 _Avoid_: combined Start consent, CLI-invented consent, consent error, overwrite authorization, runtime bootstrap, implicit default creation
 
 **Start Guidance**:
@@ -649,7 +645,7 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Upstream List**:
-The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Except for consented Configuration Bootstrap, seamless-cors only observes this ordinary-file source and never repairs, rewrites, or recreates it.
+The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Except for consented Upstream List Creation, seamless-cors only observes this ordinary-file source and never repairs, rewrites, or recreates it.
 _Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
 
 **Upstream List Comment**:
@@ -976,7 +972,7 @@ QA engineer: "Yes, Empty Upstream List is valid, so the gateway runs while PAC R
 
 Developer: "Do I need to run an init command first?"
 
-QA engineer: "No. Start presents Upstream List Creation Consent once; acceptance immediately attempts exclusive Configuration Bootstrap, while decline or creation failure continues degraded with no matched upstreams."
+QA engineer: "No. Start presents Upstream List Creation Consent once; acceptance immediately attempts exclusive Upstream List Creation, while decline or creation failure continues degraded with no matched upstreams."
 
 Developer: "Can I write just `api.dev.example.com`?"
 

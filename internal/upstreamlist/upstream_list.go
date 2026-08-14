@@ -1,5 +1,9 @@
 package upstreamlist
 
+// DefaultContents is the exact initial contents disclosed and written by
+// Gateway-owned Upstream List Creation.
+const DefaultContents = "# One upstream host or origin per line.\n# api.dev.example.com\n"
+
 type HostnameMatch uint8
 
 const (

@@ -53,15 +53,15 @@ type StartRequest struct {
 type StartResult interface {
 	Kind() StartKind
 	Fulfillment() CommandFulfillment
-	BootstrapWarning() *UpstreamListBootstrapWarningDetail
+	UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail
 	startResult()
 }
 
 // Started reports that the runtime was started and includes the initial
 // guidance snapshot.
 type Started struct {
-	Guidance                     StartGuidance
-	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+	Guidance                    StartGuidance
+	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
 // AlreadyRunning reports that a runtime was already active.
@@ -94,8 +94,8 @@ type UpstreamListCreationConsentInput struct {
 
 // StartConsentRequired reports the managed PAC services requiring confirmation.
 type StartConsentRequired struct {
-	Consent                      ManagedPACConsent
-	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+	Consent                     ManagedPACConsent
+	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
 // StartConsentDeclined reports that managed PAC consent was declined.
@@ -104,37 +104,37 @@ type StartConsentDeclined struct{}
 // StartNoManageablePACServices reports that managed PAC inspection found no
 // services that can be managed.  Consent contains the inspection snapshot.
 type StartNoManageablePACServices struct {
-	Consent                      ManagedPACConsent
-	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+	Consent                     ManagedPACConsent
+	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
 // StartManagedPACInstallationFailed reports a failed PAC installation and any
 // warnings produced while attempting it.
 type StartManagedPACInstallationFailed struct {
-	Warnings                     []ManagedPACWarningDetail
-	Diagnostic                   string
-	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+	Warnings                    []ManagedPACWarningDetail
+	Diagnostic                  string
+	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
 // StartAlreadyMutating reports that another start/CA mutation is in progress.
 type StartAlreadyMutating struct {
-	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
 // StartStopCancelled reports that Stop cancelled the Start operation.
 type StartStopCancelled struct {
-	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
 // StartCleanupFailed reports cleanup failures.  Warnings are retained when
 // they were produced by a failed Managed PAC installation before cleanup.
 type StartCleanupFailed struct {
-	Failures                     []CleanupFailure
-	Warnings                     []ManagedPACWarningDetail
-	UpstreamListBootstrapWarning *UpstreamListBootstrapWarningDetail
+	Failures                    []CleanupFailure
+	Warnings                    []ManagedPACWarningDetail
+	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
-type UpstreamListBootstrapWarningDetail struct {
+type UpstreamListCreationWarningDetail struct {
 	Cause string `json:"cause"`
 }
 
@@ -147,29 +147,33 @@ func startFulfillment(kind StartKind) CommandFulfillment {
 
 func (Started) Kind() StartKind                 { return StartResultStarted }
 func (Started) Fulfillment() CommandFulfillment { return startFulfillment(StartResultStarted) }
-func (r Started) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
-	return r.UpstreamListBootstrapWarning
+func (r Started) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return r.UpstreamListCreationWarning
 }
 func (Started) startResult()           {}
 func (AlreadyRunning) Kind() StartKind { return StartResultAlreadyRunning }
 func (AlreadyRunning) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultAlreadyRunning)
 }
-func (AlreadyRunning) BootstrapWarning() *UpstreamListBootstrapWarningDetail { return nil }
-func (AlreadyRunning) startResult()                                          {}
-func (StartOwnerTransition) Kind() StartKind                                 { return StartResultOwnerTransition }
+func (AlreadyRunning) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return nil
+}
+func (AlreadyRunning) startResult()          {}
+func (StartOwnerTransition) Kind() StartKind { return StartResultOwnerTransition }
 func (StartOwnerTransition) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultOwnerTransition)
 }
-func (StartOwnerTransition) BootstrapWarning() *UpstreamListBootstrapWarningDetail { return nil }
-func (StartOwnerTransition) startResult()                                          {}
+func (StartOwnerTransition) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return nil
+}
+func (StartOwnerTransition) startResult() {}
 func (StartUpstreamListCreationConsentRequired) Kind() StartKind {
 	return StartResultUpstreamListCreationConsentRequired
 }
 func (StartUpstreamListCreationConsentRequired) Fulfillment() CommandFulfillment {
 	return CommandUnfulfilled
 }
-func (StartUpstreamListCreationConsentRequired) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
+func (StartUpstreamListCreationConsentRequired) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
 	return nil
 }
 func (StartUpstreamListCreationConsentRequired) startResult() {}
@@ -177,24 +181,26 @@ func (StartConsentRequired) Kind() StartKind                  { return StartResu
 func (StartConsentRequired) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultConsentRequired)
 }
-func (r StartConsentRequired) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
-	return r.UpstreamListBootstrapWarning
+func (r StartConsentRequired) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return r.UpstreamListCreationWarning
 }
 func (StartConsentRequired) startResult()    {}
 func (StartConsentDeclined) Kind() StartKind { return StartResultConsentDeclined }
 func (StartConsentDeclined) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultConsentDeclined)
 }
-func (StartConsentDeclined) BootstrapWarning() *UpstreamListBootstrapWarningDetail { return nil }
-func (StartConsentDeclined) startResult()                                          {}
+func (StartConsentDeclined) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return nil
+}
+func (StartConsentDeclined) startResult() {}
 func (StartNoManageablePACServices) Kind() StartKind {
 	return StartResultNoManageablePACServices
 }
 func (StartNoManageablePACServices) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultNoManageablePACServices)
 }
-func (r StartNoManageablePACServices) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
-	return r.UpstreamListBootstrapWarning
+func (r StartNoManageablePACServices) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return r.UpstreamListCreationWarning
 }
 func (StartNoManageablePACServices) startResult() {}
 func (StartManagedPACInstallationFailed) Kind() StartKind {
@@ -203,32 +209,32 @@ func (StartManagedPACInstallationFailed) Kind() StartKind {
 func (StartManagedPACInstallationFailed) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultManagedPACInstallationFailed)
 }
-func (r StartManagedPACInstallationFailed) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
-	return r.UpstreamListBootstrapWarning
+func (r StartManagedPACInstallationFailed) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return r.UpstreamListCreationWarning
 }
 func (StartManagedPACInstallationFailed) startResult() {}
 func (StartAlreadyMutating) Kind() StartKind           { return StartResultStartAlreadyMutating }
 func (StartAlreadyMutating) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultStartAlreadyMutating)
 }
-func (r StartAlreadyMutating) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
-	return r.UpstreamListBootstrapWarning
+func (r StartAlreadyMutating) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return r.UpstreamListCreationWarning
 }
 func (StartAlreadyMutating) startResult()  {}
 func (StartStopCancelled) Kind() StartKind { return StartResultStopCancelled }
 func (StartStopCancelled) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultStopCancelled)
 }
-func (r StartStopCancelled) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
-	return r.UpstreamListBootstrapWarning
+func (r StartStopCancelled) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return r.UpstreamListCreationWarning
 }
 func (StartStopCancelled) startResult()    {}
 func (StartCleanupFailed) Kind() StartKind { return StartResultCleanupFailed }
 func (StartCleanupFailed) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultCleanupFailed)
 }
-func (r StartCleanupFailed) BootstrapWarning() *UpstreamListBootstrapWarningDetail {
-	return r.UpstreamListBootstrapWarning
+func (r StartCleanupFailed) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+	return r.UpstreamListCreationWarning
 }
 func (StartCleanupFailed) startResult() {}
 

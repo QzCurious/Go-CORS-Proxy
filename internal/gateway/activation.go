@@ -7,7 +7,6 @@ import (
 	"slices"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
-	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 type startSequence struct {
@@ -17,10 +16,10 @@ type startSequence struct {
 // Execute runs the Start Sequence. UserCA inspection is read-only; trust
 // installation remains an explicit lifecycle command.
 func (s startSequence) Execute(ctx context.Context, request StartRequest) (result StartResult, resultErr error) {
-	var bootstrapErr error
+	var creationErr error
 	defer func() {
-		if bootstrapErr != nil && result != nil {
-			result = withUpstreamListBootstrapWarning(result, bootstrapErr)
+		if creationErr != nil && result != nil {
+			result = withUpstreamListCreationWarning(result, creationErr)
 		}
 	}()
 
@@ -34,12 +33,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	if err != nil {
 		return nil, err
 	}
-	bootstrap, creationResult, err := assessUpstreamListBootstrap(upstreamListPath, request)
+	create, creationResult, err := authorizeUpstreamListCreation(upstreamListPath, request)
 	if err != nil || creationResult != nil {
 		return creationResult, err
 	}
-	if bootstrap {
-		bootstrapErr = upstreamlist.Bootstrap(upstreamListPath)
+	if create {
+		creationErr = createUpstreamList(upstreamListPath)
 	}
 	postStartFailure := func(err error) (StartResult, error) {
 		if ctx.Err() != nil {
@@ -216,25 +215,21 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	}}, nil
 }
 
-func assessUpstreamListBootstrap(path string, request StartRequest) (bool, StartResult, error) {
-	assessment := upstreamlist.AssessBootstrap(path)
-	if !assessment.Required {
+func authorizeUpstreamListCreation(path string, request StartRequest) (bool, StartResult, error) {
+	consent := assessUpstreamListCreation(path)
+	if consent == nil {
 		return false, nil, nil
 	}
 	if request.UpstreamListCreationConsent == nil {
-		return false, StartUpstreamListCreationConsentRequired{Consent: UpstreamListCreationConsent{
-			Path: assessment.Path, DefaultContents: assessment.DefaultContents,
-			MissingParentDirectories: assessment.MissingParentDirectories,
-			Fingerprint:              UpstreamListCreationFingerprint(assessment.Fingerprint),
-		}}, nil
+		return false, StartUpstreamListCreationConsentRequired{Consent: *consent}, nil
 	}
 	input := request.UpstreamListCreationConsent
 	switch input.Decision {
 	case UpstreamListCreationDeclined:
 		return false, nil, nil
 	case UpstreamListCreationAccepted:
-		if input.Fingerprint != UpstreamListCreationFingerprint(assessment.Fingerprint) {
-			return false, nil, fmt.Errorf("Upstream List creation consent does not match the current bootstrap assessment")
+		if input.Fingerprint != consent.Fingerprint {
+			return false, nil, fmt.Errorf("Upstream List creation consent does not match the current creation assessment")
 		}
 		return true, nil, nil
 	default:
@@ -242,29 +237,29 @@ func assessUpstreamListBootstrap(path string, request StartRequest) (bool, Start
 	}
 }
 
-func withUpstreamListBootstrapWarning(result StartResult, err error) StartResult {
-	warning := &UpstreamListBootstrapWarningDetail{Cause: err.Error()}
+func withUpstreamListCreationWarning(result StartResult, err error) StartResult {
+	warning := &UpstreamListCreationWarningDetail{Cause: err.Error()}
 	switch typed := result.(type) {
 	case Started:
-		typed.UpstreamListBootstrapWarning = warning
+		typed.UpstreamListCreationWarning = warning
 		return typed
 	case StartConsentRequired:
-		typed.UpstreamListBootstrapWarning = warning
+		typed.UpstreamListCreationWarning = warning
 		return typed
 	case StartNoManageablePACServices:
-		typed.UpstreamListBootstrapWarning = warning
+		typed.UpstreamListCreationWarning = warning
 		return typed
 	case StartManagedPACInstallationFailed:
-		typed.UpstreamListBootstrapWarning = warning
+		typed.UpstreamListCreationWarning = warning
 		return typed
 	case StartAlreadyMutating:
-		typed.UpstreamListBootstrapWarning = warning
+		typed.UpstreamListCreationWarning = warning
 		return typed
 	case StartStopCancelled:
-		typed.UpstreamListBootstrapWarning = warning
+		typed.UpstreamListCreationWarning = warning
 		return typed
 	case StartCleanupFailed:
-		typed.UpstreamListBootstrapWarning = warning
+		typed.UpstreamListCreationWarning = warning
 		return typed
 	default:
 		return result

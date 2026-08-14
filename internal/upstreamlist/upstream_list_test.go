@@ -2,12 +2,16 @@ package upstreamlist_test
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
+
+func TestDefaultContentsFormAValidProjection(t *testing.T) {
+	if _, err := upstreamlist.Project([]byte(upstreamlist.DefaultContents)); err != nil {
+		t.Fatalf("Project(DefaultContents): %v", err)
+	}
+}
 
 func TestProjectProducesNormalizedDeduplicatedProjection(t *testing.T) {
 	projection, err := upstreamlist.Project([]byte("API.EXAMPLE.TEST\napi.example.test\nhttps://secure.example.test\n"))
@@ -61,34 +65,5 @@ func TestEqualUsesProjectionSemantics(t *testing.T) {
 	}
 	if upstreamlist.Equal(left, withWarning) {
 		t.Fatal("warning change preserved projection identity")
-	}
-}
-
-func TestBootstrapCreatesImmediately(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "upstreams.txt")
-	if err := upstreamlist.Bootstrap(path); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(path); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestBootstrapReturnsCreationFailure(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(parent, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(parent, "upstreams.txt")
-	if err := upstreamlist.Bootstrap(path); err == nil {
-		t.Fatal("Bootstrap succeeded through a non-directory parent")
-	}
-}
-
-func TestAssessmentDisclosesCreationConsequences(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing", "nested", "upstreams.txt")
-	a := upstreamlist.AssessBootstrap(path)
-	if !a.Required || a.Path != path || a.DefaultContents == "" || len(a.MissingParentDirectories) != 2 || a.Fingerprint == "" {
-		t.Fatalf("assessment = %#v", a)
 	}
 }

@@ -105,18 +105,18 @@ func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testi
 	}
 }
 
-func TestBootstrapFailureWarningAttachesToTheCurrentStartResult(t *testing.T) {
-	bootstrapErr := errors.New("bootstrap denied")
-	result := withUpstreamListBootstrapWarning(StartConsentRequired{}, bootstrapErr)
+func TestCreationFailureWarningAttachesToTheCurrentStartResult(t *testing.T) {
+	creationErr := errors.New("creation denied")
+	result := withUpstreamListCreationWarning(StartConsentRequired{}, creationErr)
 
 	consent, ok := result.(StartConsentRequired)
 	if !ok {
 		t.Fatalf("result = %#v", result)
 	}
-	if warning := consent.BootstrapWarning(); warning == nil || warning.Cause != bootstrapErr.Error() {
-		t.Fatalf("bootstrap warning = %#v", warning)
+	if warning := consent.UpstreamListCreationWarningDetail(); warning == nil || warning.Cause != creationErr.Error() {
+		t.Fatalf("creation warning = %#v", warning)
 	}
-	if warning := (AlreadyRunning{}).BootstrapWarning(); warning != nil {
+	if warning := (AlreadyRunning{}).UpstreamListCreationWarningDetail(); warning != nil {
 		t.Fatalf("unrelated result warning = %#v", warning)
 	}
 }
@@ -200,7 +200,7 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 	}
 }
 
-func TestInstallUsesOnlyUserCAAndDoesNotBootstrapUpstreamList(t *testing.T) {
+func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ca := &fakeUserCA{
