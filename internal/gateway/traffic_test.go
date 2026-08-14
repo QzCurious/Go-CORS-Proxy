@@ -16,16 +16,93 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
-func TestRuntimeRetainsSourceDegradationCause(t *testing.T) {
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Err: errors.New("source unavailable")})
+func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
+	observed := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Err: observed})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
 
-	degradation := runtime.snapshot().UpstreamListDegradation
-	if degradation == nil || degradation.Cause != "source unavailable" {
-		t.Fatalf("source degradation = %#v", degradation)
+	issue := runtime.snapshot().UpstreamListFileSyncIssue
+	if issue == nil || issue.Kind != FileSyncIssueFileUnreadable || !strings.Contains(issue.Cause, "source unavailable") {
+		t.Fatalf("file sync issue = %#v", issue)
+	}
+}
+
+func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: []byte("api.example.test\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	if err := runtime.applyUpstreamListResult(fileobservation.Result{Contents: []byte{0xff}}); err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.snapshot()
+	if state.UpstreamListProjectionIssue == nil || state.UpstreamListFileSyncIssue != nil || state.UpstreamCount != 0 {
+		t.Fatalf("rejected contents state = %#v", state)
+	}
+
+	readErr := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("temporarily unavailable")}
+	if err := runtime.applyUpstreamListResult(fileobservation.Result{Err: readErr}); err != nil {
+		t.Fatal(err)
+	}
+	state = runtime.snapshot()
+	if state.UpstreamListFileSyncIssue == nil || state.UpstreamListProjectionIssue == nil || state.UpstreamCount != 0 {
+		t.Fatalf("observation failure did not preserve projection state = %#v", state)
+	}
+}
+
+func TestSuccessfulEqualProjectionClearsIssuesWithoutPACPublication(t *testing.T) {
+	readErr := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("temporarily unavailable")}
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Err: readErr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	if err := runtime.applyUpstreamListResult(fileobservation.Result{Contents: []byte{0xff}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.applyUpstreamListResult(fileobservation.Result{Contents: nil}); err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.snapshot()
+	if state.UpstreamListFileSyncIssue != nil || state.UpstreamListProjectionIssue != nil || state.UpstreamCount != 0 {
+		t.Fatalf("cleared equal projection state = %#v", state)
+	}
+	select {
+	case projection := <-runtime.PACProjections():
+		t.Fatalf("equal empty projection published PAC projection: %#v", projection)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestEquivalentFileSyncIssueDoesNotInvalidateStatusAgain(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	result := fileobservation.Result{Err: &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("missing")}}
+
+	if err := runtime.applyUpstreamListResult(result); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.RuntimeChanges():
+	case <-time.After(time.Second):
+		t.Fatal("first issue did not invalidate status")
+	}
+	if err := runtime.applyUpstreamListResult(result); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case kind := <-runtime.RuntimeChanges():
+		t.Fatalf("equivalent issue invalidated status: %v", kind)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

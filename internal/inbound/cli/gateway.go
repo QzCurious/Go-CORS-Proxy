@@ -348,7 +348,8 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
-			renderUpstreamListDegradation(stdout, guidance.UpstreamListDegradation)
+			renderFileSyncIssue(stdout, guidance.UpstreamListFileSyncIssue)
+			renderUpstreamListProjectionIssue(stdout, guidance.UpstreamListProjectionIssue)
 			renderUpstreamListWarnings(stdout, guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
@@ -475,7 +476,8 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		}
 		fmt.Fprintf(stdout, "upstream-list: %s\n", result.Runtime.UpstreamListPath)
 		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
-		renderUpstreamListDegradation(stdout, result.Runtime.UpstreamListDegradation)
+		renderFileSyncIssue(stdout, result.Runtime.UpstreamListFileSyncIssue)
+		renderUpstreamListProjectionIssue(stdout, result.Runtime.UpstreamListProjectionIssue)
 		renderUpstreamListWarnings(stdout, result.Runtime.UpstreamListWarnings)
 		if result.Runtime.ManagedPACActive {
 			fmt.Fprintln(stdout, "managed-pac: active")
@@ -550,11 +552,23 @@ func renderUpstreamListCreationWarning(stdout io.Writer, warning *gateway.Upstre
 	fmt.Fprintf(stdout, "warning: upstream-list creation failed: %s\n", warning.Cause)
 }
 
-func renderUpstreamListDegradation(stdout io.Writer, degradation *gateway.UpstreamListDegradationDetail) {
-	if degradation == nil {
+func renderFileSyncIssue(stdout io.Writer, issue *gateway.FileSyncIssue) {
+	if issue == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "warning: upstream-list source degraded: %s\n", degradation.Cause)
+	if issue.Kind == gateway.FileSyncIssueObservationStopped {
+		fmt.Fprintf(stdout, "warning: upstream-list observation stopped: %s\n", issue.Cause)
+		fmt.Fprintln(stdout, "action: repair the cause and restart seamless-cors")
+		return
+	}
+	fmt.Fprintf(stdout, "warning: upstream-list file unreadable: %s\n", issue.Cause)
+}
+
+func renderUpstreamListProjectionIssue(stdout io.Writer, issue *gateway.UpstreamListProjectionIssue) {
+	if issue == nil {
+		return
+	}
+	fmt.Fprintf(stdout, "warning: upstream-list contents rejected: %s\n", issue.Cause)
 }
 
 func cleanupFailureText(failures []gateway.CleanupFailureDetail) string {

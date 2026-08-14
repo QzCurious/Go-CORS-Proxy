@@ -277,16 +277,17 @@ type ManagedPACConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidance struct {
-	UpstreamListPath        string                         `json:"upstreamListPath"`
-	ManagedPACActive        bool                           `json:"managedPacActive"`
-	ManagedPACServices      []string                       `json:"managedPacServices,omitempty"`
-	HTTPSReadiness          HTTPSReadinessStatus           `json:"httpsReadiness"`
-	HTTPSInterception       HTTPSInterceptionState         `json:"httpsInterception"`
-	HTTPSIntent             bool                           `json:"httpsIntent"`
-	HTTPSWarnings           []HTTPSWarningDetail           `json:"httpsWarnings,omitempty"`
-	ManagedPACWarnings      []ManagedPACWarningDetail      `json:"managedPacWarnings,omitempty"`
-	UpstreamListWarnings    []UpstreamListWarningDetail    `json:"upstreamListWarnings,omitempty"`
-	UpstreamListDegradation *UpstreamListDegradationDetail `json:"upstreamListDegradation,omitempty"`
+	UpstreamListPath            string                       `json:"upstreamListPath"`
+	ManagedPACActive            bool                         `json:"managedPacActive"`
+	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
+	HTTPSReadiness              HTTPSReadinessStatus         `json:"httpsReadiness"`
+	HTTPSInterception           HTTPSInterceptionState       `json:"httpsInterception"`
+	HTTPSIntent                 bool                         `json:"httpsIntent"`
+	HTTPSWarnings               []HTTPSWarningDetail         `json:"httpsWarnings,omitempty"`
+	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
+	UpstreamListWarnings        []UpstreamListWarningDetail  `json:"upstreamListWarnings,omitempty"`
+	UpstreamListFileSyncIssue   *FileSyncIssue               `json:"upstreamListFileSyncIssue,omitempty"`
+	UpstreamListProjectionIssue *UpstreamListProjectionIssue `json:"upstreamListProjectionIssue,omitempty"`
 }
 
 // StartGuidanceDetail is retained as a representation-oriented alias for
@@ -299,7 +300,19 @@ type UpstreamListWarningDetail struct {
 	Diagnostic string `json:"diagnostic"`
 }
 
-type UpstreamListDegradationDetail struct {
+type FileSyncIssueKind string
+
+const (
+	FileSyncIssueFileUnreadable     FileSyncIssueKind = "file-unreadable"
+	FileSyncIssueObservationStopped FileSyncIssueKind = "observation-stopped"
+)
+
+type FileSyncIssue struct {
+	Kind  FileSyncIssueKind `json:"kind"`
+	Cause string            `json:"cause"`
+}
+
+type UpstreamListProjectionIssue struct {
 	Cause string `json:"cause"`
 }
 
@@ -448,19 +461,20 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen             string                         `json:"proxyListen"`
-	PACListen               string                         `json:"pacListen"`
-	UpstreamListPath        string                         `json:"upstreamListPath"`
-	UpstreamCount           int                            `json:"upstreamCount"`
-	UpstreamListWarnings    []UpstreamListWarningDetail    `json:"upstreamListWarnings,omitempty"`
-	UpstreamListDegradation *UpstreamListDegradationDetail `json:"upstreamListDegradation,omitempty"`
-	HTTPSReadiness          HTTPSReadinessStatus           `json:"httpsReadiness"`
-	HTTPSInterception       HTTPSInterceptionState         `json:"httpsInterception"`
-	HTTPSIntent             bool                           `json:"httpsIntent"`
-	HTTPSWarnings           []HTTPSWarningDetail           `json:"httpsWarnings,omitempty"`
-	ManagedPACActive        bool                           `json:"managedPacActive"`
-	ManagedPACServices      []string                       `json:"managedPacServices,omitempty"`
-	ManagedPACWarnings      []ManagedPACWarningDetail      `json:"managedPacWarnings,omitempty"`
+	ProxyListen                 string                       `json:"proxyListen"`
+	PACListen                   string                       `json:"pacListen"`
+	UpstreamListPath            string                       `json:"upstreamListPath"`
+	UpstreamCount               int                          `json:"upstreamCount"`
+	UpstreamListWarnings        []UpstreamListWarningDetail  `json:"upstreamListWarnings,omitempty"`
+	UpstreamListFileSyncIssue   *FileSyncIssue               `json:"upstreamListFileSyncIssue,omitempty"`
+	UpstreamListProjectionIssue *UpstreamListProjectionIssue `json:"upstreamListProjectionIssue,omitempty"`
+	HTTPSReadiness              HTTPSReadinessStatus         `json:"httpsReadiness"`
+	HTTPSInterception           HTTPSInterceptionState       `json:"httpsInterception"`
+	HTTPSIntent                 bool                         `json:"httpsIntent"`
+	HTTPSWarnings               []HTTPSWarningDetail         `json:"httpsWarnings,omitempty"`
+	ManagedPACActive            bool                         `json:"managedPacActive"`
+	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
+	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
 }
 
 type HTTPSReadinessStatus string
@@ -931,19 +945,20 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
-			ProxyListen:             state.ProxyListen,
-			PACListen:               state.PACListen,
-			UpstreamListPath:        state.UpstreamList,
-			UpstreamCount:           state.UpstreamCount,
-			UpstreamListWarnings:    state.UpstreamListWarnings,
-			UpstreamListDegradation: state.UpstreamListDegradation,
-			HTTPSReadiness:          state.HTTPSReadiness,
-			HTTPSInterception:       state.HTTPSInterception,
-			HTTPSIntent:             state.HTTPSIntent,
-			HTTPSWarnings:           state.HTTPSWarnings,
-			ManagedPACActive:        managedPACActive,
-			ManagedPACServices:      managedPACServiceNames,
-			ManagedPACWarnings:      managedPACWarningSnapshot,
+			ProxyListen:                 state.ProxyListen,
+			PACListen:                   state.PACListen,
+			UpstreamListPath:            state.UpstreamList,
+			UpstreamCount:               state.UpstreamCount,
+			UpstreamListWarnings:        state.UpstreamListWarnings,
+			UpstreamListFileSyncIssue:   state.UpstreamListFileSyncIssue,
+			UpstreamListProjectionIssue: state.UpstreamListProjectionIssue,
+			HTTPSReadiness:              state.HTTPSReadiness,
+			HTTPSInterception:           state.HTTPSInterception,
+			HTTPSIntent:                 state.HTTPSIntent,
+			HTTPSWarnings:               state.HTTPSWarnings,
+			ManagedPACActive:            managedPACActive,
+			ManagedPACServices:          managedPACServiceNames,
+			ManagedPACWarnings:          managedPACWarningSnapshot,
 		}
 		return result, nil
 	}
@@ -966,15 +981,6 @@ func upstreamListWarningDetails(warnings []upstreamlist.Warning) []UpstreamListW
 		})
 	}
 	return details
-}
-
-func upstreamListDegradationDetail(err error) *UpstreamListDegradationDetail {
-	if err == nil {
-		return nil
-	}
-	detail := &UpstreamListDegradationDetail{}
-	detail.Cause = err.Error()
-	return detail
 }
 
 func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {

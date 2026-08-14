@@ -202,16 +202,17 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 
 	state := engine.snapshot()
 	return Started{Guidance: StartGuidance{
-		UpstreamListPath:        upstreamListPath,
-		ManagedPACActive:        true,
-		ManagedPACServices:      pacInstall.State().ServiceNames(),
-		ManagedPACWarnings:      managedPACWarningDetails(pacInstall.Warnings()),
-		HTTPSReadiness:          state.HTTPSReadiness,
-		HTTPSInterception:       state.HTTPSInterception,
-		HTTPSIntent:             state.HTTPSIntent,
-		HTTPSWarnings:           state.HTTPSWarnings,
-		UpstreamListWarnings:    state.UpstreamListWarnings,
-		UpstreamListDegradation: state.UpstreamListDegradation,
+		UpstreamListPath:            upstreamListPath,
+		ManagedPACActive:            true,
+		ManagedPACServices:          pacInstall.State().ServiceNames(),
+		ManagedPACWarnings:          managedPACWarningDetails(pacInstall.Warnings()),
+		HTTPSReadiness:              state.HTTPSReadiness,
+		HTTPSInterception:           state.HTTPSInterception,
+		HTTPSIntent:                 state.HTTPSIntent,
+		HTTPSWarnings:               state.HTTPSWarnings,
+		UpstreamListWarnings:        state.UpstreamListWarnings,
+		UpstreamListFileSyncIssue:   state.UpstreamListFileSyncIssue,
+		UpstreamListProjectionIssue: state.UpstreamListProjectionIssue,
 	}}, nil
 }
 

@@ -23,7 +23,8 @@ type trafficRuntime struct {
 	upstreamListPath        string
 	upstreamListObservation *fileobservation.Observation
 	currentUpstreamList     upstreamlist.Projection
-	upstreamListError       error
+	fileSyncIssue           *FileSyncIssue
+	projectionIssue         *UpstreamListProjectionIssue
 	userCA                  userca.Snapshot
 	readinessError          error
 	interceptionState       HTTPSInterceptionState
@@ -96,9 +97,20 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 	proxyListen := proxyListener.Addr().String()
 
 	initialList := upstreamlist.Projection{}
-	initialError := initial.Err
-	if initial.Err == nil {
-		initialList, initialError = upstreamlist.Project(initial.Contents)
+	var fileIssue *FileSyncIssue
+	var projectionIssue *UpstreamListProjectionIssue
+	if initial.Err != nil {
+		fileIssue, err = classifyFileSyncIssue(initial.Err)
+		if err != nil {
+			_ = proxyListener.Close()
+			_ = pacListener.Close()
+			return nil, err
+		}
+	} else {
+		initialList, err = upstreamlist.Project(initial.Contents)
+		if err != nil {
+			projectionIssue = &UpstreamListProjectionIssue{Cause: err.Error()}
+		}
 	}
 	pacProjection := pacrouting.Project(initialList, false, proxyListen, pacListener.Addr().String())
 	pacHandler := pacrouting.NewLiveHandler(pacProjection)
@@ -109,7 +121,8 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 		upstreamListPath:        upstreamListPath,
 		upstreamListObservation: observation,
 		currentUpstreamList:     initialList,
-		upstreamListError:       initialError,
+		fileSyncIssue:           fileIssue,
+		projectionIssue:         projectionIssue,
 		proxyHandler:            proxyHandler,
 		pacProjection:           pacProjection,
 		pacHandler:              pacHandler,
@@ -347,34 +360,88 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 			if !ok {
 				return
 			}
-			r.applyUpstreamListResult(result)
+			if err := r.applyUpstreamListResult(result); err != nil {
+				errs <- serverError{source: "upstream-list", err: err}
+				return
+			}
 		}
 	}
 }
 
-func (r *trafficRuntime) applyUpstreamListResult(result fileobservation.Result) {
+func (r *trafficRuntime) applyUpstreamListResult(result fileobservation.Result) error {
+	var nextFileIssue *FileSyncIssue
+	var err error
+	if result.Err != nil {
+		nextFileIssue, err = classifyFileSyncIssue(result.Err)
+		if err != nil {
+			return err
+		}
+	}
+
 	r.mu.Lock()
 	projectionChanged := false
+	statusChanged := false
+	warningsChanged := false
 	if result.Err != nil {
-		r.upstreamListError = result.Err
+		if !sameFileSyncIssue(r.fileSyncIssue, nextFileIssue) {
+			r.fileSyncIssue = nextFileIssue
+			statusChanged = true
+		}
 	} else {
-		candidate, err := upstreamlist.Project(result.Contents)
-		r.upstreamListError = err
-		if err != nil {
+		if r.fileSyncIssue != nil {
+			r.fileSyncIssue = nil
+			statusChanged = true
+		}
+		candidate, projectErr := upstreamlist.Project(result.Contents)
+		var nextProjectionIssue *UpstreamListProjectionIssue
+		if projectErr != nil {
+			nextProjectionIssue = &UpstreamListProjectionIssue{Cause: projectErr.Error()}
 			candidate = upstreamlist.Projection{}
+		}
+		if !sameProjectionIssue(r.projectionIssue, nextProjectionIssue) {
+			r.projectionIssue = nextProjectionIssue
+			statusChanged = true
 		}
 		if !upstreamlist.Equal(r.currentUpstreamList, candidate) {
 			r.currentUpstreamList = candidate
 			projectionChanged = r.updatePACProjectionLocked()
+			statusChanged = true
 		}
+		warningsChanged = r.updateHTTPSWarningsLocked()
 	}
-	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	r.publishPACProjection(projectionChanged)
-	// Source emits only changed lists or degradation errors, so every received state
-	// invalidates the complete runtime status snapshot.
-	r.publishRuntimeChange(RuntimeStatusChanged)
+	if statusChanged {
+		r.publishRuntimeChange(RuntimeStatusChanged)
+	}
+	return nil
+}
+
+func classifyFileSyncIssue(err error) (*FileSyncIssue, error) {
+	var readErr *fileobservation.ReadError
+	if errors.As(err, &readErr) {
+		return &FileSyncIssue{Kind: FileSyncIssueFileUnreadable, Cause: err.Error()}, nil
+	}
+	var stoppedErr *fileobservation.ObservationStoppedError
+	if errors.As(err, &stoppedErr) {
+		return &FileSyncIssue{Kind: FileSyncIssueObservationStopped, Cause: err.Error()}, nil
+	}
+	return nil, fmt.Errorf("unsupported file observation error %T: %w", err, err)
+}
+
+func sameFileSyncIssue(left, right *FileSyncIssue) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func sameProjectionIssue(left, right *UpstreamListProjectionIssue) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func (r *trafficRuntime) publishPACProjection(changed bool) {
@@ -478,17 +545,18 @@ func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
 }
 
 type runtimeState struct {
-	HTTPSWarningsRevision   uint64
-	ProxyListen             string
-	PACListen               string
-	UpstreamList            string
-	HTTPSReadiness          HTTPSReadinessStatus
-	HTTPSInterception       HTTPSInterceptionState
-	HTTPSIntent             bool
-	HTTPSWarnings           []HTTPSWarningDetail
-	UpstreamCount           int
-	UpstreamListWarnings    []UpstreamListWarningDetail
-	UpstreamListDegradation *UpstreamListDegradationDetail
+	HTTPSWarningsRevision       uint64
+	ProxyListen                 string
+	PACListen                   string
+	UpstreamList                string
+	HTTPSReadiness              HTTPSReadinessStatus
+	HTTPSInterception           HTTPSInterceptionState
+	HTTPSIntent                 bool
+	HTTPSWarnings               []HTTPSWarningDetail
+	UpstreamCount               int
+	UpstreamListWarnings        []UpstreamListWarningDetail
+	UpstreamListFileSyncIssue   *FileSyncIssue
+	UpstreamListProjectionIssue *UpstreamListProjectionIssue
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
@@ -506,17 +574,18 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		}}
 	}
 	return runtimeState{
-		HTTPSWarningsRevision:   r.httpsWarningsRevision,
-		ProxyListen:             r.listeners[0].Addr().String(),
-		PACListen:               r.listeners[1].Addr().String(),
-		UpstreamList:            r.upstreamListPath,
-		HTTPSReadiness:          readiness,
-		HTTPSInterception:       interception,
-		HTTPSIntent:             upstreamList.HTTPSIntent(),
-		HTTPSWarnings:           warnings,
-		UpstreamCount:           len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
-		UpstreamListWarnings:    upstreamListWarningDetails(upstreamList.Warnings),
-		UpstreamListDegradation: upstreamListDegradationDetail(r.upstreamListError),
+		HTTPSWarningsRevision:       r.httpsWarningsRevision,
+		ProxyListen:                 r.listeners[0].Addr().String(),
+		PACListen:                   r.listeners[1].Addr().String(),
+		UpstreamList:                r.upstreamListPath,
+		HTTPSReadiness:              readiness,
+		HTTPSInterception:           interception,
+		HTTPSIntent:                 upstreamList.HTTPSIntent(),
+		HTTPSWarnings:               warnings,
+		UpstreamCount:               len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
+		UpstreamListWarnings:        upstreamListWarningDetails(upstreamList.Warnings),
+		UpstreamListFileSyncIssue:   r.fileSyncIssue,
+		UpstreamListProjectionIssue: r.projectionIssue,
 	}
 }
 

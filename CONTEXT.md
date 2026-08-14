@@ -25,7 +25,7 @@ A user-facing interaction surface through which a Gateway Control Command is iss
 _Avoid_: Inbound Adapter, Gateway Module interface, transport protocol
 
 **Gateway Feature Orchestration**:
-A rule that only the Gateway Module orders and combines file-observation facts, Upstream List Projections, PAC Projections, UserCA facts, Managed PAC mutations, and Gateway Runtime state; feature modules never call one another. Gateway invokes each module-owned projection identity and classifies concrete errors into Gateway-owned semantic state without reproducing those modules' domain rules.
+A rule that only the Gateway Module orders and combines file-observation facts, Upstream List Projections, PAC Projections, UserCA facts, Managed PAC mutations, and Gateway Runtime state; feature modules never call one another. Gateway invokes each module-owned projection identity and converts concrete errors into independent Gateway-owned current issues without reproducing those modules' domain rules.
 _Avoid_: cross-feature import, feature-owned orchestration, shared feature lock, ordering-means-waiting
 
 **Independent Feature Serialization**:
@@ -65,8 +65,8 @@ The process-bootstrap role that establishes and keeps a Gateway Owner available 
 _Avoid_: CLI-owned Start semantics, implicit serve command, HTTP process bootstrap, Gateway Runtime
 
 **Gateway Runtime**:
-The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, continuous Upstream List observation and sync state, current Upstream List State, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. Feature degradation never ends Gateway Runtime; explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
-_Avoid_: lifecycle facade, command router, OS proxy manager, cleanup owner
+The live traffic-serving engine that owns the proxy listener, proxy server, PAC listener, PAC server, continuous Upstream List observation, current effective Upstream List Projection, optional Upstream List File Sync Issue, optional Upstream List Projection Issue, current PAC Projection, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. It begins only after initial observation has established those Upstream List conditions; feature degradation never ends it, while explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
+_Avoid_: initializing runtime, retained observation result, retained raw contents, lifecycle facade, command router, OS proxy manager, cleanup owner
 
 **Router-Only Serve**:
 A command behavior where the command becomes the Gateway Owner and starts the Gateway Router as an HTTP client entry point without automatically starting Gateway Runtime, running Gateway Footprint Cleanup at serve startup, or changing managed OS state; it fails clearly when a Gateway Owner already exists and may claim stale Gateway State Cache only after verification finds no reachable owner.
@@ -321,32 +321,28 @@ A lifecycle rule where ready HTTPS Readiness allows HTTPS Interception State to 
 _Avoid_: Explicit Trusted HTTPS, Config File HTTPS toggle, intent-as-capability, silent trust installation
 
 **Upstream List Projection**:
-The decoded and normalized semantic interpretation of observed Upstream List contents, containing Host Selectors, Origin Selectors, and Upstream List Warnings. The Upstream List module owns projection formation and identity without owning continuous observation, application path policy, Gateway sync state, projection-rejection consequences, or PAC Route Set identity.
+The decoded and normalized semantic interpretation of observed Upstream List contents, containing Host Selectors, Origin Selectors, and Upstream List Warnings. The Upstream List module owns projection formation and identity without owning continuous observation, application path policy, the Upstream List File Sync Issue, projection-rejection consequences, or PAC Route Set identity.
 _Avoid_: Upstream List Source, raw contents, file snapshot, PAC Route Set, Gateway-decoded list
 
 **Rejected Upstream List Contents**:
-Successfully observed Upstream List contents that the Upstream List module reports cannot form a semantic projection, distinct from line-level warnings and observation failure. Rejection keeps Upstream List sync available; Gateway applies its fail-closed policy by selecting an Empty Upstream List as the effective projection and independently presenting the rejection error.
+Successfully read Upstream List contents that the Upstream List module reports cannot form a semantic projection, distinct from line-level warnings and observation failure. Rejection leaves file observation current; Gateway records an Upstream List Projection Issue and independently applies its fail-closed policy by selecting an Empty Upstream List as the effective projection.
 _Avoid_: Upstream List Sync Failure, upstreamlist-owned routing consequence, last-known-good routing, line warning, observation degradation
 
 **Upstream List Fail-Closed Projection**:
-The Gateway Runtime policy that selects the canonical Empty Upstream List when observed contents are rejected, compares that selected projection with the current effective projection, and independently preserves the rejection error for presentation. Repeated rejection may change the presented error without implying another projection or PAC change.
+The Gateway Runtime policy that selects the canonical Empty Upstream List when read contents are rejected, compares that selected projection with the current effective projection, and independently preserves the Upstream List Projection Issue for presentation. Repeated rejection may change the Issue without implying another projection or PAC change.
 _Avoid_: parser-returned empty success, last-known-good routing, error-implies-PAC-update, Gateway-constructed projection
 
 **Upstream List Projection Identity**:
 The Upstream List module-owned equivalence of normalized selectors and warnings, independent from raw-content identity and PAC Projection identity. Gateway invokes this identity to decide whether to adopt a newly formed projection without defining why two projections are semantically equal.
 _Avoid_: source-content identity, Gateway-defined projection equality, PAC equality, representation equality
 
-**Upstream List Sync State**:
-The Gateway Runtime-owned comparable semantic classification of whether continuous observation of the Upstream List is current, uncertain, unavailable, or terminally stopped. Gateway derives it from concrete file-observation errors, not raw error identity; only a changed or cleared state produces a status notification, and the state does not itself change the current Upstream List Projection or PAC Projection.
-_Avoid_: Upstream List Projection, content validity, parser state, PAC availability, rejected contents
+**Upstream List File Sync Issue**:
+An optional Gateway Runtime-owned current problem whose kind is File Unreadable or Observation Stopped and which contains its presented cause. Its kind and cause define issue identity; File Unreadable can recover, Observation Stopped requires Gateway restart, file observation privately rebuilds an uncertain watcher and rereads the complete file, and the Issue's appearance, change, and clearing must remain available for Inbound Adapter presentation without prescribing a synchronization interface.
+_Avoid_: Upstream List Sync State, Upstream List Projection, content validity, parser state, PAC availability, watcher uncertainty, raw watcher error
 
-**Upstream List Projection Error State**:
-The Gateway Runtime-owned comparable semantic classification of the current Rejected Upstream List Contents error, maintained independently from Upstream List Sync State and the effective Upstream List Projection. Successful projection clears it, an equivalent repeated rejection does not notify again, and a changed or cleared state produces a status notification without implying a PAC change.
-_Avoid_: raw error identity, failure event history, sync failure, projection identity, error-implies-PAC-update
-
-**Upstream List State**:
-A Gateway Runtime-owned complete snapshot combining the effective Upstream List Projection, Upstream List Sync State, and Upstream List Projection Error State. Gateway owns their lifetime, semantic error classification, and downstream coordination without owning Upstream List Projection Identity or PAC Projection identity.
-_Avoid_: configuration event history, raw file content, file-change event, command replay, watcher notification
+**Upstream List Projection Issue**:
+An optional Gateway Runtime-owned current problem containing the presented cause of Rejected Upstream List Contents. Its cause defines issue identity; successful projection clears it independently from Upstream List Projection Identity, rejection selects the Empty Upstream List without implying another PAC Projection change when effective routes are already empty, and the Issue's appearance, change, and clearing must remain available for Inbound Adapter presentation without prescribing a synchronization interface.
+_Avoid_: Upstream List Projection Error State, combined Upstream List State, raw error identity, failure event history, file sync issue, projection identity, error-implies-PAC-update
 
 **Gateway Control Command**:
 A user-facing command that controls gateway-owned state or reports on it, including start, serve, stop, status, UserCA install, and UserCA uninstall.
@@ -485,15 +481,15 @@ A Gateway-owned Start operation that assesses the fixed Upstream List path and, 
 _Avoid_: Configuration Bootstrap, silent file creation, init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
 **Upstream List Creation Warning**:
-A surface-neutral, non-persistent Start warning containing the actionable cause of a failed authorized Upstream List Creation attempt. It appears only on the Start result produced by that attempt, is absent after successful creation, and remains independent from any Upstream List Sync State observed afterward.
-_Avoid_: runtime state, successful-creation notice, Upstream List Sync State, merged creation and observation error, warning replay
+A surface-neutral, non-persistent Start warning containing the actionable cause of a failed authorized Upstream List Creation attempt. It appears only on the Start result produced by that attempt, is absent after successful creation, and remains independent from any Upstream List File Sync Issue observed afterward.
+_Avoid_: runtime state, successful-creation notice, Upstream List File Sync Issue, merged creation and observation error, warning replay
 
 **Upstream List Creation Consent**:
 A fingerprint-bound user decision required when Gateway assesses the fixed path as missing, presented at most once per Start Sequence and authorizing immediate exclusive creation at the disclosed path with the Upstream List module's disclosed default contents and any disclosed missing parent directories, independently from Managed PAC Consent. Declining preserves the missing path but allows that Start Sequence to continue degraded without asking again; a later Start reassesses, while runtime disappearance never requests consent or recreates the file or its parent.
 _Avoid_: combined Start consent, CLI-invented consent, consent error, overwrite authorization, runtime bootstrap, implicit default creation
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after PAC assessment and any required decision permit activation and Gateway Runtime is serving. Current Upstream List Sync State, Upstream List Projection Error State, and Managed PAC publication warnings are included when applicable, while transient initial publication failure remains internal and is retried; guidance points to user-relevant state instead of runtime listener endpoints.
+A start-time user-facing output behavior shown only after PAC assessment and any required decision permit activation and Gateway Runtime is serving. Current Upstream List File Sync Issue, Upstream List Projection Issue, and Managed PAC publication warnings are included when applicable, while transient initial publication failure remains internal and is retried; guidance points to user-relevant state instead of runtime listener endpoints.
 _Avoid_: pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -661,8 +657,8 @@ A persistent line-level diagnostic for an invalid Upstream List line that is ign
 _Avoid_: silent invalid entry, fatal line error, transient log warning, command replay, routing revision warning
 
 **Upstream List Observation Failure**:
-A concrete file-observation failure that Gateway classifies into Upstream List Sync State while retaining the current effective Upstream List Projection. Read failure may recover, uncertain observation reports that continued synchronization is not assured, and terminal observation requires cause repair and Gateway restart.
-_Avoid_: projection rejection, sync-error-as-empty, fatal Gateway Runtime error, raw error identity, silent observation failure
+A concrete file-observation failure that Gateway records as an Upstream List File Sync Issue while retaining the current effective Upstream List Projection. A read failure remains recoverable, while failure to rebuild observation is terminal and requires cause repair plus Gateway restart; watcher uncertainty is private recovery work rather than a Gateway-visible condition.
+_Avoid_: projection rejection, sync-error-as-empty, fatal Gateway Runtime error, Gateway-visible watcher uncertainty, silent observation failure
 
 **Upstream List Entry**:
 A normalized routing value decoded by the Upstream List module as either a Host Selector or an Origin Selector. Internal consumers that construct entries directly are responsible for satisfying the same normalized value contract.
@@ -689,8 +685,8 @@ The explicit Host Selector meaning that selects an exact hostname, exactly one l
 _Avoid_: wildcard-bearing hostname, consumer-parsed wildcard
 
 **Upstream List Routing Policy**:
-A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries selected from the current Upstream List State rather than a source representation.
-_Avoid_: whole Upstream List State dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Upstream List validation
+A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries from the current effective Upstream List Projection rather than a source representation or diagnostic state.
+_Avoid_: Gateway diagnostic-state dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Upstream List validation
 
 **Line-Level Upstream Validation**:
 An Upstream List behavior where each line is validated independently so valid Upstream List Entries are applied while invalid lines are ignored and reported precisely as Upstream List Warnings.
@@ -864,7 +860,7 @@ QA engineer: "No, Gateway continuously observes the file, adopts a semantically 
 
 Developer: "What happens if I save an invalid config file while the gateway is running?"
 
-QA engineer: "Rejected Upstream List Contents produce a projection error state while Gateway selects an Empty Upstream List, updates PAC only if its projection changes, and continues observing for a valid correction."
+QA engineer: "Rejected Upstream List Contents produce an Upstream List Projection Issue while Gateway selects an Empty Upstream List, updates PAC only if its projection changes, and continues observing for a valid correction."
 
 Developer: "What if my config still has removed listener or managed-proxy settings?"
 

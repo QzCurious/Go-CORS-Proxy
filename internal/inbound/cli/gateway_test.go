@@ -100,6 +100,27 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 	}
 }
 
+func TestStartResultRendersIndependentUpstreamListIssues(t *testing.T) {
+	var out bytes.Buffer
+	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
+		UpstreamListFileSyncIssue: &gateway.FileSyncIssue{
+			Kind:  gateway.FileSyncIssueObservationStopped,
+			Cause: "watcher unavailable",
+		},
+		UpstreamListProjectionIssue: &gateway.UpstreamListProjectionIssue{Cause: "content must be UTF-8"},
+	}})
+
+	for _, want := range []string{
+		"upstream-list observation stopped: watcher unavailable",
+		"repair the cause and restart seamless-cors",
+		"upstream-list contents rejected: content must be UTF-8",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("start output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
 	var out bytes.Buffer
 	result := gateway.StartNoManageablePACServices{
