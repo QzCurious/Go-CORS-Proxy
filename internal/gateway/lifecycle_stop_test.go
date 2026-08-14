@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 )
 
 func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
@@ -96,11 +97,11 @@ func (*blockingCleanupSettings) Inspect(context.Context) (managedpac.Snapshot, e
 	return managedpac.Snapshot{}, nil
 }
 
-func (*blockingCleanupSettings) InstallDesired(context.Context, []string, managedpac.DesiredState) (managedpac.InstallResult, error) {
+func (*blockingCleanupSettings) InstallProjection(context.Context, []string, pacrouting.Projection) (managedpac.InstallResult, error) {
 	return managedpac.InstallResult{}, nil
 }
 
-func (*blockingCleanupSettings) PublishDesiredState(managedpac.DesiredState) {}
+func (*blockingCleanupSettings) PublishProjection(pacrouting.Projection) {}
 
 func (f *blockingCleanupSettings) Uninstall(context.Context) error {
 	close(f.cleanupEntered)

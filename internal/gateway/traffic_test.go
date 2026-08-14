@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,64 +11,40 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
+	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
-func TestRuntimeRetainsObservationError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing-upstreams.txt")
-	runtime, err := newRuntime(path)
+func TestRuntimeRetainsSourceDegradationCause(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Err: errors.New("source unavailable")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
 
-	diagnostics := runtime.snapshot().UpstreamListDiagnostics
-	if diagnostics == nil || diagnostics.ObservationError == nil || diagnostics.ObservationError.Kind != UpstreamListObservationReadFailed {
-		t.Fatalf("source diagnostics = %#v", diagnostics)
+	degradation := runtime.snapshot().UpstreamListDegradation
+	if degradation == nil || degradation.Cause != "source unavailable" {
+		t.Fatalf("source degradation = %#v", degradation)
 	}
-}
-
-func TestRuntimeTracksFormatAndObservationDiagnosticsIndependently(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upstreams.txt")
-	if err := os.WriteFile(path, []byte{0xff}, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := newRuntime(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(runtime)
-
-	diagnostics := runtime.snapshot().UpstreamListDiagnostics
-	if diagnostics == nil || diagnostics.InvalidFormat == nil || diagnostics.ObservationError != nil {
-		t.Fatalf("initial diagnostics = %#v", diagnostics)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	waitForTrafficConfig(t, runtime, func(state runtimeState) bool {
-		return state.UpstreamListDiagnostics != nil && state.UpstreamListDiagnostics.InvalidFormat != nil && state.UpstreamListDiagnostics.ObservationError != nil
-	})
-
-	writeTrafficTestFile(t, path, "api.example.test\n")
-	waitForTrafficConfig(t, runtime, func(state runtimeState) bool {
-		return state.UpstreamListDiagnostics == nil && state.UpstreamCount == 1
-	})
 }
 
 func TestPACPublicationInputIgnoresRepresentationAndWarningOnlyChanges(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "api.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
 
-	desired := runtime.DesiredStates()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan serverError, 1)
+	go runtime.watchUpstreamList(ctx, errs)
+	desired := runtime.PACProjections()
 
 	writeTrafficTestFile(t, upstreamPath, "API.EXAMPLE.TEST\nhttps://bad.example.test/path\n")
-	waitForTrafficConfig(t, runtime, func(state runtimeState) bool {
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
 		return len(state.UpstreamListWarnings) == 1
 	})
 	select {
@@ -79,9 +56,8 @@ func TestPACPublicationInputIgnoresRepresentationAndWarningOnlyChanges(t *testin
 	writeTrafficTestFile(t, upstreamPath, "changed.example.test\n")
 	select {
 	case state := <-desired:
-		entries := state.UpstreamList.HostSelectors
-		if len(entries) != 1 || entries[0].Hostname != "changed.example.test" {
-			t.Fatalf("desired entries = %#v", entries)
+		if !strings.Contains(state.Body(), "changed.example.test") {
+			t.Fatalf("PAC projection does not contain changed host: %s", state.Body())
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for desired Upstream List input")
@@ -89,8 +65,8 @@ func TestPACPublicationInputIgnoresRepresentationAndWarningOnlyChanges(t *testin
 }
 
 func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "api.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,14 +75,18 @@ func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-runtime.DesiredStates():
+	case <-runtime.PACProjections():
 	default:
 	}
 
-	desired := runtime.DesiredStates()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan serverError, 1)
+	go runtime.watchUpstreamList(ctx, errs)
+	desired := runtime.PACProjections()
 
 	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
-	waitForTrafficConfig(t, runtime, func(state runtimeState) bool { return state.HTTPSIntent })
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSIntent })
 	select {
 	case state := <-desired:
 		t.Fatalf("inactive HTTPS selector published PAC input: %#v", state)
@@ -115,8 +95,8 @@ func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
 }
 
 func TestHTTPSIntentDoesNotReassessLatchedUserCA(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "api.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +104,13 @@ func TestHTTPSIntentDoesNotReassessLatchedUserCA(t *testing.T) {
 	if err := runtime.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan serverError, 1)
+	go runtime.watchUpstreamList(ctx, errs)
+
 	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
-	waitForTrafficConfig(t, runtime, func(state runtimeState) bool { return state.HTTPSIntent })
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSIntent })
 
 	state := runtime.snapshot()
 	if state.HTTPSReadiness != HTTPSReadinessNotReady || !hasHTTPSWarning(state.HTTPSWarnings, HTTPSWarningUnmetIntent) {
@@ -134,8 +119,8 @@ func TestHTTPSIntentDoesNotReassessLatchedUserCA(t *testing.T) {
 }
 
 func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,9 +138,9 @@ func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
 		t.Fatalf("recovered state = %#v", state)
 	}
 	select {
-	case desired := <-runtime.DesiredStates():
-		if !desired.HTTPSInterception {
-			t.Fatalf("desired state did not enable HTTPS interception: %#v", desired)
+	case desired := <-runtime.PACProjections():
+		if !strings.Contains(desired.Body(), "secure.example.test") {
+			t.Fatalf("PAC projection did not enable HTTPS route: %s", desired.Body())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for desired PAC state")
@@ -163,8 +148,8 @@ func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
 }
 
 func TestInterceptionFailurePreservesLatchedUserCAAndInstallCanRecover(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +180,8 @@ func TestInterceptionFailurePreservesLatchedUserCAAndInstallCanRecover(t *testin
 }
 
 func TestUserCAExpiryWithdrawsHTTPSAndDirectsExplicitInstall(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,8 +210,8 @@ func TestUserCAExpiryWithdrawsHTTPSAndDirectsExplicitInstall(t *testing.T) {
 }
 
 func TestHTTPSDeadlineSignalSurvivesStatusInvalidation(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "api.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +231,8 @@ func TestHTTPSDeadlineSignalSurvivesStatusInvalidation(t *testing.T) {
 }
 
 func TestRuntimeStatusDerivesEffectiveExpiryFromLatchedSnapshot(t *testing.T) {
-	_, _, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
-	runtime, err := newRuntime(upstreamPath)
+	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
+	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +260,7 @@ func TestHTTPSReadinessWarningsUseOnlySemanticUserCAState(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		list     upstreamlist.UpstreamList
+		list     upstreamlist.Projection
 		snapshot userca.Snapshot
 		err      error
 		want     string
@@ -330,14 +315,19 @@ func httpsWarningDiagnostics(warnings []HTTPSWarningDetail) string {
 	return strings.Join(diagnostics, "\n")
 }
 
-func upstreamListForTrafficTest(t *testing.T, contents string) upstreamlist.UpstreamList {
+func upstreamListForTrafficTest(t *testing.T, contents string) upstreamlist.Projection {
 	t.Helper()
-	_, snapshot, _ := createTrafficConfig(t, contents)
-	return snapshot.(upstreamlist.Projection).List
+	projection, err := upstreamlist.Project([]byte(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return projection
 }
 
 func closeTrafficTestRuntime(runtime *trafficRuntime) {
-	_ = runtime.Close()
+	for _, listener := range runtime.listeners {
+		_ = listener.Close()
+	}
 }
 
 func writeTrafficTestFile(t *testing.T, path, contents string) {
@@ -347,13 +337,13 @@ func writeTrafficTestFile(t *testing.T, path, contents string) {
 	}
 }
 
-func createTrafficConfig(t *testing.T, upstreams string) (*upstreamlist.Source, upstreamlist.Transition, string) {
+func createTrafficConfig(t *testing.T, upstreams string) (*fileobservation.Observation, fileobservation.Result, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	return createTrafficConfigAtCurrentHome(t, upstreams)
 }
 
-func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*upstreamlist.Source, upstreamlist.Transition, string) {
+func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*fileobservation.Observation, fileobservation.Result, string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -365,18 +355,20 @@ func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*upstream
 		t.Fatal(err)
 	}
 	writeTrafficTestFile(t, upstreamPath, upstreams)
-	source := upstreamlist.Open(upstreamPath)
+	source, err := fileobservation.Open(upstreamPath, fileobservation.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	select {
-	case initial := <-source.Transitions():
-		_ = source.Close()
+	case initial := <-source.Results():
 		return source, initial, upstreamPath
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial Upstream List state")
-		return nil, nil, ""
+		return nil, fileobservation.Result{}, ""
 	}
 }
 
-func waitForTrafficConfig(t *testing.T, runtime *trafficRuntime, ready func(runtimeState) bool) {
+func waitForTrafficConfig(t *testing.T, runtime *trafficRuntime, errs <-chan serverError, ready func(runtimeState) bool) {
 	t.Helper()
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
@@ -387,6 +379,8 @@ func waitForTrafficConfig(t *testing.T, runtime *trafficRuntime, ready func(runt
 			return
 		}
 		select {
+		case err := <-errs:
+			t.Fatal(err.err)
 		case <-ticker.C:
 		case <-deadline.C:
 			t.Fatal("timed out waiting for Upstream List update")

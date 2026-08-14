@@ -20,29 +20,38 @@ type Result struct {
 	Snapshot bool
 }
 
-type ErrorKind uint8
-
-const (
-	ErrorRead ErrorKind = iota + 1
-	ErrorObservationUncertain
-	ErrorObservationStopped
-)
-
-type Error struct {
-	Kind ErrorKind
-	Path string
-	Err  error
+type ReadError struct {
+	Path  string
+	Cause error
 }
 
-func (e *Error) Error() string {
-	operation := "observe"
-	if e.Kind == ErrorRead {
-		operation = "read"
-	}
-	return fmt.Sprintf("file observation cannot %s %q: %v", operation, e.Path, e.Err)
+func (e *ReadError) Error() string {
+	return fmt.Sprintf("file observation cannot read %q: %v", e.Path, e.Cause)
 }
 
-func (e *Error) Unwrap() error { return e.Err }
+func (e *ReadError) Unwrap() error { return e.Cause }
+
+type ObservationUncertainError struct {
+	Path  string
+	Cause error
+}
+
+func (e *ObservationUncertainError) Error() string {
+	return fmt.Sprintf("file observation is uncertain for %q: %v", e.Path, e.Cause)
+}
+
+func (e *ObservationUncertainError) Unwrap() error { return e.Cause }
+
+type ObservationStoppedError struct {
+	Path  string
+	Cause error
+}
+
+func (e *ObservationStoppedError) Error() string {
+	return fmt.Sprintf("file observation stopped for %q: %v", e.Path, e.Cause)
+}
+
+func (e *ObservationStoppedError) Unwrap() error { return e.Cause }
 
 type Options struct{ Debounce time.Duration }
 
@@ -159,7 +168,7 @@ func (o *Observation) observe() {
 				arm()
 				continue
 			}
-			if !o.publish(Result{Err: &Error{Kind: ErrorObservationUncertain, Path: o.path, Err: err}}) {
+			if !o.publish(Result{Err: &ObservationUncertainError{Path: o.path, Cause: err}}) {
 				return
 			}
 		}
@@ -195,16 +204,16 @@ func (o *Observation) read() (Result, bool) {
 	info, err := os.Lstat(o.path)
 	if err != nil {
 		o.hasFingerprint = false
-		return Result{Err: &Error{Kind: ErrorRead, Path: o.path, Err: err}}, true
+		return Result{Err: &ReadError{Path: o.path, Cause: err}}, true
 	}
 	if !info.Mode().IsRegular() {
 		o.hasFingerprint = false
-		return Result{Err: &Error{Kind: ErrorRead, Path: o.path, Err: errors.New("must be an ordinary file")}}, true
+		return Result{Err: &ReadError{Path: o.path, Cause: errors.New("must be an ordinary file")}}, true
 	}
 	contents, err := os.ReadFile(o.path)
 	if err != nil {
 		o.hasFingerprint = false
-		return Result{Err: &Error{Kind: ErrorRead, Path: o.path, Err: err}}, true
+		return Result{Err: &ReadError{Path: o.path, Cause: err}}, true
 	}
 	fingerprint := sha256.Sum256(contents)
 	if o.hasFingerprint && o.fingerprint == fingerprint {
@@ -215,5 +224,5 @@ func (o *Observation) read() (Result, bool) {
 }
 
 func stopped(path string, err error) error {
-	return &Error{Kind: ErrorObservationStopped, Path: path, Err: err}
+	return &ObservationStoppedError{Path: path, Cause: err}
 }

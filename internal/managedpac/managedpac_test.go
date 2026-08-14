@@ -3,14 +3,13 @@ package managedpac
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
@@ -124,12 +123,12 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 	}
 }
 
-func TestDesiredStateRendersCompletePACAndSuppressesEffectiveNoOp(t *testing.T) {
+func TestProjectionInstallsCompletePAC(t *testing.T) {
 	list := mustDesiredList(t, "api.example.test\n")
 	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	desired := NewDesiredState(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
-	_, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, desired)
+	projection := pacrouting.Project(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
+	_, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, projection)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,48 +136,36 @@ func TestDesiredStateRendersCompletePACAndSuppressesEffectiveNoOp(t *testing.T) 
 		t.Fatalf("initial publication generation = %d, want 1", got)
 	}
 	settings.mu.Lock()
-	initialWrites := append([]string(nil), settings.writes...)
-	settings.mu.Unlock()
-
-	module.PublishDesiredState(desired)
-	time.Sleep(50 * time.Millisecond)
-	if got := module.PublicationGeneration(); got != 1 {
-		t.Fatalf("effective no-op advanced generation to %d", got)
-	}
-	settings.mu.Lock()
 	defer settings.mu.Unlock()
-	if !slices.Equal(settings.writes, initialWrites) {
-		t.Fatalf("effective no-op published writes: %v", settings.writes)
-	}
 	if !strings.Contains(settings.writes[0], "v=1") {
 		t.Fatalf("initial publication URL = %q", settings.writes[0])
 	}
 }
 
-func TestDesiredStateChangeAdvancesGenerationBeforePublication(t *testing.T) {
+func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "other.example.test\n")
 	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, NewDesiredState(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, pacrouting.Project(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
 		t.Fatal(err)
 	}
-	module.PublishDesiredState(NewDesiredState(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
 	waitForWrite(t, settings, "v=2")
 	if got := module.PublicationGeneration(); got != 2 {
 		t.Fatalf("publication generation = %d, want 2", got)
 	}
 }
 
-func TestInitialDesiredPublicationFailureIsRetriedWithoutReturningGatewayError(t *testing.T) {
+func TestInitialProjectionPublicationFailureIsRetriedWithoutReturningGatewayError(t *testing.T) {
 	list := mustDesiredList(t, "api.example.test\n")
 	settings := &fakeSettings{
 		states:      []serviceSnapshot{{ServiceName: "Wi-Fi"}},
 		applyErrors: map[string]error{"Wi-Fi": errors.New("write denied")},
 	}
 	module := openWithSettings(settings)
-	desired := NewDesiredState(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
-	result, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, desired)
+	desired := pacrouting.Project(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
+	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, desired)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +180,7 @@ func TestInitialDesiredPublicationFailureIsRetriedWithoutReturningGatewayError(t
 	waitForWrite(t, settings, "seamless-cors.pac?v=")
 }
 
-func TestPartialDesiredPublicationFailureIsRetried(t *testing.T) {
+func TestPartialProjectionPublicationFailureIsRetried(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "other.example.test\n")
 	settings := &fakeSettings{states: []serviceSnapshot{
@@ -201,14 +188,14 @@ func TestPartialDesiredPublicationFailureIsRetried(t *testing.T) {
 		{ServiceName: "Wi-Fi"},
 	}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallDesired(context.Background(), []string{"Ethernet", "Wi-Fi"}, NewDesiredState(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Ethernet", "Wi-Fi"}, pacrouting.Project(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
 		t.Fatal(err)
 	}
 
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Ethernet": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishDesiredState(NewDesiredState(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
@@ -217,25 +204,25 @@ func TestPartialDesiredPublicationFailureIsRetried(t *testing.T) {
 	waitForWrite(t, settings, "Ethernet=http://127.0.0.1:8081/seamless-cors.pac?v=3")
 }
 
-func TestFailedDesiredPublicationConsumesGenerationAndRetriesLatestState(t *testing.T) {
+func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "second.example.test\n")
 	third := mustDesiredList(t, "third.example.test\n")
 	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallDesired(context.Background(), []string{"Wi-Fi"}, NewDesiredState(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, pacrouting.Project(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
 		t.Fatal(err)
 	}
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishDesiredState(NewDesiredState(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
 	settings.applyErrors = nil
 	settings.mu.Unlock()
-	module.PublishDesiredState(NewDesiredState(third, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(third, false, "127.0.0.1:8080", "127.0.0.1:8081"))
 	waitForGeneration(t, module, 3)
 	waitForWrite(t, settings, "v=3")
 	settings.mu.Lock()
@@ -249,21 +236,10 @@ func TestFailedDesiredPublicationConsumesGenerationAndRetriesLatestState(t *test
 	}
 }
 
-func mustDesiredList(t *testing.T, contents string) upstreamlist.UpstreamList {
+func mustDesiredList(t *testing.T, contents string) upstreamlist.Projection {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "upstreams.txt")
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	source := upstreamlist.Open(path)
-	var list upstreamlist.UpstreamList
-	select {
-	case initial := <-source.Transitions():
-		list = initial.(upstreamlist.Projection).List
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for initial Upstream List state")
-	}
-	if err := source.Close(); err != nil {
+	list, err := upstreamlist.Project([]byte(contents))
+	if err != nil {
 		t.Fatal(err)
 	}
 	return list

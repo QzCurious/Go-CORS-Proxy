@@ -18,8 +18,8 @@ func TestMissingFileIsAResultAndLaterCreationRecovers(t *testing.T) {
 	}
 	defer observation.Close()
 	first := waitResult(t, observation.Results())
-	var observed *fileobservation.Error
-	if !errors.As(first.Err, &observed) || observed.Kind != fileobservation.ErrorRead {
+	var observed *fileobservation.ReadError
+	if !errors.As(first.Err, &observed) {
 		t.Fatalf("first = %#v", first)
 	}
 	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {

@@ -380,27 +380,6 @@ func TestStartRendersManagedPACWarningsSeparately(t *testing.T) {
 	}
 }
 
-func TestUpstreamListDiagnosticsRenderObservationBeforeFormat(t *testing.T) {
-	var out bytes.Buffer
-	renderUpstreamListDiagnostics(&out, &gateway.UpstreamListDiagnosticsDetail{
-		InvalidFormat: &gateway.InvalidUpstreamListFormatDetail{Cause: "content must be UTF-8"},
-		ObservationError: &gateway.UpstreamListObservationErrorDetail{
-			Kind:  gateway.UpstreamListObservationStopped,
-			Cause: "filesystem watcher stopped",
-		},
-	})
-
-	output := out.String()
-	observation := strings.Index(output, "upstream-list observation")
-	format := strings.Index(output, "invalid upstream-list format")
-	if observation < 0 || format < 0 || observation >= format {
-		t.Fatalf("diagnostic output = %q", output)
-	}
-	if !strings.Contains(output, "restart the gateway") {
-		t.Fatalf("terminal observation guidance = %q", output)
-	}
-}
-
 func TestLiveHTTPSWarningRendererPrintsOnlyAddedOrChangedWarnings(t *testing.T) {
 	var out bytes.Buffer
 	renderer := &liveHTTPSWarningRenderer{stdout: &out}

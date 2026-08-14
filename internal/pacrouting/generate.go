@@ -5,84 +5,43 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-// Routing owns the generated PAC artifact and the handler that serves it.
-// Gateway Runtime supplies only semantic selectors and whether Trusted
-// HTTPS Interception is currently active; selector interpretation and PAC
-// rendering remain inside this module.
-type Routing struct {
-	mu           sync.RWMutex
-	proxyListen  string
-	trustedHTTPS bool
-	routes       routeSet
-	handler      *dynamicHandler
+// Projection is the complete immutable PAC Routing interpretation used by the
+// live PAC endpoint and Managed PAC publication.
+type Projection struct {
+	proxyListen string
+	pacListen   string
+	routes      routeSet
+	body        string
 }
 
-// NewRouting creates PAC Routing with an empty route set. The returned handler
-// is ready to serve immediately; the first Apply call replaces its body when
-// the supplied semantic route set differs from the empty set.
-func NewRouting(proxyListen string) *Routing {
-	routes := deriveRouteSet(nil, nil, false)
-	return &Routing{
+// Project derives a PAC Projection from complete Gateway-owned input.
+func Project(upstreams upstreamlist.Projection, trustedHTTPS bool, proxyListen, pacListen string) Projection {
+	routes := deriveRouteSet(upstreams.HostSelectors, upstreams.OriginSelectors, trustedHTTPS)
+	return Projection{
 		proxyListen: proxyListen,
+		pacListen:   pacListen,
 		routes:      routes,
-		handler:     newDynamicHandler(render(proxyListen, routes)),
+		body:        render(proxyListen, routes),
 	}
 }
 
-// Apply adopts the newest semantic routing input. It returns true only when
-// the generated PAC route set changed; equivalent input or trust changes that
-// do not affect any route are coalesced without publishing a new body.
-func (r *Routing) Apply(hostSelectors []upstreamlist.HostSelector, originSelectors []upstreamlist.OriginSelector, trustedHTTPS bool) bool {
-	nextRoutes := deriveRouteSet(hostSelectors, originSelectors, trustedHTTPS)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if sameRouteSet(r.routes, nextRoutes) {
-		r.trustedHTTPS = trustedHTTPS
-		return false
-	}
-	r.trustedHTTPS = trustedHTTPS
-	r.routes = nextRoutes
-	r.handler.Set(render(r.proxyListen, nextRoutes))
-	return true
+// Equal reports PAC Projection identity. Route ordering is not significant;
+// both runtime endpoints are part of identity.
+func Equal(left, right Projection) bool {
+	return left.proxyListen == right.proxyListen &&
+		left.pacListen == right.pacListen &&
+		sameRouteSet(left.routes, right.routes)
 }
 
-// Render derives the complete effective PAC for semantic routing input. The
-// caller supplies the proxy endpoint because PAC Routing does not own the
-// runtime listener.
-func Render(proxyListen string, hostSelectors []upstreamlist.HostSelector, originSelectors []upstreamlist.OriginSelector, trustedHTTPS bool) string {
-	return render(proxyListen, deriveRouteSet(hostSelectors, originSelectors, trustedHTTPS))
-}
+func (p Projection) Body() string      { return p.body }
+func (p Projection) PACListen() string { return p.pacListen }
 
-// Handler returns the dynamic HTTP handler owned by PAC Routing.
-func (r *Routing) Handler() http.Handler {
-	r.mu.RLock()
-	handler := r.handler
-	r.mu.RUnlock()
-	return handler
-}
-
-// Body returns the current generated PAC text. Gateway Runtime normally only
-// needs Handler; this accessor is useful for focused diagnostics and tests.
-func (r *Routing) Body() string {
-	r.mu.RLock()
-	routes := r.routes
-	proxyListen := r.proxyListen
-	r.mu.RUnlock()
-	return render(proxyListen, routes)
-}
-
-// TrustedHTTPS reports the latest Trusted HTTPS Interception state adopted by
-// Apply.
-func (r *Routing) TrustedHTTPS() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.trustedHTTPS
-}
+// Handler serves this immutable PAC Projection.
+func (p Projection) Handler() http.Handler { return staticHandler{body: p.body} }
 
 //go:embed proxy.pac.js
 var pacProgram string

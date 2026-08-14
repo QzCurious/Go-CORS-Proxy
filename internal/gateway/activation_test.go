@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
@@ -227,8 +228,8 @@ func TestInstallUsesOnlyUserCAAndDoesNotBootstrapUpstreamList(t *testing.T) {
 }
 
 func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
-	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path)
+	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,8 +256,8 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 }
 
 func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
-	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path)
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +267,7 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-engine.DesiredStates():
+	case <-engine.PACProjections():
 	default:
 	}
 	ca := &fakeUserCA{}
@@ -284,9 +285,9 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 		t.Fatalf("deadline state = %#v", state)
 	}
 	select {
-	case desired := <-engine.DesiredStates():
-		if desired.HTTPSInterception {
-			t.Fatalf("deadline retained HTTPS PAC route: %#v", desired)
+	case desired := <-engine.PACProjections():
+		if strings.Contains(desired.Body(), "api.example.test") {
+			t.Fatalf("deadline retained HTTPS PAC route: %s", desired.Body())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("deadline did not publish PAC withdrawal")
@@ -294,8 +295,8 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 }
 
 func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
-	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path)
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +306,7 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-engine.DesiredStates():
+	case <-engine.PACProjections():
 	default:
 	}
 	ca := &fakeUserCA{assessment: assessment}
@@ -325,8 +326,8 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 }
 
 func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *testing.T) {
-	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path)
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +337,7 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 		t.Fatal(err)
 	}
 	select {
-	case <-engine.DesiredStates():
+	case <-engine.PACProjections():
 	default:
 	}
 	ca := &fakeUserCA{inspectErr: errors.New("trust store unavailable")}
@@ -357,9 +358,9 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 		t.Fatalf("assessment failure warnings = %#v", state.HTTPSWarnings)
 	}
 	select {
-	case desired := <-engine.DesiredStates():
-		if desired.HTTPSInterception {
-			t.Fatalf("assessment failure retained HTTPS PAC route: %#v", desired)
+	case desired := <-engine.PACProjections():
+		if strings.Contains(desired.Body(), "api.example.test") {
+			t.Fatalf("assessment failure retained HTTPS PAC route: %s", desired.Body())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("assessment failure did not publish PAC withdrawal")
@@ -367,8 +368,8 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 }
 
 func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
-	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path)
+	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, upstreams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +379,7 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-engine.DesiredStates():
+	case <-engine.PACProjections():
 	default:
 	}
 	var inspectCalls atomic.Int32
@@ -503,8 +504,8 @@ func TestAdmittedCAOperationIgnoresRequestCancellation(t *testing.T) {
 }
 
 func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) {
-	_, _, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path)
+	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,19 +688,19 @@ func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snaps
 	return managedpac.NewSnapshot(f.services), nil
 }
 
-func (f *lifecycleTestSystemSettings) InstallDesired(_ context.Context, services []string, desired managedpac.DesiredState) (managedpac.InstallResult, error) {
+func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, services []string, projection pacrouting.Projection) (managedpac.InstallResult, error) {
 	f.applied++
 	if f.installResult != nil {
 		return *f.installResult, f.installErr
 	}
 	return managedpac.NewInstallResult(
-		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), managedpac.PACURL(desired.PACListen, 1)),
+		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), managedpac.PACURL(projection.PACListen(), 1)),
 		sortedUniqueServiceNames(services),
 		nil,
 	), f.installErr
 }
 
-func (*lifecycleTestSystemSettings) PublishDesiredState(managedpac.DesiredState) {}
+func (*lifecycleTestSystemSettings) PublishProjection(pacrouting.Projection) {}
 
 func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
 	f.cleared++

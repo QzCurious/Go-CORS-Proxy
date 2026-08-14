@@ -12,46 +12,39 @@ import (
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
 	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type trafficRuntime struct {
-	mu                       sync.RWMutex
-	upstreamListPath         string
-	upstreamListSource       *upstreamlist.Source
-	currentUpstreamList      upstreamlist.UpstreamList
-	invalidUpstreamFormat    *upstreamlist.InvalidFormat
-	upstreamObservationError *upstreamlist.ObservationError
-	userCA                   userca.Snapshot
-	readinessError           error
-	interceptionState        HTTPSInterceptionState
-	interceptionError        error
-	userCAOperationWarning   *HTTPSWarningDetail
-	proxyCore                *corsproxy.Core
-	proxyHandler             *dynamicHTTPHandler
-	proxyConfigured          bool
-	httpsWarnings            []HTTPSWarningDetail
-	proxy                    *http.Server
-	pacRouting               *pacrouting.Routing
-	pac                      *http.Server
-	listeners                []net.Listener
-	publishMu                sync.Mutex
-	desiredStatePublisher    conflatedstream.Publisher[managedpac.DesiredState]
-	desiredStateStream       conflatedstream.Stream[managedpac.DesiredState]
-	runtimeChangePublisher   conflatedstream.Publisher[RuntimeChangeKind]
-	runtimeChangeStream      conflatedstream.Stream[RuntimeChangeKind]
-	httpsWarningsRevision    uint64
-	now                      func() time.Time
-	sourceDone               chan struct{}
-	sourceTerminalReported   bool
-	fatal                    chan error
-	closeOnce                sync.Once
-	closeDone                chan struct{}
-	closeErr                 error
-	closing                  bool
+	mu                      sync.RWMutex
+	upstreamListPath        string
+	upstreamListObservation *fileobservation.Observation
+	currentUpstreamList     upstreamlist.Projection
+	upstreamListError       error
+	userCA                  userca.Snapshot
+	readinessError          error
+	interceptionState       HTTPSInterceptionState
+	interceptionError       error
+	userCAOperationWarning  *HTTPSWarningDetail
+	proxyCore               *corsproxy.Core
+	proxyHandler            *dynamicHTTPHandler
+	proxyConfigured         bool
+	httpsWarnings           []HTTPSWarningDetail
+	proxy                   *http.Server
+	pacProjection           pacrouting.Projection
+	pacHandler              *pacrouting.LiveHandler
+	pac                     *http.Server
+	listeners               []net.Listener
+	publishMu               sync.Mutex
+	pacProjectionPublisher  conflatedstream.Publisher[pacrouting.Projection]
+	pacProjectionStream     conflatedstream.Stream[pacrouting.Projection]
+	runtimeChangePublisher  conflatedstream.Publisher[RuntimeChangeKind]
+	runtimeChangeStream     conflatedstream.Stream[RuntimeChangeKind]
+	httpsWarningsRevision   uint64
+	now                     func() time.Time
 }
 
 // RuntimeChangeKind identifies the current-state concern invalidated by a
@@ -89,7 +82,7 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(upstreamListPath string) (_ *trafficRuntime, resultErr error) {
+func newRuntime(upstreamListPath string, observation *fileobservation.Observation, initial fileobservation.Result) (*trafficRuntime, error) {
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -99,52 +92,36 @@ func newRuntime(upstreamListPath string) (_ *trafficRuntime, resultErr error) {
 		proxyListener.Close()
 		return nil, fmt.Errorf("PAC listener unavailable: %w", err)
 	}
-	rollback := true
-	defer func() {
-		if rollback {
-			_ = proxyListener.Close()
-			_ = pacListener.Close()
-		}
-	}()
 
 	proxyListen := proxyListener.Addr().String()
 
-	pacRouting := pacrouting.NewRouting(proxyListen)
+	initialList := upstreamlist.Projection{}
+	initialError := initial.Err
+	if initial.Err == nil {
+		initialList, initialError = upstreamlist.Project(initial.Contents)
+	}
+	pacProjection := pacrouting.Project(initialList, false, proxyListen, pacListener.Addr().String())
+	pacHandler := pacrouting.NewLiveHandler(pacProjection)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
-	desiredStatePublisher, desiredStateStream := conflatedstream.New[managedpac.DesiredState]()
+	pacProjectionPublisher, pacProjectionStream := conflatedstream.New[pacrouting.Projection]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
-	r := &trafficRuntime{
-		upstreamListPath:       upstreamListPath,
-		proxyHandler:           proxyHandler,
-		pacRouting:             pacRouting,
-		proxy:                  &http.Server{Handler: proxyHandler},
-		pac:                    &http.Server{Handler: pacRouting.Handler()},
-		listeners:              []net.Listener{proxyListener, pacListener},
-		desiredStatePublisher:  desiredStatePublisher,
-		desiredStateStream:     desiredStateStream,
-		runtimeChangePublisher: runtimeChangePublisher,
-		runtimeChangeStream:    runtimeChangeStream,
-		now:                    time.Now,
-		sourceDone:             make(chan struct{}),
-		fatal:                  make(chan error, 1),
-		closeDone:              make(chan struct{}),
-	}
-	r.upstreamListSource = upstreamlist.Open(upstreamListPath)
-	initial, ok := <-r.upstreamListSource.Transitions()
-	if !ok {
-		_ = r.upstreamListSource.Close()
-		return nil, fmt.Errorf("initialize upstream list: source closed before its initial state")
-	}
-	if err := r.adoptUpstreamListTransition(initial, false); err != nil {
-		_ = r.upstreamListSource.Close()
-		return nil, err
-	}
-	if diagnostic, ok := initial.(upstreamlist.ObservationError); ok && diagnostic.Kind == upstreamlist.ObservationStopped {
-		r.sourceTerminalReported = true
-	}
-	go r.consumeUpstreamList()
-	rollback = false
-	return r, nil
+	return &trafficRuntime{
+		upstreamListPath:        upstreamListPath,
+		upstreamListObservation: observation,
+		currentUpstreamList:     initialList,
+		upstreamListError:       initialError,
+		proxyHandler:            proxyHandler,
+		pacProjection:           pacProjection,
+		pacHandler:              pacHandler,
+		proxy:                   &http.Server{Handler: proxyHandler},
+		pac:                     &http.Server{Handler: pacHandler},
+		listeners:               []net.Listener{proxyListener, pacListener},
+		pacProjectionPublisher:  pacProjectionPublisher,
+		pacProjectionStream:     pacProjectionStream,
+		runtimeChangePublisher:  runtimeChangePublisher,
+		runtimeChangeStream:     runtimeChangeStream,
+		now:                     time.Now,
+	}, nil
 }
 
 func (r *trafficRuntime) SetInitialHTTPSReadiness(assessment userca.Assessment, assessmentErr error) error {
@@ -177,9 +154,8 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(assessment userca.Assessment, 
 		r.httpsWarnings = nextWarnings
 		r.httpsWarningsRevision++
 	}
-	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
+	r.updatePACProjectionLocked()
 	r.mu.Unlock()
-	r.publishDesiredState()
 	return nil
 }
 
@@ -212,10 +188,10 @@ func (r *trafficRuntime) RecoverHTTPS(assessment userca.Assessment) error {
 		r.publishHTTPSWarningUpdate(warningsChanged)
 		return nil
 	}
-	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, true)
+	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
-	r.publishDesiredState()
+	r.publishPACProjection(projectionChanged)
 	return nil
 }
 
@@ -232,11 +208,11 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr
 	r.interceptionState = HTTPSInterceptionInactive
 	r.interceptionError = nil
 	warningsChanged := r.updateHTTPSWarningsLocked()
-	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, false)
+	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	if desiredChanged {
-		r.publishDesiredState()
+		r.publishPACProjection(projectionChanged)
 	}
 }
 
@@ -255,10 +231,10 @@ func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
 	r.interceptionState = HTTPSInterceptionFailed
 	r.interceptionError = failure.Err
 	warningsChanged := r.updateHTTPSWarningsLocked()
-	r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
+	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
-	r.publishDesiredState()
+	r.publishPACProjection(projectionChanged)
 }
 
 func (r *trafficRuntime) Serve(ctx context.Context) error {
@@ -273,7 +249,8 @@ func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) 
 			return err
 		}
 	}
-	errs := make(chan serverError, 2)
+	errs := make(chan serverError, 3)
+	go r.watchUpstreamList(ctx, errs)
 	go func() {
 		errs <- serverError{source: "proxy", err: r.proxy.Serve(r.listeners[0])}
 	}()
@@ -299,9 +276,6 @@ func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) 
 			return nil
 		}
 		return serverErr.err
-	case err := <-r.fatal:
-		_ = r.Close()
-		return err
 	}
 }
 
@@ -329,17 +303,11 @@ func (r *trafficRuntime) Close() error {
 }
 
 func (r *trafficRuntime) CloseTraffic() error {
-	r.closeOnce.Do(func() {
-		r.mu.Lock()
-		r.closing = true
-		r.mu.Unlock()
-		r.closeErr = r.upstreamListSource.Close()
-		<-r.sourceDone
-		r.closeErr = errors.Join(r.closeErr, r.proxy.Close(), r.pac.Close())
-		close(r.closeDone)
-	})
-	<-r.closeDone
-	return r.closeErr
+	return errors.Join(
+		closeObservation(r.upstreamListObservation),
+		r.proxy.Close(),
+		r.pac.Close(),
+	)
 }
 
 func (r *trafficRuntime) PACListen() string {
@@ -350,8 +318,8 @@ func (r *trafficRuntime) RuntimeChanges() <-chan RuntimeChangeKind {
 	return r.runtimeChangeStream.Updates()
 }
 
-func (r *trafficRuntime) DesiredStates() <-chan managedpac.DesiredState {
-	return r.desiredStateStream.Updates()
+func (r *trafficRuntime) PACProjections() <-chan pacrouting.Projection {
+	return r.pacProjectionStream.Updates()
 }
 
 func (r *trafficRuntime) snapshot() runtimeState {
@@ -366,82 +334,80 @@ func (r *trafficRuntime) interceptionActive() bool {
 	return r.interceptionState == HTTPSInterceptionActive
 }
 
-func (r *trafficRuntime) consumeUpstreamList() {
-	defer close(r.sourceDone)
-	terminalReported := r.sourceTerminalReported
-	for transition := range r.upstreamListSource.Transitions() {
-		if diagnostic, ok := transition.(upstreamlist.ObservationError); ok && diagnostic.Kind == upstreamlist.ObservationStopped {
-			terminalReported = true
-		}
-		if err := r.adoptUpstreamListTransition(transition, true); err != nil {
-			r.reportFatal(err)
-			return
-		}
+func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
+	if r.upstreamListObservation == nil {
+		return
 	}
-	r.mu.RLock()
-	closing := r.closing
-	r.mu.RUnlock()
-	if !closing && !terminalReported {
-		r.reportFatal(errors.New("upstream list source closed without terminal observation error"))
+	updates := r.upstreamListObservation.Results()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case result, ok := <-updates:
+			if !ok {
+				return
+			}
+			r.applyUpstreamListResult(result)
+		}
 	}
 }
 
-func (r *trafficRuntime) adoptUpstreamListTransition(transition upstreamlist.Transition, publish bool) error {
+func (r *trafficRuntime) applyUpstreamListResult(result fileobservation.Result) {
 	r.mu.Lock()
-	routeChanged := false
-	switch transition := transition.(type) {
-	case upstreamlist.Projection:
-		r.currentUpstreamList = transition.List
-		r.invalidUpstreamFormat = nil
-		r.upstreamObservationError = nil
-		routeChanged = r.pacRouting.Apply(r.currentUpstreamList.HostSelectors, r.currentUpstreamList.OriginSelectors, r.interceptionState == HTTPSInterceptionActive)
-	case upstreamlist.InvalidFormat:
-		r.invalidUpstreamFormat = &transition
-		r.upstreamObservationError = nil
-	case upstreamlist.ObservationError:
-		r.upstreamObservationError = &transition
-	default:
-		r.mu.Unlock()
-		return fmt.Errorf("unsupported upstream list transition %T", transition)
+	projectionChanged := false
+	if result.Err != nil {
+		r.upstreamListError = result.Err
+	} else {
+		candidate, err := upstreamlist.Project(result.Contents)
+		r.upstreamListError = err
+		if err != nil {
+			candidate = upstreamlist.Projection{}
+		}
+		if !upstreamlist.Equal(r.currentUpstreamList, candidate) {
+			r.currentUpstreamList = candidate
+			projectionChanged = r.updatePACProjectionLocked()
+		}
 	}
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
-	if !publish {
-		return nil
-	}
 	r.publishHTTPSWarningUpdate(warningsChanged)
-	if routeChanged {
-		r.publishDesiredState()
-	}
+	r.publishPACProjection(projectionChanged)
 	// Source emits only changed lists or degradation errors, so every received state
 	// invalidates the complete runtime status snapshot.
 	r.publishRuntimeChange(RuntimeStatusChanged)
-	return nil
 }
 
-func (r *trafficRuntime) reportFatal(err error) {
-	select {
-	case r.fatal <- err:
-	default:
+func (r *trafficRuntime) publishPACProjection(changed bool) {
+	if !changed {
+		return
 	}
-}
-
-func (r *trafficRuntime) publishDesiredState() {
-	desired := r.currentDesiredState()
+	projection := r.currentPACProjection()
 	r.publishMu.Lock()
 	defer r.publishMu.Unlock()
-	r.desiredStatePublisher.Publish(desired)
+	r.pacProjectionPublisher.Publish(projection)
 }
 
-func (r *trafficRuntime) currentDesiredState() managedpac.DesiredState {
+func (r *trafficRuntime) currentPACProjection() pacrouting.Projection {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return managedpac.NewDesiredState(
-		r.currentUpstreamList,
-		r.interceptionState == HTTPSInterceptionActive,
-		r.listeners[0].Addr().String(),
-		r.listeners[1].Addr().String(),
-	)
+	return r.pacProjection
+}
+
+func (r *trafficRuntime) updatePACProjectionLocked() bool {
+	next := pacrouting.Project(r.currentUpstreamList, r.interceptionState == HTTPSInterceptionActive, r.listeners[0].Addr().String(), r.listeners[1].Addr().String())
+	if pacrouting.Equal(r.pacProjection, next) {
+		return false
+	}
+	r.pacProjection = next
+	r.pacHandler.Set(next)
+	return true
+}
+
+func closeObservation(observation *fileobservation.Observation) error {
+	if observation == nil {
+		return nil
+	}
+	return observation.Close()
 }
 
 func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
@@ -522,7 +488,7 @@ type runtimeState struct {
 	HTTPSWarnings           []HTTPSWarningDetail
 	UpstreamCount           int
 	UpstreamListWarnings    []UpstreamListWarningDetail
-	UpstreamListDiagnostics *UpstreamListDiagnosticsDetail
+	UpstreamListDegradation *UpstreamListDegradationDetail
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
@@ -550,7 +516,7 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		HTTPSWarnings:           warnings,
 		UpstreamCount:           len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
 		UpstreamListWarnings:    upstreamListWarningDetails(upstreamList.Warnings),
-		UpstreamListDiagnostics: upstreamListDiagnosticsDetail(r.invalidUpstreamFormat, r.upstreamObservationError),
+		UpstreamListDegradation: upstreamListDegradationDetail(r.upstreamListError),
 	}
 }
 

@@ -7,6 +7,12 @@ import (
 	"unicode/utf8"
 )
 
+type InvalidEncodingError struct{}
+
+func (*InvalidEncodingError) Error() string {
+	return "invalid Upstream List: content must be UTF-8"
+}
+
 type parsedUpstreamList struct {
 	HostSelectors   []HostSelector
 	OriginSelectors []OriginSelector
@@ -19,7 +25,7 @@ type parsedUpstreamList struct {
 // decoding failures remain errors.
 func decode(data []byte) (parsedUpstreamList, error) {
 	if !utf8.Valid(data) {
-		return parsedUpstreamList{}, fmt.Errorf("invalid Upstream List: content must be UTF-8")
+		return parsedUpstreamList{}, &InvalidEncodingError{}
 	}
 
 	var (

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 )
 
 // managedPACModule is the Gateway-owned behavioral seam. Managed PAC owns
@@ -11,8 +12,8 @@ import (
 // serialization remain private to that feature.
 type managedPACModule interface {
 	Inspect(context.Context) (managedpac.Snapshot, error)
-	InstallDesired(context.Context, []string, managedpac.DesiredState) (managedpac.InstallResult, error)
-	PublishDesiredState(managedpac.DesiredState)
+	InstallProjection(context.Context, []string, pacrouting.Projection) (managedpac.InstallResult, error)
+	PublishProjection(pacrouting.Projection)
 	Uninstall(context.Context) error
 }
 

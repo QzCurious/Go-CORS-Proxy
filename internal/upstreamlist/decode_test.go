@@ -31,11 +31,11 @@ http://[::1]:3000
 	}
 }
 
-func TestUpstreamListExposesFields(t *testing.T) {
+func TestProjectionExposesFields(t *testing.T) {
 	hosts := []HostSelector{{Hostname: "api.example.test", HostnameMatch: HostnameExact}}
 	origins := []OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}}
 	warnings := []Warning{{Line: 1, Text: "bad", Diagnostic: "invalid"}}
-	list := UpstreamList{HostSelectors: hosts, OriginSelectors: origins, Warnings: warnings}
+	list := Projection{HostSelectors: hosts, OriginSelectors: origins, Warnings: warnings}
 
 	hosts[0].Hostname = "mutated.example.test"
 	origins[0].Hostname = "mutated.example.test"
@@ -57,7 +57,7 @@ func TestUpstreamListExposesFields(t *testing.T) {
 }
 
 func TestHTTPSIntentIgnoresHostAndHTTPSelectors(t *testing.T) {
-	list := UpstreamList{
+	list := Projection{
 		HostSelectors:   []HostSelector{{Hostname: "api.example.test", HostnameMatch: HostnameExact}},
 		OriginSelectors: []OriginSelector{{Scheme: "http", Hostname: "plain.example.test"}},
 	}

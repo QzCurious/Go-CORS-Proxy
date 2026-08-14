@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
+	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
@@ -53,11 +55,30 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		}
 		return assessmentResult, nil
 	}
+	upstreamListObservation, err := fileobservation.Open(upstreamListPath, fileobservation.Options{})
+	initialUpstreamResult := fileobservation.Result{Err: err, Snapshot: true}
+	closeUpstreamListObservation := upstreamListObservation != nil
+	defer func() {
+		if closeUpstreamListObservation {
+			_ = upstreamListObservation.Close()
+		}
+	}()
+	if upstreamListObservation != nil {
+		var ok bool
+		initialUpstreamResult, ok = <-upstreamListObservation.Results()
+		if !ok {
+			initialUpstreamResult = fileobservation.Result{
+				Err:      &fileobservation.ObservationStoppedError{Path: upstreamListPath, Cause: errors.New("observation closed before its initial result")},
+				Snapshot: true,
+			}
+		}
+	}
 
-	engine, err := newRuntime(upstreamListPath)
+	engine, err := newRuntime(upstreamListPath, upstreamListObservation, initialUpstreamResult)
 	if err != nil {
 		return postStartFailure(err)
 	}
+	closeUpstreamListObservation = false
 	cleanupEngine := true
 	defer func() {
 		if cleanupEngine {
@@ -146,8 +167,8 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	// Runtime changes may occur while feature-owned installation is in progress;
 	// the latest-value desired-state channel retains the newest snapshot for
 	// reconciliation once activation has installed its fixed service set.
-	pacInstallBaseline := engine.currentDesiredState()
-	pacInstall, err := s.lifecycle.managedPAC.InstallDesired(ctx, acceptedServices, pacInstallBaseline)
+	pacInstallBaseline := engine.currentPACProjection()
+	pacInstall, err := s.lifecycle.managedPAC.InstallProjection(ctx, acceptedServices, pacInstallBaseline)
 	if err != nil {
 		withdraw()
 		warnings := managedPACWarningDetails(pacInstall.Warnings())
@@ -191,7 +212,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		HTTPSIntent:             state.HTTPSIntent,
 		HTTPSWarnings:           state.HTTPSWarnings,
 		UpstreamListWarnings:    state.UpstreamListWarnings,
-		UpstreamListDiagnostics: state.UpstreamListDiagnostics,
+		UpstreamListDegradation: state.UpstreamListDegradation,
 	}}, nil
 }
 

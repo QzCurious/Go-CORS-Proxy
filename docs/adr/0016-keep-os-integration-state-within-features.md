@@ -1,5 +1,7 @@
 # Keep OS integration state within features
 
+**Status:** accepted; Upstream List Source ownership superseded by ADR-0024
+
 Managed PAC system settings and UserCA trust-store integration are separate modules rather than capabilities of one platform adapter. The Upstream List Source is independent from both. Each feature owns its public seam, OS-specific implementation files, semantic types, errors, mutation serialization, and internal resource lifetime. No feature module imports or calls another feature module.
 
 Managed PAC operations are limited to `Open`, `Inspect`, complete desired-state installation/publication, and `Uninstall`. Its platform settings adapter, publication generation, retry machinery, and mutation serialization remain private. Gateway behavioral seams use feature-owned semantic types directly instead of recreating isomorphic Gateway types. Gateway-owned projections exist only for command results that deliberately expose a different semantic shape; they never hide a concrete feature value inside a parallel projection. Gateway Runtime retains the feature-owned Managed PAC Runtime State, not a feature session, hidden raw value, or system-settings handle.
