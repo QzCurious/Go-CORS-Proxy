@@ -2,6 +2,7 @@ package upstreamlist_test
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
@@ -22,6 +23,20 @@ func TestProjectProducesNormalizedDeduplicatedProjection(t *testing.T) {
 		projection.HostSelectors[0].Hostname != "api.example.test" ||
 		len(projection.OriginSelectors) != 1 {
 		t.Fatalf("projection = %#v", projection)
+	}
+}
+
+func TestProjectKeepsExactAndWildcardHostSelectorsDistinct(t *testing.T) {
+	projection, err := upstreamlist.Project([]byte("example.test\n*.example.test\nexample.test\n*.example.test\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []upstreamlist.HostSelector{
+		{Hostname: "example.test"},
+		{Hostname: "example.test", Wildcard: true},
+	}
+	if !reflect.DeepEqual(projection.HostSelectors, want) {
+		t.Fatalf("Host Selectors = %#v, want %#v", projection.HostSelectors, want)
 	}
 }
 

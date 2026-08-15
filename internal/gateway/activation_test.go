@@ -234,7 +234,7 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
@@ -263,7 +263,7 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -302,7 +302,7 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -333,7 +333,7 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -375,7 +375,7 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(75*time.Millisecond), false)
-	if err := engine.SetInitialHTTPSReadiness(assessment, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -511,7 +511,7 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 	}
 	defer closeTrafficTestRuntime(engine)
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(installed, nil); err != nil {
+	if err := engine.SetInitialHTTPSReadiness(context.Background(), installed, nil); err != nil {
 		t.Fatal(err)
 	}
 	var inactiveDuringUninstall bool

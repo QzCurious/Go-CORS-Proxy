@@ -4,19 +4,12 @@ package upstreamlist
 // Gateway-owned Upstream List Creation.
 const DefaultContents = "# One upstream host or origin per line.\n# api.dev.example.com\n"
 
-type HostnameMatch uint8
-
-const (
-	HostnameExact HostnameMatch = iota
-	HostnameSingleLevel
-	HostnameRecursive
-)
-
-// HostSelector selects an HTTP or HTTPS hostname on any port.
-// Hostname never includes wildcard syntax.
+// HostSelector selects an HTTP or HTTPS hostname on any port. Hostname never
+// includes wildcard syntax. Wildcard selects exactly one leading label when
+// true; otherwise the match is exact.
 type HostSelector struct {
-	Hostname      string
-	HostnameMatch HostnameMatch
+	Hostname string
+	Wildcard bool
 }
 
 // OriginSelector selects one HTTP(S) origin. An empty Port means the source

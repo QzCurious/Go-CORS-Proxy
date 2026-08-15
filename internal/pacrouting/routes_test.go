@@ -9,19 +9,16 @@ import (
 
 func TestDeriveHostRoutesExpandsSchemesWithoutPorts(t *testing.T) {
 	selectors := []upstreamlist.HostSelector{
-		{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
-		{Hostname: "qa.example.test", HostnameMatch: upstreamlist.HostnameSingleLevel},
-		{Hostname: "dev.example.test", HostnameMatch: upstreamlist.HostnameRecursive},
+		{Hostname: "api.example.test"},
+		{Hostname: "qa.example.test", Wildcard: true},
 	}
 
 	got := deriveHostRoutes(selectors, true)
 	want := []hostRoute{
-		{Scheme: "http", Hostname: "api.example.test", HostnameMatch: "Exact"},
-		{Scheme: "https", Hostname: "api.example.test", HostnameMatch: "Exact"},
-		{Scheme: "http", Hostname: "qa.example.test", HostnameMatch: "SingleLevel"},
-		{Scheme: "https", Hostname: "qa.example.test", HostnameMatch: "SingleLevel"},
-		{Scheme: "http", Hostname: "dev.example.test", HostnameMatch: "Recursive"},
-		{Scheme: "https", Hostname: "dev.example.test", HostnameMatch: "Recursive"},
+		{Scheme: "http", Hostname: "api.example.test"},
+		{Scheme: "https", Hostname: "api.example.test"},
+		{Scheme: "http", Hostname: "qa.example.test", Wildcard: true},
+		{Scheme: "https", Hostname: "qa.example.test", Wildcard: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Host Routes = %#v, want %#v", got, want)
@@ -30,11 +27,11 @@ func TestDeriveHostRoutesExpandsSchemesWithoutPorts(t *testing.T) {
 
 func TestDeriveHostRoutesExcludesUntrustedHTTPS(t *testing.T) {
 	selectors := []upstreamlist.HostSelector{
-		{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
+		{Hostname: "api.example.test"},
 	}
 	got := deriveHostRoutes(selectors, false)
 	want := []hostRoute{
-		{Scheme: "http", Hostname: "api.example.test", HostnameMatch: "Exact"},
+		{Scheme: "http", Hostname: "api.example.test"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Host Routes = %#v, want %#v", got, want)

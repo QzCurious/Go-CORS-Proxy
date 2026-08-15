@@ -19,6 +19,7 @@ import (
 )
 
 type trafficRuntime struct {
+	providerMu              sync.Mutex
 	mu                      sync.RWMutex
 	upstreamListPath        string
 	upstreamListObservation *fileobservation.Observation
@@ -26,6 +27,7 @@ type trafficRuntime struct {
 	fileSyncIssue           *FileSyncIssue
 	projectionIssue         *UpstreamListProjectionIssue
 	userCA                  userca.Snapshot
+	providerSource          userca.ProviderSource
 	readinessError          error
 	interceptionState       HTTPSInterceptionState
 	interceptionError       error
@@ -137,12 +139,22 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 	}, nil
 }
 
-func (r *trafficRuntime) SetInitialHTTPSReadiness(assessment userca.Assessment, assessmentErr error) error {
+func (r *trafficRuntime) SetInitialHTTPSReadiness(ctx context.Context, assessment userca.Assessment, assessmentErr error) error {
+	r.providerMu.Lock()
+	defer r.providerMu.Unlock()
 	snapshot := assessment.Snapshot()
-	provider, providerOK := assessment.Provider()
+	source, sourceOK := assessment.Source()
 	if assessmentErr != nil {
-		provider = nil
-		providerOK = false
+		source = nil
+		sourceOK = false
+	}
+	var provider userca.CertificateProvider
+	var projectionErr error
+	if sourceOK {
+		provider, projectionErr = source.Project(ctx, r.currentUpstreamList)
+		if projectionErr != nil {
+			projectionErr = fmt.Errorf("certificate projection failed: %w", projectionErr)
+		}
 	}
 	proxyHandler, err := corsproxy.New(corsproxy.Options{
 		Provider:       provider,
@@ -154,13 +166,17 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(assessment userca.Assessment, 
 	r.proxyHandler.Set(proxyHandler)
 	r.mu.Lock()
 	r.userCA = snapshot
+	r.providerSource = source
 	r.readinessError = assessmentErr
 	r.proxyCore = proxyHandler
 	r.interceptionState = HTTPSInterceptionInactive
-	if providerOK && assessmentErr == nil {
+	if provider != nil && projectionErr == nil && assessmentErr == nil {
 		r.interceptionState = HTTPSInterceptionActive
 	}
-	r.interceptionError = nil
+	r.interceptionError = projectionErr
+	if projectionErr != nil {
+		r.interceptionState = HTTPSInterceptionFailed
+	}
 	r.proxyConfigured = true
 	nextWarnings := r.currentHTTPSWarningsLocked()
 	if !slices.Equal(nextWarnings, r.httpsWarnings) {
@@ -175,48 +191,63 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(assessment userca.Assessment, 
 // RecoverHTTPS atomically adopts a fresh UserCA provider into a live runtime
 // and publishes the complete Managed PAC desired state when interception is
 // active.
-func (r *trafficRuntime) RecoverHTTPS(assessment userca.Assessment) error {
+func (r *trafficRuntime) RecoverHTTPS(ctx context.Context, assessment userca.Assessment) error {
+	r.providerMu.Lock()
+	defer r.providerMu.Unlock()
 	snapshot := assessment.Snapshot()
-	provider, ok := assessment.Provider()
+	source, ok := assessment.Source()
 	if !ok {
 		return fmt.Errorf("HTTPS Readiness Recovery requires a usable UserCA assessment")
 	}
 	r.mu.Lock()
 	core := r.proxyCore
-	wasActive := r.interceptionState == HTTPSInterceptionActive
+	upstreams := r.currentUpstreamList
 	r.mu.Unlock()
 	if core == nil {
 		return fmt.Errorf("HTTPS proxy is not configured")
 	}
-	core.ReplaceProvider(provider)
+	provider, projectionErr := source.Project(ctx, upstreams)
+	if projectionErr != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if projectionErr != nil {
+		projectionErr = fmt.Errorf("certificate projection failed: %w", projectionErr)
+	}
+	if projectionErr != nil {
+		core.DeactivateHTTPS()
+	} else {
+		core.ReplaceProvider(provider)
+	}
 	r.mu.Lock()
 	r.userCA = snapshot
+	r.providerSource = source
 	r.readinessError = nil
 	r.interceptionState = HTTPSInterceptionActive
-	r.interceptionError = nil
+	r.interceptionError = projectionErr
+	if projectionErr != nil {
+		r.interceptionState = HTTPSInterceptionFailed
+	}
 	r.proxyConfigured = true
 	warningsChanged := r.updateHTTPSWarningsLocked()
-	if wasActive {
-		r.mu.Unlock()
-		r.publishHTTPSWarningUpdate(warningsChanged)
-		return nil
-	}
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	r.publishPACProjection(projectionChanged)
-	return nil
+	return projectionErr
 }
 
 // DeactivateHTTPS is the live-uninstall linearization companion: new CONNECT
 // requests tunnel directly and HTTPS PAC routes are withdrawn immediately.
 func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr error) {
+	r.providerMu.Lock()
+	defer r.providerMu.Unlock()
 	r.mu.Lock()
 	desiredChanged := r.interceptionState == HTTPSInterceptionActive
 	if r.proxyCore != nil {
 		r.proxyCore.DeactivateHTTPS()
 	}
 	r.userCA = snapshot
+	r.providerSource = nil
 	r.readinessError = assessmentErr
 	r.interceptionState = HTTPSInterceptionInactive
 	r.interceptionError = nil
@@ -258,7 +289,7 @@ func (r *trafficRuntime) Serve(ctx context.Context) error {
 // serving goroutines. Callers may then safely publish the PAC URL.
 func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
 	if !r.proxyConfigured {
-		if err := r.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
+		if err := r.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
 			return err
 		}
 	}
@@ -360,7 +391,10 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 			if !ok {
 				return
 			}
-			if err := r.applyUpstreamListResult(result); err != nil {
+			if err := r.applyUpstreamListResultContext(ctx, result); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				errs <- serverError{source: "upstream-list", err: err}
 				return
 			}
@@ -369,6 +403,10 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 }
 
 func (r *trafficRuntime) applyUpstreamListResult(result fileobservation.Result) error {
+	return r.applyUpstreamListResultContext(context.Background(), result)
+}
+
+func (r *trafficRuntime) applyUpstreamListResultContext(ctx context.Context, result fileobservation.Result) error {
 	var nextFileIssue *FileSyncIssue
 	var err error
 	if result.Err != nil {
@@ -378,37 +416,76 @@ func (r *trafficRuntime) applyUpstreamListResult(result fileobservation.Result) 
 		}
 	}
 
-	r.mu.Lock()
-	projectionChanged := false
-	statusChanged := false
-	warningsChanged := false
 	if result.Err != nil {
+		r.mu.Lock()
+		statusChanged := false
 		if !sameFileSyncIssue(r.fileSyncIssue, nextFileIssue) {
 			r.fileSyncIssue = nextFileIssue
 			statusChanged = true
 		}
-	} else {
-		if r.fileSyncIssue != nil {
-			r.fileSyncIssue = nil
-			statusChanged = true
+		r.mu.Unlock()
+		if statusChanged {
+			r.publishRuntimeChange(RuntimeStatusChanged)
 		}
-		candidate, projectErr := upstreamlist.Project(result.Contents)
-		var nextProjectionIssue *UpstreamListProjectionIssue
-		if projectErr != nil {
-			nextProjectionIssue = &UpstreamListProjectionIssue{Cause: projectErr.Error()}
-			candidate = upstreamlist.Projection{}
-		}
-		if !sameProjectionIssue(r.projectionIssue, nextProjectionIssue) {
-			r.projectionIssue = nextProjectionIssue
-			statusChanged = true
-		}
-		if !upstreamlist.Equal(r.currentUpstreamList, candidate) {
-			r.currentUpstreamList = candidate
-			projectionChanged = r.updatePACProjectionLocked()
-			statusChanged = true
-		}
-		warningsChanged = r.updateHTTPSWarningsLocked()
+		return nil
 	}
+
+	candidate, projectErr := upstreamlist.Project(result.Contents)
+	var nextProjectionIssue *UpstreamListProjectionIssue
+	if projectErr != nil {
+		nextProjectionIssue = &UpstreamListProjectionIssue{Cause: projectErr.Error()}
+		candidate = upstreamlist.Projection{}
+	}
+
+	r.providerMu.Lock()
+	defer r.providerMu.Unlock()
+	r.mu.Lock()
+	changed := !upstreamlist.Equal(r.currentUpstreamList, candidate)
+	source := r.providerSource
+	retryFailed := r.interceptionState == HTTPSInterceptionFailed
+	r.mu.Unlock()
+
+	var provider userca.CertificateProvider
+	var providerErr error
+	if source != nil && (changed || retryFailed) {
+		provider, providerErr = source.Project(ctx, candidate)
+		if providerErr != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+
+	r.mu.Lock()
+	projectionChanged := false
+	statusChanged := false
+	if r.fileSyncIssue != nil {
+		r.fileSyncIssue = nil
+		statusChanged = true
+	}
+	if !sameProjectionIssue(r.projectionIssue, nextProjectionIssue) {
+		r.projectionIssue = nextProjectionIssue
+		statusChanged = true
+	}
+	if changed {
+		r.currentUpstreamList = candidate
+		statusChanged = true
+	}
+	if source != nil && (changed || retryFailed) {
+		if providerErr != nil {
+			if r.proxyCore != nil {
+				r.proxyCore.DeactivateHTTPS()
+			}
+			r.interceptionState = HTTPSInterceptionFailed
+			r.interceptionError = fmt.Errorf("certificate projection failed: %w", providerErr)
+		} else {
+			if r.proxyCore != nil {
+				r.proxyCore.ReplaceProvider(provider)
+			}
+			r.interceptionState = HTTPSInterceptionActive
+			r.interceptionError = nil
+		}
+	}
+	projectionChanged = r.updatePACProjectionLocked()
+	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	r.publishPACProjection(projectionChanged)
@@ -636,7 +713,7 @@ func httpsRuntimeWarnings(
 		return []HTTPSWarningDetail{{
 			Kind:       HTTPSWarningInterceptionFailed,
 			Diagnostic: fmt.Sprintf("HTTPS interception failed: %v.", interceptionErr),
-			Action:     "Run `seamless-cors install`.",
+			Action:     "Save the Upstream List to retry, or run `seamless-cors install`.",
 		}}
 	}
 	return httpsReadinessWarnings(httpsIntent, snapshot, assessmentErr)

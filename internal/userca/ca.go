@@ -57,7 +57,7 @@ type Snapshot struct {
 // NewSnapshot returns a usable immutable UserCA observation. The zero value
 // represents a UserCA that is not usable. Certificate material intentionally
 // does not cross the status seam; usable material is exposed only through the
-// matching Assessment provider.
+// matching Assessment source.
 func NewSnapshot(expiresAt time.Time, renewalDue bool) (Snapshot, error) {
 	if expiresAt.IsZero() {
 		return Snapshot{}, fmt.Errorf("usable UserCA snapshot requires expiry")
@@ -111,15 +111,15 @@ type authority struct {
 	cert     *x509.Certificate
 }
 
-// Assessment is one coherent UserCA observation and its matching runtime
-// capability. A not-usable assessment never carries a provider.
+// Assessment is one coherent UserCA observation and its matching authority
+// capability. A not-usable assessment never carries a provider source.
 type Assessment struct {
 	snapshot Snapshot
-	provider CertificateProvider
+	source   ProviderSource
 }
 
-func NewAssessment(snapshot Snapshot, provider CertificateProvider) Assessment {
-	return Assessment{snapshot: snapshot, provider: provider}
+func NewAssessment(snapshot Snapshot, source ProviderSource) Assessment {
+	return Assessment{snapshot: snapshot, source: source}
 }
 
 func (a Assessment) Snapshot() Snapshot { return a.snapshot }
@@ -130,16 +130,16 @@ func (a Assessment) ExpiresAt() time.Time { return a.snapshot.ExpiresAt() }
 
 func (a Assessment) RenewalDue() bool { return a.snapshot.RenewalDue() }
 
-func (a Assessment) Provider() (CertificateProvider, bool) {
-	if !a.snapshot.Usable() || a.provider == nil {
+func (a Assessment) Source() (ProviderSource, bool) {
+	if !a.snapshot.Usable() || a.source == nil {
 		return nil, false
 	}
-	return a.provider, true
+	return a.source, true
 }
 
 type assessment struct {
 	snapshot          Snapshot
-	provider          CertificateProvider
+	source            ProviderSource
 	authority         *authority
 	activeFingerprint string
 	activeTrusted     bool
@@ -164,12 +164,12 @@ func openAt(dir string, store trustStore, now func() time.Time) *UserCA {
 	return &UserCA{dir: dir, store: store, now: now}
 }
 
-// Inspect freshly derives one coherent status snapshot and runtime provider
+// Inspect freshly derives one coherent status snapshot and provider source
 // from the Active marker, owned immutable generations, and current-user OS
 // trust.
 func (u *UserCA) Inspect(ctx context.Context) (Assessment, error) {
 	state, err := u.assess(ctx, false)
-	return Assessment{snapshot: state.snapshot, provider: state.provider}, err
+	return Assessment{snapshot: state.snapshot, source: state.source}, err
 }
 
 // Install repairs a valid Active authority in place or installs a fresh
@@ -188,10 +188,10 @@ func (u *UserCA) Install(ctx context.Context) (InstallResult, error) {
 	}
 
 	if before.authority != nil && !before.needsRotation {
-		// Build and self-test the fresh provider before changing trust or local
+		// Build and self-test the fresh source before changing trust or local
 		// permissions. Every successful install returns a new capability even
 		// when the Active authority identity is reused.
-		provider, err := u.providerForAuthority(before.authority)
+		source, err := u.sourceForAuthority(before.authority)
 		if err != nil {
 			return InstallResult{}, err
 		}
@@ -208,7 +208,7 @@ func (u *UserCA) Install(ctx context.Context) (InstallResult, error) {
 		// remain Active; inability to remove it does not make that authority
 		// unusable or leak a cleanup condition through the seam.
 		_ = cleanupNonActive(ctx, u.dir, u.store, before.activeFingerprint)
-		current, err := assessmentForAuthority(before.authority, provider, before.needsRotation)
+		current, err := assessmentForAuthority(before.authority, source, before.needsRotation)
 		if err != nil {
 			return InstallResult{}, err
 		}
@@ -245,9 +245,9 @@ func (u *UserCA) Install(ctx context.Context) (InstallResult, error) {
 		return InstallResult{}, err
 	}
 	// Construct and self-test before adding trust or committing Active. A
-	// provider construction failure therefore leaves the previous Active
+	// source construction failure therefore leaves the previous Active
 	// authority authoritative.
-	provider, err := u.providerForAuthority(candidate)
+	source, err := u.sourceForAuthority(candidate)
 	if err != nil {
 		_ = os.RemoveAll(filepath.Dir(candidate.certPath))
 		return InstallResult{}, err
@@ -263,8 +263,8 @@ func (u *UserCA) Install(ctx context.Context) (InstallResult, error) {
 		return InstallResult{}, errors.Join(markerErr, cleanupErr)
 	}
 	// The previous authority remains trusted until Gateway has adopted the
-	// returned provider. A later lifecycle event privately removes it.
-	current, assessmentErr := assessmentForAuthority(candidate, provider, false)
+	// returned source. A later lifecycle event privately removes it.
+	current, assessmentErr := assessmentForAuthority(candidate, source, false)
 	if assessmentErr != nil {
 		return InstallResult{}, errors.Join(markerErr, assessmentErr)
 	}
@@ -302,7 +302,7 @@ func (u *UserCA) assessForRemoval(ctx context.Context) (assessment, error) {
 	return u.assessInternal(ctx, false, false)
 }
 
-func (u *UserCA) assessInternal(ctx context.Context, repairPermissions, requireProvider bool) (assessment, error) {
+func (u *UserCA) assessInternal(ctx context.Context, repairPermissions, requireSource bool) (assessment, error) {
 	records, err := u.store.TrustedCertificates(ctx)
 	if err != nil {
 		return assessment{}, err
@@ -347,9 +347,9 @@ func (u *UserCA) assessInternal(ctx context.Context, repairPermissions, requireP
 	if err != nil {
 		return state, nil
 	}
-	provider, err := newCertificateProvider(certificate, u.now)
+	source, err := newProviderSource(certificate, u.now)
 	if err != nil {
-		if !requireProvider {
+		if !requireSource {
 			return state, nil
 		}
 		return assessment{}, err
@@ -358,24 +358,24 @@ func (u *UserCA) assessInternal(ctx context.Context, repairPermissions, requireP
 	if err != nil {
 		return assessment{}, err
 	}
-	state.provider = provider
+	state.source = source
 	return state, nil
 }
 
-func (u *UserCA) providerForAuthority(active *authority) (CertificateProvider, error) {
+func (u *UserCA) sourceForAuthority(active *authority) (ProviderSource, error) {
 	certificate, err := active.tlsCertificate()
 	if err != nil {
 		return nil, fmt.Errorf("UserCA signing material is invalid: %w", err)
 	}
-	return newCertificateProvider(certificate, u.now)
+	return newProviderSource(certificate, u.now)
 }
 
-func assessmentForAuthority(active *authority, provider CertificateProvider, renewalDue bool) (Assessment, error) {
+func assessmentForAuthority(active *authority, source ProviderSource, renewalDue bool) (Assessment, error) {
 	snapshot, err := NewSnapshot(active.cert.NotAfter, renewalDue)
 	if err != nil {
 		return Assessment{}, err
 	}
-	return Assessment{snapshot: snapshot, provider: provider}, nil
+	return Assessment{snapshot: snapshot, source: source}, nil
 }
 
 func (a *authority) fingerprint() (string, error) {

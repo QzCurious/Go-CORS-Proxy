@@ -84,8 +84,9 @@ type stopFailureDetails struct {
 }
 
 type installSuccessBody struct {
-	Changed            bool      `json:"changed"`
-	InstalledCAExpires time.Time `json:"installedCAExpires"`
+	Changed            bool                 `json:"changed"`
+	InstalledCAExpires time.Time            `json:"installedCAExpires"`
+	Warnings           []HTTPSWarningDetail `json:"warnings,omitempty"`
 }
 
 type installFailureDetails struct {
@@ -203,7 +204,7 @@ func (dto stopFailureDetails) semantic(kind StopResultKind) StopResult {
 }
 
 func installSuccessBodyFrom(result InstallResult) installSuccessBody {
-	return installSuccessBody{Changed: result.Kind == InstallResultInstalled, InstalledCAExpires: result.InstalledCAExpires}
+	return installSuccessBody{Changed: result.Kind == InstallResultInstalled, InstalledCAExpires: result.InstalledCAExpires, Warnings: result.Warnings}
 }
 
 func (dto installSuccessBody) semantic() InstallResult {
@@ -211,7 +212,7 @@ func (dto installSuccessBody) semantic() InstallResult {
 	if dto.Changed {
 		kind = InstallResultInstalled
 	}
-	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires}
+	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires, Warnings: dto.Warnings}
 }
 
 func installFailureDetailsFrom(result InstallResult) installFailureDetails {

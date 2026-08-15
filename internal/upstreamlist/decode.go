@@ -2,21 +2,25 @@ package upstreamlist
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/go-playground/validator/v10"
 )
-
-type InvalidEncodingError struct{}
-
-func (*InvalidEncodingError) Error() string {
-	return "invalid Upstream List: content must be UTF-8"
-}
 
 type parsedUpstreamList struct {
 	HostSelectors   []HostSelector
 	OriginSelectors []OriginSelector
 	Warnings        []Warning
+}
+
+type InvalidEncodingError struct{}
+
+func (*InvalidEncodingError) Error() string {
+	return "invalid Upstream List: content must be UTF-8"
 }
 
 // decode parses the Upstream List format described in
@@ -54,20 +58,19 @@ func decode(data []byte) (parsedUpstreamList, error) {
 				continue
 			}
 			originSelectors = append(originSelectors, selector)
-			continue
+		} else {
+			// Handle the line as a Host Selector.
+			selector, err := decodeHostSelector(selectorText)
+			if err != nil {
+				warnings = append(warnings, Warning{
+					Line:       lineNo,
+					Text:       selectorText,
+					Diagnostic: err.Error(),
+				})
+				continue
+			}
+			hostSelectors = append(hostSelectors, selector)
 		}
-
-		// Handle the line as a Host Selector.
-		selector, err := decodeHostSelector(selectorText)
-		if err != nil {
-			warnings = append(warnings, Warning{
-				Line:       lineNo,
-				Text:       selectorText,
-				Diagnostic: err.Error(),
-			})
-			continue
-		}
-		hostSelectors = append(hostSelectors, selector)
 	}
 
 	return parsedUpstreamList{
@@ -75,6 +78,20 @@ func decode(data []byte) (parsedUpstreamList, error) {
 		OriginSelectors: originSelectors,
 		Warnings:        warnings,
 	}, nil
+}
+
+func stripComment(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "#") {
+		return ""
+	}
+	for idx := 1; idx < len(line); idx++ {
+		if line[idx] == '#' && (line[idx-1] == ' ' || line[idx-1] == '\t') {
+			line = line[:idx]
+			break
+		}
+	}
+	return strings.TrimSpace(line)
 }
 
 func decodeOriginSelector(selectorText string) (OriginSelector, error) {
@@ -97,19 +114,24 @@ func decodeOriginSelector(selectorText string) (OriginSelector, error) {
 		return OriginSelector{}, err
 	}
 
+	if !isValidHostname(hostname, false) {
+		return OriginSelector{}, fmt.Errorf("Origin Selector hostname is invalid")
+	}
+
+	port := u.Port()
+	if port != "" {
+		portNumber, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || portNumber == 0 {
+			return OriginSelector{}, fmt.Errorf("Origin Selector port must be between 1 and 65535")
+		}
+		port = strconv.FormatUint(portNumber, 10)
+	}
+
 	return OriginSelector{
 		Scheme:   scheme,
 		Hostname: hostname,
-		Port:     normalizePort(u.Port()),
+		Port:     port,
 	}, nil
-}
-
-func normalizePort(port string) string {
-	normalized := strings.TrimLeft(port, "0")
-	if port != "" && normalized == "" {
-		return "0"
-	}
-	return normalized
 }
 
 func decodeHostSelector(selectorText string) (HostSelector, error) {
@@ -130,13 +152,22 @@ func decodeHostSelector(selectorText string) (HostSelector, error) {
 	if err != nil {
 		return HostSelector{}, err
 	}
-	hostnameMatch, hostname, err := decodeHostnameMatch(hostname)
-	if err != nil {
-		return HostSelector{}, err
+
+	// Decode the only supported wildcard form before validating the hostname.
+	wildcard := false
+	if strings.HasPrefix(hostname, "*.") {
+		wildcard = true
+		hostname = strings.TrimPrefix(hostname, "*.")
+	}
+	if hostname == "" || strings.Contains(hostname, "*") {
+		return HostSelector{}, fmt.Errorf("wildcard must be * followed by a hostname")
+	}
+	if !isValidHostname(hostname, wildcard) {
+		return HostSelector{}, fmt.Errorf("hostname is invalid")
 	}
 	return HostSelector{
-		Hostname:      hostname,
-		HostnameMatch: hostnameMatch,
+		Hostname: hostname,
+		Wildcard: wildcard,
 	}, nil
 }
 
@@ -153,32 +184,11 @@ func normalizedHostname(u *url.URL) (string, error) {
 	return hostname, nil
 }
 
-func decodeHostnameMatch(hostname string) (HostnameMatch, string, error) {
-	match := HostnameExact
-	switch {
-	case strings.HasPrefix(hostname, "**."):
-		match = HostnameRecursive
-		hostname = strings.TrimPrefix(hostname, "**.")
-	case strings.HasPrefix(hostname, "*."):
-		match = HostnameSingleLevel
-		hostname = strings.TrimPrefix(hostname, "*.")
-	}
-	if hostname == "" || strings.Contains(hostname, "*") {
-		return 0, "", fmt.Errorf("wildcard must be * or ** followed by a hostname")
-	}
-	return match, hostname, nil
-}
+var hostnameValidator = validator.New()
 
-func stripComment(line string) string {
-	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "#") {
-		return ""
+func isValidHostname(hostname string, wildcard bool) bool {
+	if address, err := netip.ParseAddr(hostname); err == nil {
+		return !wildcard && address.Zone() == ""
 	}
-	for idx := 1; idx < len(line); idx++ {
-		if line[idx] == '#' && (line[idx-1] == ' ' || line[idx-1] == '\t') {
-			line = line[:idx]
-			break
-		}
-	}
-	return strings.TrimSpace(line)
+	return hostnameValidator.Var(hostname, "hostname_rfc1123") == nil
 }

@@ -2,6 +2,7 @@ package userca
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -13,40 +14,32 @@ import (
 	"math/big"
 	"net"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-const (
-	leafValidity    = 30 * 24 * time.Hour
-	leafCacheMaxAge = 24 * time.Hour
-)
-
-// ProvisioningDisposition describes the operational consequence of a failed
-// leaf-certificate request. The string method is intentionally the only
-// classification seam consumed by CORS Proxy; UserCA remains independent of
-// that feature package.
 type ProvisioningDisposition string
 
 const (
 	ProvisioningExpired        ProvisioningDisposition = "expired"
 	ProvisioningInvalidRequest ProvisioningDisposition = "invalid-request"
+	ProvisioningNotCovered     ProvisioningDisposition = "not-covered"
 	ProvisioningFailure        ProvisioningDisposition = "provider-failure"
 )
 
 var ErrProviderExpired = errors.New("HTTPS certificate provider expired")
 
-// CertificateProvider is the UserCA-created capability used by Gateway and
-// CORS Proxy. UserCA owns its signing policy, expiry checks, leaf validity,
-// and cache; consumers only request a certificate for a host and inspect the
-// deadline when coordinating lifecycle.
+type ProviderSource interface {
+	Project(context.Context, upstreamlist.Projection) (CertificateProvider, error)
+	ValidUntil() time.Time
+}
+
 type CertificateProvider interface {
 	CertificateFor(string) (*tls.Certificate, error)
 	ValidUntil() time.Time
 }
 
-// ProviderError preserves the low-level cause while exposing only the
-// operational disposition needed by the runtime seam.
 type ProviderError struct {
 	disposition ProvisioningDisposition
 	err         error
@@ -65,67 +58,209 @@ func newProviderError(disposition ProvisioningDisposition, err error) error {
 	return &ProviderError{disposition: disposition, err: err}
 }
 
-type certificateProvider struct {
+type providerSource struct {
 	certificate tls.Certificate
 	validUntil  time.Time
 	now         func() time.Time
-	cache       *leafCache
 }
 
-func newCertificateProvider(certificate tls.Certificate, now func() time.Time) (CertificateProvider, error) {
+type certificateProvider struct {
+	exact      map[string]*tls.Certificate
+	wildcards  map[string]*tls.Certificate
+	validUntil time.Time
+	now        func() time.Time
+}
+
+func newProviderSource(certificate tls.Certificate, now func() time.Time) (ProviderSource, error) {
 	if now == nil {
 		now = time.Now
 	}
+	certificate, err := validateAuthority(certificate, now())
+	if err != nil {
+		return nil, err
+	}
+	source := &providerSource{
+		certificate: certificate,
+		validUntil:  certificate.Leaf.NotAfter,
+		now:         now,
+	}
+	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("HTTPS provider source self-test key generation failed: %w", err)
+	}
+	if _, err := source.issue("provider-self-test.example", leafKey); err != nil {
+		return nil, fmt.Errorf("HTTPS provider source self-test failed: %w", err)
+	}
+	return source, nil
+}
+
+func validateAuthority(certificate tls.Certificate, now time.Time) (tls.Certificate, error) {
 	if len(certificate.Certificate) == 0 || certificate.PrivateKey == nil {
-		return nil, fmt.Errorf("HTTPS certificate provider requires complete signing material")
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source requires complete signing material")
 	}
 	parsedLeaf, err := x509.ParseCertificate(certificate.Certificate[0])
 	if err != nil {
-		return nil, fmt.Errorf("HTTPS certificate provider CA certificate is invalid: %w", err)
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source CA certificate is invalid: %w", err)
 	}
-	leaf := parsedLeaf
 	if certificate.Leaf != nil && !bytes.Equal(certificate.Leaf.Raw, parsedLeaf.Raw) {
-		return nil, fmt.Errorf("HTTPS certificate provider CA leaf does not match certificate chain")
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source CA leaf does not match certificate chain")
 	}
-	certificate.Leaf = leaf
+	certificate.Leaf = parsedLeaf
 	signer, ok := certificate.PrivateKey.(crypto.Signer)
 	if !ok {
-		return nil, fmt.Errorf("HTTPS certificate provider key cannot sign certificates")
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source key cannot sign certificates")
 	}
 	keyDER, err := x509.MarshalPKIXPublicKey(signer.Public())
 	if err != nil {
-		return nil, fmt.Errorf("HTTPS certificate provider signer key is invalid: %w", err)
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source signer key is invalid: %w", err)
 	}
-	certificateDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+	certificateDER, err := x509.MarshalPKIXPublicKey(parsedLeaf.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("HTTPS certificate provider CA public key is invalid: %w", err)
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source CA public key is invalid: %w", err)
 	}
 	if !bytes.Equal(keyDER, certificateDER) {
-		return nil, fmt.Errorf("HTTPS certificate provider signer does not match CA certificate")
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source signer does not match CA certificate")
 	}
-	nowValue := now()
-	if !nowValue.Before(leaf.NotAfter) {
-		return nil, fmt.Errorf("%w at %s", ErrProviderExpired, leaf.NotAfter.Format(time.RFC3339))
+	if !now.Before(parsedLeaf.NotAfter) {
+		return tls.Certificate{}, fmt.Errorf("%w at %s", ErrProviderExpired, parsedLeaf.NotAfter.Format(time.RFC3339))
 	}
-	if nowValue.Before(leaf.NotBefore) {
-		return nil, fmt.Errorf("HTTPS certificate provider CA is not valid until %s", leaf.NotBefore.Format(time.RFC3339))
+	if now.Before(parsedLeaf.NotBefore) {
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source CA is not valid until %s", parsedLeaf.NotBefore.Format(time.RFC3339))
 	}
-	if !leaf.IsCA || !leaf.BasicConstraintsValid || leaf.KeyUsage&x509.KeyUsageCertSign == 0 || leaf.KeyUsage&x509.KeyUsageCRLSign == 0 {
-		return nil, fmt.Errorf("HTTPS certificate provider CA authority constraints are invalid")
+	if !parsedLeaf.IsCA || !parsedLeaf.BasicConstraintsValid || parsedLeaf.KeyUsage&x509.KeyUsageCertSign == 0 || parsedLeaf.KeyUsage&x509.KeyUsageCRLSign == 0 {
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source CA authority constraints are invalid")
 	}
-	if err := leaf.CheckSignatureFrom(leaf); err != nil {
-		return nil, fmt.Errorf("HTTPS certificate provider CA is not self-signed: %w", err)
+	if err := parsedLeaf.CheckSignatureFrom(parsedLeaf); err != nil {
+		return tls.Certificate{}, fmt.Errorf("HTTPS provider source CA is not self-signed: %w", err)
 	}
+	return certificate, nil
+}
+
+func (s *providerSource) ValidUntil() time.Time { return s.validUntil }
+
+func (s *providerSource) Project(ctx context.Context, projection upstreamlist.Projection) (CertificateProvider, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !s.now().Before(s.validUntil) {
+		return nil, fmt.Errorf("%w at %s", ErrProviderExpired, s.validUntil.Format(time.RFC3339))
+	}
+	exact, wildcards := certificateIdentities(projection)
 	provider := &certificateProvider{
-		certificate: certificate,
-		validUntil:  leaf.NotAfter,
-		now:         now,
-		cache:       newLeafCache(),
+		exact:      make(map[string]*tls.Certificate, len(exact)),
+		wildcards:  make(map[string]*tls.Certificate, len(wildcards)),
+		validUntil: s.validUntil,
+		now:        s.now,
 	}
-	if _, err := provider.issue("provider-self-test.example"); err != nil {
-		return nil, fmt.Errorf("HTTPS certificate provider self-test failed: %w", err)
+	if len(exact)+len(wildcards) == 0 {
+		return provider, nil
+	}
+	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("generate provider leaf key: %w", err)
+	}
+	for _, hostname := range exact {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		certificate, err := s.issue(hostname, leafKey)
+		if err != nil {
+			return nil, fmt.Errorf("generate Selector Certificate for %q: %w", hostname, err)
+		}
+		provider.exact[lookupHostname(hostname)] = certificate
+	}
+	for _, hostname := range wildcards {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		certificate, err := s.issue("*."+hostname, leafKey)
+		if err != nil {
+			return nil, fmt.Errorf("generate Selector Certificate for %q: %w", "*."+hostname, err)
+		}
+		provider.wildcards[lookupHostname(hostname)] = certificate
 	}
 	return provider, nil
+}
+
+func certificateIdentities(projection upstreamlist.Projection) ([]string, []string) {
+	var exact []string
+	var wildcards []string
+	seenExact := make(map[string]struct{})
+	seenWildcards := make(map[string]struct{})
+	appendExact := func(hostname string) {
+		key := lookupHostname(hostname)
+		if _, ok := seenExact[key]; ok {
+			return
+		}
+		seenExact[key] = struct{}{}
+		exact = append(exact, hostname)
+	}
+	appendWildcard := func(hostname string) {
+		key := lookupHostname(hostname)
+		if _, ok := seenWildcards[key]; ok {
+			return
+		}
+		seenWildcards[key] = struct{}{}
+		wildcards = append(wildcards, hostname)
+	}
+	for _, selector := range projection.HostSelectors {
+		if selector.Wildcard {
+			appendWildcard(selector.Hostname)
+			continue
+		}
+		appendExact(selector.Hostname)
+	}
+	for _, selector := range projection.OriginSelectors {
+		if selector.Scheme == "https" {
+			appendExact(selector.Hostname)
+		}
+	}
+	return exact, wildcards
+}
+
+func (s *providerSource) issue(identity string, leafKey *rsa.PrivateKey) (*tls.Certificate, error) {
+	if !s.now().Before(s.validUntil) {
+		return nil, fmt.Errorf("%w at %s", ErrProviderExpired, s.validUntil.Format(time.RFC3339))
+	}
+	signer, ok := s.certificate.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("CA private key cannot sign certificates")
+	}
+	now := s.now()
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, err
+	}
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Issuer:       s.certificate.Leaf.Subject,
+		Subject: pkix.Name{
+			CommonName:   identity,
+			Organization: []string{"seamless-cors local MITM proxy"},
+		},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              s.validUntil,
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	if ip := net.ParseIP(identity); ip != nil {
+		template.IPAddresses = []net.IP{ip}
+	} else {
+		template.DNSNames = []string{identity}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, s.certificate.Leaf, &leafKey.PublicKey, signer)
+	if err != nil {
+		return nil, err
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	chain := make([][]byte, 1+len(s.certificate.Certificate))
+	chain[0] = der
+	copy(chain[1:], s.certificate.Certificate)
+	return &tls.Certificate{Certificate: chain, PrivateKey: leafKey, Leaf: leaf}, nil
 }
 
 func (p *certificateProvider) ValidUntil() time.Time { return p.validUntil }
@@ -137,111 +272,37 @@ func (p *certificateProvider) CertificateFor(hostname string) (*tls.Certificate,
 			fmt.Errorf("%w at %s", ErrProviderExpired, p.validUntil.Format(time.RFC3339)),
 		)
 	}
-	if err := validateHostname(hostname); err != nil {
+	if err := validateRequestHostname(hostname); err != nil {
 		return nil, newProviderError(ProvisioningInvalidRequest, err)
 	}
-	certificate, err := p.cache.fetch(hostname, p.now(), func() (*tls.Certificate, error) {
-		return p.issue(hostname)
-	})
-	if err != nil {
-		var classified interface{ Disposition() string }
-		if errors.As(err, &classified) {
-			return nil, err
-		}
-		return nil, newProviderError(ProvisioningFailure, err)
+	key := lookupHostname(hostname)
+	if certificate := p.exact[key]; certificate != nil {
+		return certificate, nil
 	}
-	if !p.now().Before(p.validUntil) {
-		return nil, newProviderError(
-			ProvisioningExpired,
-			fmt.Errorf("%w at %s", ErrProviderExpired, p.validUntil.Format(time.RFC3339)),
-		)
-	}
-	return certificate, nil
-}
-
-func (p *certificateProvider) issue(hostname string) (*tls.Certificate, error) {
-	if !p.now().Before(p.validUntil) {
-		return nil, newProviderError(
-			ProvisioningExpired,
-			fmt.Errorf("%w at %s", ErrProviderExpired, p.validUntil.Format(time.RFC3339)),
-		)
-	}
-	caLeaf := p.certificate.Leaf
-	if caLeaf == nil {
-		var err error
-		caLeaf, err = x509.ParseCertificate(p.certificate.Certificate[0])
-		if err != nil {
-			return nil, err
+	if net.ParseIP(hostname) == nil {
+		if dot := strings.IndexByte(key, '.'); dot > 0 {
+			if certificate := p.wildcards[key[dot+1:]]; certificate != nil {
+				return certificate, nil
+			}
 		}
 	}
-	signer, ok := p.certificate.PrivateKey.(crypto.Signer)
-	if !ok {
-		return nil, fmt.Errorf("CA private key cannot sign certificates")
-	}
-	now := p.now()
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, err
-	}
-	notBefore := now.Add(-time.Minute)
-	template := x509.Certificate{
-		SerialNumber: serial,
-		Issuer:       caLeaf.Subject,
-		Subject: pkix.Name{
-			CommonName:   hostname,
-			Organization: []string{"seamless-cors local MITM proxy"},
-		},
-		NotBefore:             notBefore,
-		NotAfter:              minTime(notBefore.Add(leafValidity), caLeaf.NotAfter),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-	if !notBefore.Before(template.NotAfter) {
-		return nil, newProviderError(ProvisioningExpired, fmt.Errorf("%w before a valid leaf could be issued", ErrProviderExpired))
-	}
-	if ip := net.ParseIP(hostname); ip != nil {
-		template.IPAddresses = []net.IP{ip}
-	} else {
-		template.DNSNames = []string{hostname}
-	}
-	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, err
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &template, caLeaf, &leafKey.PublicKey, signer)
-	if err != nil {
-		return nil, err
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, err
-	}
-	chain := make([][]byte, 1+len(p.certificate.Certificate))
-	chain[0] = der
-	copy(chain[1:], p.certificate.Certificate)
-	return &tls.Certificate{
-		Certificate: chain,
-		PrivateKey:  leafKey,
-		Leaf:        leaf,
-	}, nil
+	return nil, newProviderError(
+		ProvisioningNotCovered,
+		fmt.Errorf("HTTPS hostname %q is outside the configured certificate scope", hostname),
+	)
 }
 
-func validateHostname(hostname string) error {
-	if strings.TrimSpace(hostname) == "" || strings.ContainsAny(hostname, " /\\") {
+func validateRequestHostname(hostname string) error {
+	if hostname == "" || strings.TrimSpace(hostname) != hostname || strings.ContainsAny(hostname, " /\\") {
 		return fmt.Errorf("unsupported HTTPS hostname %q", hostname)
 	}
-	if net.ParseIP(hostname) != nil {
+	if net.ParseIP(strings.Trim(hostname, "[]")) != nil {
 		return nil
 	}
-	if strings.ContainsAny(hostname, "[]:") || len(hostname) > 253 {
+	if strings.ContainsAny(hostname, "[]:*") || strings.HasSuffix(hostname, ".") || len(hostname) > 253 {
 		return fmt.Errorf("unsupported HTTPS hostname %q", hostname)
 	}
-	trimmed := strings.TrimSuffix(hostname, ".")
-	if trimmed == "" {
-		return fmt.Errorf("unsupported HTTPS hostname %q", hostname)
-	}
-	for _, label := range strings.Split(trimmed, ".") {
+	for _, label := range strings.Split(hostname, ".") {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
 			return fmt.Errorf("unsupported HTTPS hostname %q", hostname)
 		}
@@ -254,35 +315,10 @@ func validateHostname(hostname string) error {
 	return nil
 }
 
-type leafCache struct {
-	mu    sync.Mutex
-	certs map[string]cachedLeaf
-}
-
-type cachedLeaf struct {
-	certificate *tls.Certificate
-	createdAt   time.Time
-}
-
-func newLeafCache() *leafCache { return &leafCache{certs: map[string]cachedLeaf{}} }
-
-func (c *leafCache) fetch(hostname string, now time.Time, generate func() (*tls.Certificate, error)) (*tls.Certificate, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cached, ok := c.certs[hostname]; ok && now.Sub(cached.createdAt) <= leafCacheMaxAge {
-		return cached.certificate, nil
+func lookupHostname(hostname string) string {
+	trimmed := strings.Trim(hostname, "[]")
+	if ip := net.ParseIP(trimmed); ip != nil {
+		return ip.String()
 	}
-	certificate, err := generate()
-	if err != nil {
-		return nil, err
-	}
-	c.certs[hostname] = cachedLeaf{certificate: certificate, createdAt: now}
-	return certificate, nil
-}
-
-func minTime(left, right time.Time) time.Time {
-	if left.Before(right) {
-		return left
-	}
-	return right
+	return strings.ToLower(trimmed)
 }

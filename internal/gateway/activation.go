@@ -88,6 +88,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	done := make(chan error, 1)
 	active := &activeRuntime{
 		engine: engine,
+		ctx:    runCtx,
 		cancel: cancel,
 		done:   done,
 		phase:  runtimePhaseStarting,
@@ -100,7 +101,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	}
 	publishRuntime := func() error {
 		assessment, readinessErr := s.lifecycle.userCA.Inspect(ctx)
-		if err := engine.SetInitialHTTPSReadiness(assessment, readinessErr); err != nil {
+		if err := engine.SetInitialHTTPSReadiness(ctx, assessment, readinessErr); err != nil {
 			return err
 		}
 		s.lifecycle.mu.Lock()
@@ -111,7 +112,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		s.lifecycle.userCASnapshot = assessment.Snapshot()
 		s.lifecycle.userCAAssessmentErr = readinessErr
 		s.lifecycle.runtime = active
-		if _, ok := assessment.Provider(); ok && readinessErr == nil {
+		if _, ok := assessment.Source(); ok && readinessErr == nil {
 			s.lifecycle.scheduleHTTPSDeadlineLocked(active, assessment)
 		}
 		return nil

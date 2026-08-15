@@ -148,7 +148,7 @@ func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -178,7 +178,7 @@ func TestHTTPSIntentDoesNotReassessLatchedUserCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -202,10 +202,10 @@ func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(userca.Assessment{}, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	err = runtime.RecoverHTTPS(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
+	err = runtime.RecoverHTTPS(context.Background(), testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
 
 	if err != nil {
 		t.Fatal(err)
@@ -224,6 +224,83 @@ func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
 	}
 }
 
+func TestInitialCertificateProjectionFailureStartsHTTPSDegraded(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: []byte("https://secure.example.test\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	expiresAt := time.Now().Add(24 * time.Hour)
+	snapshot, err := userca.NewSnapshot(expiresAt, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment := userca.NewAssessment(snapshot, testProviderSource{
+		validUntil: expiresAt,
+		project: func(context.Context, upstreamlist.Projection) (userca.CertificateProvider, error) {
+			return nil, errors.New("key generation unavailable")
+		},
+	})
+
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.snapshot()
+	if state.HTTPSReadiness != HTTPSReadinessReady || state.HTTPSInterception != HTTPSInterceptionFailed {
+		t.Fatalf("initial degraded state = %#v", state)
+	}
+	if !hasHTTPSWarning(state.HTTPSWarnings, HTTPSWarningInterceptionFailed) ||
+		strings.Contains(runtime.currentPACProjection().Body(), "secure.example.test") {
+		t.Fatalf("initial degraded projection = %#v PAC=%s", state, runtime.currentPACProjection().Body())
+	}
+}
+
+func TestSuccessfulSameListObservationRetriesFailedCertificateProjection(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: []byte("https://first.example.test\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	expiresAt := time.Now().Add(24 * time.Hour)
+	provider := testUserCAProvider{validUntil: expiresAt}
+	var projectionErr error
+	source := testProviderSource{
+		validUntil: expiresAt,
+		project: func(context.Context, upstreamlist.Projection) (userca.CertificateProvider, error) {
+			if projectionErr != nil {
+				return nil, projectionErr
+			}
+			return provider, nil
+		},
+	}
+	snapshot, err := userca.NewSnapshot(expiresAt, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), userca.NewAssessment(snapshot, source), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	projectionErr = errors.New("random unavailable")
+	update := fileobservation.Result{Contents: []byte("https://second.example.test\n")}
+	if err := runtime.applyUpstreamListResult(update); err != nil {
+		t.Fatal(err)
+	}
+	if failed := runtime.snapshot(); failed.HTTPSInterception != HTTPSInterceptionFailed || failed.UpstreamCount != 1 {
+		t.Fatalf("failed list adoption = %#v", failed)
+	}
+	projectionErr = nil
+	if err := runtime.applyUpstreamListResult(update); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := runtime.snapshot(); recovered.HTTPSInterception != HTTPSInterceptionActive {
+		t.Fatalf("same-list retry state = %#v", recovered)
+	}
+	if body := runtime.currentPACProjection().Body(); !strings.Contains(body, "second.example.test") || strings.Contains(body, "first.example.test") {
+		t.Fatalf("recovered PAC = %s", body)
+	}
+}
+
 func TestInterceptionFailurePreservesLatchedUserCAAndInstallCanRecover(t *testing.T) {
 	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
 	runtime, err := newRuntime(upstreamPath, source, initial)
@@ -232,7 +309,7 @@ func TestInterceptionFailurePreservesLatchedUserCAAndInstallCanRecover(t *testin
 	}
 	defer closeTrafficTestRuntime(runtime)
 	snapshot := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	if err := runtime.SetInitialHTTPSReadiness(snapshot, nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), snapshot, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,7 +325,7 @@ func TestInterceptionFailurePreservesLatchedUserCAAndInstallCanRecover(t *testin
 		t.Fatalf("failure warnings = %#v", failed.HTTPSWarnings)
 	}
 
-	if err := runtime.RecoverHTTPS(snapshot); err != nil {
+	if err := runtime.RecoverHTTPS(context.Background(), snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if recovered := runtime.snapshot(); recovered.HTTPSInterception != HTTPSInterceptionActive {
@@ -263,7 +340,7 @@ func TestUserCAExpiryWithdrawsHTTPSAndDirectsExplicitInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(testUserCASnapshot(t, time.Now().Add(time.Hour), false), nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), testUserCASnapshot(t, time.Now().Add(time.Hour), false), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -315,7 +392,7 @@ func TestRuntimeStatusDerivesEffectiveExpiryFromLatchedSnapshot(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(runtime)
 	expiresAt := time.Now().Add(time.Hour)
-	if err := runtime.SetInitialHTTPSReadiness(testUserCASnapshot(t, expiresAt, false), nil); err != nil {
+	if err := runtime.SetInitialHTTPSReadiness(context.Background(), testUserCASnapshot(t, expiresAt, false), nil); err != nil {
 		t.Fatal(err)
 	}
 	runtime.now = func() time.Time { return expiresAt.Add(time.Second) }
@@ -378,11 +455,26 @@ func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) user
 
 type testUserCAProvider struct{ validUntil time.Time }
 
+func (p testUserCAProvider) Project(context.Context, upstreamlist.Projection) (userca.CertificateProvider, error) {
+	return p, nil
+}
+
 func (p testUserCAProvider) CertificateFor(string) (*tls.Certificate, error) {
 	return &tls.Certificate{}, nil
 }
 
 func (p testUserCAProvider) ValidUntil() time.Time { return p.validUntil }
+
+type testProviderSource struct {
+	validUntil time.Time
+	project    func(context.Context, upstreamlist.Projection) (userca.CertificateProvider, error)
+}
+
+func (s testProviderSource) Project(ctx context.Context, projection upstreamlist.Projection) (userca.CertificateProvider, error) {
+	return s.project(ctx, projection)
+}
+
+func (s testProviderSource) ValidUntil() time.Time { return s.validUntil }
 
 func httpsWarningDiagnostics(warnings []HTTPSWarningDetail) string {
 	var diagnostics []string

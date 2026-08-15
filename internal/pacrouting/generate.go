@@ -118,9 +118,9 @@ func render(proxyListen string, routes routeSet) string {
 }
 
 type hostRoute struct {
-	Scheme        string `json:"Scheme"`
-	Hostname      string `json:"Hostname"`
-	HostnameMatch string `json:"HostnameMatch"`
+	Scheme   string `json:"Scheme"`
+	Hostname string `json:"Hostname"`
+	Wildcard bool   `json:"Wildcard"`
 }
 
 // deriveHostRoutes expands every Host Selector into its active HTTP(S)
@@ -138,20 +138,9 @@ func deriveHostRoutes(selectors []upstreamlist.HostSelector, caTrusted bool) []h
 
 func hostRouteFromSelector(selector upstreamlist.HostSelector, scheme string) hostRoute {
 	return hostRoute{
-		Scheme:        scheme,
-		Hostname:      selector.Hostname,
-		HostnameMatch: serializedHostnameMatch(selector.HostnameMatch),
-	}
-}
-
-func serializedHostnameMatch(match upstreamlist.HostnameMatch) string {
-	switch match {
-	case upstreamlist.HostnameSingleLevel:
-		return "SingleLevel"
-	case upstreamlist.HostnameRecursive:
-		return "Recursive"
-	default:
-		return "Exact"
+		Scheme:   scheme,
+		Hostname: selector.Hostname,
+		Wildcard: selector.Wildcard,
 	}
 }
 

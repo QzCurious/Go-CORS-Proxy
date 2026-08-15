@@ -2,7 +2,7 @@
  * @typedef {Object} HostRoute
  * @property {'http' | 'https'} Scheme
  * @property {string} Hostname
- * @property {'Exact' | 'SingleLevel' | 'Recursive'} HostnameMatch
+ * @property {boolean} Wildcard
  */
 
 /**
@@ -66,13 +66,10 @@ function matchesHostRoute(route, scheme, host) {
   if (scheme != route.Scheme) return false;
 
   // Exact matches include only the configured hostname itself.
-  if (route.HostnameMatch == 'Exact') return host == route.Hostname;
+  if (!route.Wildcard) return host == route.Hostname;
 
   var suffix = '.' + route.Hostname;
   if (!dnsDomainIs(host, suffix)) return false;
-
-  // Recursive matches include subdomains at any depth.
-  if (route.HostnameMatch == 'Recursive') return true;
 
   // Single-level matches include exactly one label before the configured hostname.
   var prefix = host.substring(0, host.length - suffix.length);

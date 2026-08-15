@@ -18,8 +18,8 @@ http://[::1]:3000
 	}
 	want := parsedUpstreamList{
 		HostSelectors: []HostSelector{
-			{Hostname: "api.example.test", HostnameMatch: HostnameExact},
-			{Hostname: "qa.example.test", HostnameMatch: HostnameSingleLevel},
+			{Hostname: "api.example.test"},
+			{Hostname: "qa.example.test", Wildcard: true},
 		},
 		OriginSelectors: []OriginSelector{
 			{Scheme: "https", Hostname: "example.test", Port: "443"},
@@ -32,7 +32,7 @@ http://[::1]:3000
 }
 
 func TestProjectionExposesFields(t *testing.T) {
-	hosts := []HostSelector{{Hostname: "api.example.test", HostnameMatch: HostnameExact}}
+	hosts := []HostSelector{{Hostname: "api.example.test"}}
 	origins := []OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}}
 	warnings := []Warning{{Line: 1, Text: "bad", Diagnostic: "invalid"}}
 	list := Projection{HostSelectors: hosts, OriginSelectors: origins, Warnings: warnings}
@@ -58,7 +58,7 @@ func TestProjectionExposesFields(t *testing.T) {
 
 func TestHTTPSIntentIgnoresHostAndHTTPSelectors(t *testing.T) {
 	list := Projection{
-		HostSelectors:   []HostSelector{{Hostname: "api.example.test", HostnameMatch: HostnameExact}},
+		HostSelectors:   []HostSelector{{Hostname: "api.example.test"}},
 		OriginSelectors: []OriginSelector{{Scheme: "http", Hostname: "plain.example.test"}},
 	}
 	if list.HTTPSIntent() {
@@ -91,7 +91,8 @@ HTTPS://user:password@EXAMPLE.TEST:0443/
 https://example.test
 http://example.test
 http://example.test:00080
-https://example.test:99999
+http://example.test:00001
+https://example.test:65535
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -101,28 +102,49 @@ https://example.test:99999
 		{Scheme: "https", Hostname: "example.test"},
 		{Scheme: "http", Hostname: "example.test"},
 		{Scheme: "http", Hostname: "example.test", Port: "80"},
-		{Scheme: "https", Hostname: "example.test", Port: "99999"},
+		{Scheme: "http", Hostname: "example.test", Port: "1"},
+		{Scheme: "https", Hostname: "example.test", Port: "65535"},
 	}
 	if !reflect.DeepEqual(decoded.OriginSelectors, want) {
 		t.Fatalf("Origin Selectors = %#v, want %#v", decoded.OriginSelectors, want)
 	}
 }
 
-func TestDecodeSupportsHostSelectorHostnameMatches(t *testing.T) {
+func TestDecodeRejectsExplicitPortsOutsideTCPRange(t *testing.T) {
+	selectorTexts := []string{
+		"http://example.test:0",
+		"http://example.test:00000",
+		"https://example.test:65536",
+		"https://example.test:99999",
+	}
+
+	for _, selectorText := range selectorTexts {
+		t.Run(selectorText, func(t *testing.T) {
+			decoded, err := decode([]byte(selectorText))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(decoded.OriginSelectors) != 0 || len(decoded.Warnings) != 1 ||
+				decoded.Warnings[0].Diagnostic != "Origin Selector port must be between 1 and 65535" {
+				t.Fatalf("decode result = %#v", decoded)
+			}
+		})
+	}
+}
+
+func TestDecodeSupportsExactAndSingleLevelHostSelectorMatches(t *testing.T) {
 	decoded, err := decode([]byte(`
 example.test
 *.qa.example.test
-**.internal
 [::1]
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []HostSelector{
-		{Hostname: "example.test", HostnameMatch: HostnameExact},
-		{Hostname: "qa.example.test", HostnameMatch: HostnameSingleLevel},
-		{Hostname: "internal", HostnameMatch: HostnameRecursive},
-		{Hostname: "::1", HostnameMatch: HostnameExact},
+		{Hostname: "example.test"},
+		{Hostname: "qa.example.test", Wildcard: true},
+		{Hostname: "::1"},
 	}
 	if !reflect.DeepEqual(decoded.HostSelectors, want) {
 		t.Fatalf("Host Selectors = %#v, want %#v", decoded.HostSelectors, want)
@@ -229,7 +251,7 @@ func TestDecodeRequiresASCIIOrPunycodeHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []HostSelector{
-		{Hostname: "xn--fsq.example", HostnameMatch: HostnameExact},
+		{Hostname: "xn--fsq.example"},
 	}
 	if len(decoded.Warnings) != 1 || !reflect.DeepEqual(decoded.HostSelectors, want) {
 		t.Fatalf("decoded = %#v", decoded)
@@ -253,15 +275,63 @@ func TestDecodeRemovesInlineCommentsAndRejectsNonHostnameText(t *testing.T) {
 	}
 }
 
-func TestOriginSelectorDoesNotApplyHostWildcardSemantics(t *testing.T) {
+func TestOriginSelectorRejectsWildcardSyntax(t *testing.T) {
 	decoded, err := decode([]byte("https://*.example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []OriginSelector{{Scheme: "https", Hostname: "*.example.test"}}
-	if !reflect.DeepEqual(decoded.OriginSelectors, want) ||
-		len(decoded.HostSelectors) != 0 ||
-		len(decoded.Warnings) != 0 {
+	if len(decoded.OriginSelectors) != 0 || len(decoded.HostSelectors) != 0 ||
+		len(decoded.Warnings) != 1 || decoded.Warnings[0].Diagnostic != "Origin Selector hostname is invalid" {
 		t.Fatalf("decode result = %#v", decoded)
+	}
+}
+
+func TestSelectorsUseUniformHostnameValidation(t *testing.T) {
+	selectorTexts := []string{
+		"bad_name.example.test",
+		"*.127.0.0.1",
+		"trailing.example.test.",
+		"https://bad_name.example.test",
+		"http://bad_name.example.test",
+	}
+
+	for _, selectorText := range selectorTexts {
+		t.Run(selectorText, func(t *testing.T) {
+			decoded, err := decode([]byte(selectorText))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(decoded.HostSelectors)+len(decoded.OriginSelectors) != 0 ||
+				len(decoded.Warnings) != 1 || decoded.Warnings[0].Text != selectorText {
+				t.Fatalf("decode result = %#v", decoded)
+			}
+		})
+	}
+}
+
+func TestHostnameValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		hostname string
+		wildcard bool
+		want     bool
+	}{
+		{name: "DNS", hostname: "api.example.test", want: true},
+		{name: "single-label wildcard DNS identity", hostname: "example.test", wildcard: true, want: true},
+		{name: "IPv4", hostname: "192.0.2.1", want: true},
+		{name: "IPv6", hostname: "2001:db8::1", want: true},
+		{name: "wildcard IPv4", hostname: "192.0.2.1", wildcard: true, want: false},
+		{name: "wildcard IPv6", hostname: "2001:db8::1", wildcard: true, want: false},
+		{name: "scoped IPv6", hostname: "fe80::1%en0", want: false},
+		{name: "underscore", hostname: "bad_name.example.test", want: false},
+		{name: "trailing dot", hostname: "example.test.", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isValidHostname(test.hostname, test.wildcard); got != test.want {
+				t.Fatalf("isValidHostname(%q, %t) = %t, want %t", test.hostname, test.wildcard, got, test.want)
+			}
+		})
 	}
 }

@@ -15,8 +15,8 @@ import (
 )
 
 // CertificateProvider is the minimal consumer-owned seam used by CORS Proxy.
-// The provider owns CA validation, expiry, leaf policy, and caching; CORS
-// Proxy only requests a certificate for the CONNECT hostname.
+// The provider owns bounded certificate lookup and expiry; CORS Proxy only
+// requests a certificate for the CONNECT hostname.
 type CertificateProvider interface {
 	CertificateFor(string) (*tls.Certificate, error)
 }
@@ -27,6 +27,7 @@ const (
 	HTTPSFailureExpired    HTTPSFailureDisposition = "expired"
 	HTTPSFailureProvider   HTTPSFailureDisposition = "provider-failure"
 	providerInvalidRequest                         = "invalid-request"
+	providerNotCovered                             = "not-covered"
 )
 
 type HTTPSFailure struct {
@@ -117,7 +118,7 @@ func (c *Core) handleConnect(host string, _ *goproxy.ProxyCtx) (*goproxy.Connect
 	}
 	if err != nil {
 		disposition := classifyProviderError(err)
-		if disposition == providerInvalidRequest {
+		if disposition == providerInvalidRequest || disposition == providerNotCovered {
 			return goproxy.OkConnect, host
 		}
 		failureDisposition := HTTPSFailureProvider

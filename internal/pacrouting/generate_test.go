@@ -11,15 +11,15 @@ import (
 
 func TestProjectInjectsFlatPascalCaseViewBag(t *testing.T) {
 	projection := Project(upstreamlist.Projection{
-		HostSelectors:   []upstreamlist.HostSelector{{Hostname: "qa.example.test", HostnameMatch: upstreamlist.HostnameSingleLevel}},
+		HostSelectors:   []upstreamlist.HostSelector{{Hostname: "qa.example.test", Wildcard: true}},
 		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "api.example.test"}},
 	}, true, "127.0.0.1:8080", "127.0.0.1:8081")
 
 	want := `var VIEW_BAG = {` +
 		`"Proxy":"127.0.0.1:8080",` +
 		`"HostRoutes":[` +
-		`{"Scheme":"http","Hostname":"qa.example.test","HostnameMatch":"SingleLevel"},` +
-		`{"Scheme":"https","Hostname":"qa.example.test","HostnameMatch":"SingleLevel"}],` +
+		`{"Scheme":"http","Hostname":"qa.example.test","Wildcard":true},` +
+		`{"Scheme":"https","Hostname":"qa.example.test","Wildcard":true}],` +
 		`"OriginRoutes":["https://api.example.test","https://api.example.test:443"]};`
 	if !strings.Contains(projection.Body(), want) {
 		t.Fatalf("Generated PAC missing flat view bag, got:\n%s", projection.Body())
@@ -35,14 +35,14 @@ func TestProjectInjectsFlatPascalCaseViewBag(t *testing.T) {
 func TestProjectionIdentityUsesRoutesAndRuntimeEndpoints(t *testing.T) {
 	left := Project(upstreamlist.Projection{
 		HostSelectors: []upstreamlist.HostSelector{
-			{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
-			{Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact},
+			{Hostname: "api.example.test"},
+			{Hostname: "other.example.test"},
 		},
 	}, false, "127.0.0.1:8080", "127.0.0.1:8081")
 	right := Project(upstreamlist.Projection{
 		HostSelectors: []upstreamlist.HostSelector{
-			{Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact},
-			{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
+			{Hostname: "other.example.test"},
+			{Hostname: "api.example.test"},
 		},
 		Warnings: []upstreamlist.Warning{{Line: 3, Text: "bad", Diagnostic: "ignored"}},
 	}, false, "127.0.0.1:8080", "127.0.0.1:8081")
@@ -53,14 +53,14 @@ func TestProjectionIdentityUsesRoutesAndRuntimeEndpoints(t *testing.T) {
 		t.Fatal("route removal preserved PAC identity")
 	}
 	if Equal(left, Project(upstreamlist.Projection{HostSelectors: []upstreamlist.HostSelector{
-		{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
-		{Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact},
+		{Hostname: "api.example.test"},
+		{Hostname: "other.example.test"},
 	}}, false, "127.0.0.1:9090", "127.0.0.1:8081")) {
 		t.Fatal("proxy endpoint change preserved PAC identity")
 	}
 	if Equal(left, Project(upstreamlist.Projection{HostSelectors: []upstreamlist.HostSelector{
-		{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact},
-		{Hostname: "other.example.test", HostnameMatch: upstreamlist.HostnameExact},
+		{Hostname: "api.example.test"},
+		{Hostname: "other.example.test"},
 	}}, false, "127.0.0.1:8080", "127.0.0.1:9091")) {
 		t.Fatal("PAC endpoint change preserved PAC identity")
 	}
@@ -68,7 +68,7 @@ func TestProjectionIdentityUsesRoutesAndRuntimeEndpoints(t *testing.T) {
 
 func TestProjectionAddsHTTPSRoutesOnlyWhenTrusted(t *testing.T) {
 	upstreams := upstreamlist.Projection{
-		HostSelectors:   []upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}},
+		HostSelectors:   []upstreamlist.HostSelector{{Hostname: "api.example.test"}},
 		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}},
 	}
 	withoutTrust := Project(upstreams, false, "127.0.0.1:8080", "127.0.0.1:8081")
@@ -84,7 +84,7 @@ func TestProjectionAddsHTTPSRoutesOnlyWhenTrusted(t *testing.T) {
 func TestLiveHandlerServesAdoptedProjection(t *testing.T) {
 	initial := Project(upstreamlist.Projection{}, false, "127.0.0.1:8080", "127.0.0.1:8081")
 	next := Project(upstreamlist.Projection{
-		HostSelectors: []upstreamlist.HostSelector{{Hostname: "api.example.test", HostnameMatch: upstreamlist.HostnameExact}},
+		HostSelectors: []upstreamlist.HostSelector{{Hostname: "api.example.test"}},
 	}, false, "127.0.0.1:8080", "127.0.0.1:8081")
 	handler := NewLiveHandler(initial)
 	handler.Set(next)

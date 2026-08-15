@@ -295,6 +295,32 @@ func TestInvalidHostnameStaysRequestLocal(t *testing.T) {
 	}
 }
 
+func TestUncoveredHostnameIsDirectTunneledWithoutDisablingProvider(t *testing.T) {
+	provider, _ := testHTTPSProvider(t)
+	provider.(*testProvider).err = &testProviderError{
+		disposition: "not-covered",
+		err:         errors.New("outside certificate scope"),
+	}
+	var failures atomic.Int32
+	core := newTestCore(t, Options{
+		Provider: provider,
+		OnHTTPSFailure: func(HTTPSFailure) {
+			failures.Add(1)
+		},
+	})
+
+	action, host := core.handleConnect("outside.example.test:443", nil)
+	if action != goproxy.OkConnect || host != "outside.example.test:443" {
+		t.Fatalf("uncovered hostname action = %#v host = %q", action, host)
+	}
+	if failures.Load() != 0 {
+		t.Fatal("uncovered hostname reported a Gateway failure")
+	}
+	if core.provider.Load() == nil {
+		t.Fatal("uncovered hostname disabled the provider")
+	}
+}
+
 func TestPerHostLeafExpiryIsCappedByUserCA(t *testing.T) {
 	provider, _ := testHTTPSProvider(t)
 	userCAExpiry := time.Now().Add(time.Hour).Truncate(time.Second)

@@ -580,6 +580,7 @@ type lifecycle struct {
 type activeRuntime struct {
 	engine        *trafficRuntime
 	managedPAC    *managedPACRuntime
+	ctx           context.Context
 	cancel        context.CancelFunc
 	done          chan error
 	phase         runtimePhase
@@ -699,7 +700,7 @@ func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, assessment user
 }
 
 func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessment userca.Assessment) {
-	provider, ok := assessment.Provider()
+	source, ok := assessment.Source()
 	if !ok {
 		return
 	}
@@ -710,7 +711,7 @@ func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessmen
 	if active.engine != nil && active.engine.now != nil {
 		now = active.engine.now()
 	}
-	delay := provider.ValidUntil().Sub(now)
+	delay := source.ValidUntil().Sub(now)
 	if delay < 0 {
 		delay = 0
 	}
@@ -1020,12 +1021,20 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	f.mu.Lock()
 	stillLive := f.runtime == active && active != nil
 	f.mu.Unlock()
+	var warnings []HTTPSWarningDetail
 	if stillLive {
-		recoveryErr := active.engine.RecoverHTTPS(current)
-		if recoveryErr != nil {
-			return InstallResult{}, recoveryErr
+		projectionCtx := active.ctx
+		if projectionCtx == nil {
+			projectionCtx = context.Background()
 		}
-		f.scheduleHTTPSDeadline(active, current)
+		_ = active.engine.RecoverHTTPS(projectionCtx, current)
+		f.mu.Lock()
+		stillLive = f.runtime == active
+		f.mu.Unlock()
+		if stillLive {
+			f.scheduleHTTPSDeadline(active, current)
+			warnings = active.engine.snapshot().HTTPSWarnings
+		}
 	}
 	f.mu.Lock()
 	f.userCASnapshot = current.Snapshot()
@@ -1038,6 +1047,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	return InstallResult{
 		Kind:               kind,
 		InstalledCAExpires: current.ExpiresAt(),
+		Warnings:           warnings,
 	}, nil
 }
 

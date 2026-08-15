@@ -25,12 +25,12 @@ A user-facing interaction surface through which a Gateway Control Command is iss
 _Avoid_: Inbound Adapter, Gateway Module interface, transport protocol
 
 **Gateway Feature Orchestration**:
-A rule that only the Gateway Module orders and combines file-observation facts, Upstream List Projections, PAC Projections, UserCA facts, Managed PAC mutations, and Gateway Runtime state; feature modules never call one another. Gateway invokes each module-owned projection identity and converts concrete errors into independent Gateway-owned current issues without reproducing those modules' domain rules.
-_Avoid_: cross-feature import, feature-owned orchestration, shared feature lock, ordering-means-waiting
+A rule that only the Gateway Module orders and combines file-observation facts, Upstream List Projections, PAC Projections, UserCA facts, Managed PAC mutations, and Gateway Runtime state; feature modules never initiate another feature's lifecycle. UserCA may consume a normalized Upstream List Projection as immutable provider input, while Gateway remains responsible for when projection occurs and for every cross-feature consequence.
+_Avoid_: feature-owned lifecycle orchestration, duplicated selector translation, ordering-means-waiting
 
 **Independent Feature Serialization**:
-A concurrency rule where each feature module serializes only its own mutations while Gateway Runtime briefly orders its in-memory state changes. Slow file observation, UserCA work, or Managed PAC publication does not hold another feature's lock.
-_Avoid_: cross-feature mutex, global lifecycle lock, UserCA-blocked configuration, PAC-blocked UserCA mutation
+A concurrency rule where each feature module serializes only its own mutations, while Gateway separately serializes HTTPS provider projection and adoption across effective-list changes and live UserCA installation so a stale authority cannot win. This Gateway boundary does not hold UserCA's private mutation lock or Managed PAC serialization, and PAC publication remains independent.
+_Avoid_: global lifecycle lock, provider projection under UserCA mutation lock, PAC-blocked UserCA mutation
 
 **Surface-Neutral Command Result**:
 The authoritative semantic outcome of a Gateway Module operation, describing successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting. Every anticipated command condition produces such a result, while an error means the Gateway could not produce a semantic outcome; every Inbound Adapter translates results and errors into its Gateway Control Surface representation.
@@ -181,8 +181,8 @@ A CA lifecycle rule where a valid Active UserCA is reused, its missing trust or 
 _Avoid_: newest-authority inference, unmarked authority adoption, adding a root beside ambiguous residue, proxy-failure-triggered replacement, destructive pre-candidate renewal, trusting invalid material, start-time repair
 
 **UserCA Installation**:
-The explicit UserCA operation that installs, repairs, or renews the current user's seamless-cors authority and requests platform approval only when trust must be added or replaced. Gateway start assesses HTTPS Readiness without invoking UserCA Installation.
-_Avoid_: start-time CA installation, activation-owned CA setup, repeated trust prompt, implicit trust repair
+The explicit UserCA operation that installs, repairs, or renews the current user's seamless-cors authority and requests platform approval only when trust must be added or replaced. It succeeds independently of list-specific HTTPS provider projection: an ownerless operation generates no Selector Certificates, while Gateway synchronously projects a live provider as a post-install consequence before returning the command result and reports projection failure without reversing committed CA success.
+_Avoid_: start-time CA installation, activation-owned CA setup, asynchronous live-install reconciliation, list-bound install result, repeated trust prompt, implicit trust repair
 
 **Owner-Owned CA Mutation**:
 An admitted install or uninstall belongs to the Gateway Owner and settles independently of request cancellation or client disconnection. Owner Stop waits for it, while process interruption relies on immutable generations, the Active fingerprint marker, and the next install or uninstall for recovery.
@@ -213,24 +213,28 @@ The seamless-cors-owned immutable fingerprint-named authority generations repres
 _Avoid_: permanent multiple UserCAs, ambiguous authority collection, unbounded trusted identities
 
 **Active UserCA**:
-The one Installed User CA identified by the durable atomic active-fingerprint marker and used to sign new intercepted HTTPS connections.
+The one Installed User CA identified by the durable atomic active-fingerprint marker and used as the HTTPS Provider Source for new provider projections. During live rotation, the previous provider may continue signing new connections only while Gateway synchronously stages the replacement and its Retired root remains trusted.
 _Avoid_: unmarked authority, newest-certificate inference, arbitrary installed authority, multiple active signers
 
 **Candidate UserCA**:
-A fully prepared and OS-trusted immutable authority generation that may coexist with the Active UserCA but does not sign connections until its fingerprint is atomically persisted as active and the runtime adopts its HTTPS Certificate Provider.
+A fully prepared and OS-trusted immutable authority generation that may coexist with the Active UserCA but does not become the HTTPS Provider Source until its fingerprint is atomically persisted as active.
 _Avoid_: partially installed CA, active signer, untrusted staging certificate, required Candidate marker
 
 **HTTPS Certificate Provider**:
-An opaque immutable capability created and self-tested by UserCA from one valid, unexpired Active UserCA. It owns certificate issuance, authority-expiry enforcement, leaf validity policy, and a provider-scoped leaf cache; CORS Proxy consumes it through its own minimal certificate-request seam, while Gateway alone wires the two features and can inspect the provider's validity deadline. Because UserCA establishes validity before returning it, CORS Proxy adoption is an infallible atomic replacement rather than a second validation boundary.
-_Avoid_: cross-feature import, raw CA material, CORS Proxy signer, Gateway leaf generator, shared cross-authority leaf cache, mutable authority bundle
+An opaque immutable capability created by UserCA from one valid, unexpired Active UserCA and one normalized effective Upstream List Projection supplied by Gateway. It eagerly contains one Selector Certificate per certificate identity, serves only represented CONNECT hostnames, and owns authority-expiry enforcement and leaf validity policy; Gateway atomically adopts it before publishing its matching HTTPS PAC routes.
+_Avoid_: on-demand leaf issuance, unbounded hostname signer, UserCA file observation, raw CA material, CORS Proxy signer, Gateway leaf generator, mutable authority bundle
+
+**HTTPS Provider Source**:
+An opaque immutable UserCA capability for one valid, unexpired Active UserCA that builds HTTPS Certificate Providers from normalized effective Upstream List Projections supplied by Gateway. A UserCA Assessment exposes the source without coupling CA installation success to a list-specific provider build, and Gateway serializes provider projection with CA-source adoption so a stale authority cannot win a race.
+_Avoid_: raw CA signer, list-bound CA installation, UserCA file observation, mutable provider factory, Gateway certificate generator
 
 **Retired UserCA**:
-The previous Active UserCA after atomic HTTPS Certificate Provider swap. In-flight handshakes may continue using their loaded provider because its public root remains trusted; old private material is removed as soon as practical, while fallible OS trust removal is deferred to Non-Active UserCA Cleanup.
+The previous Active UserCA after a new active fingerprint is committed. Its existing provider may continue serving while Gateway stages the replacement because its root remains trusted; after successful replacement or failed projection deactivates HTTPS, old private material is removed as soon as practical and fallible OS trust removal remains Non-Active UserCA Cleanup.
 _Avoid_: active signer, permanent secondary root, connection drain, retained private key
 
 **UserCA Rotation**:
-An uninterrupted HTTPS maintenance transition that creates and trusts an immutable Candidate generation, atomically persists its fingerprint as active, then atomically swaps the runtime HTTPS Certificate Provider when runtime remains live. If runtime closes during the independent operation, the durable marker is sufficient and the next start loads it. Install succeeds once the new authority is trusted and durably active, plus adopted when a live runtime exists; later Retired cleanup is not part of success. Failure or process interruption before marker persistence leaves the old Active authoritative, and the next install or uninstall privately reconciles residue without guessing Candidate active.
-_Avoid_: TLS handshake barrier, handshake counter, connection registry, stop-required renewal, synchronous retired-root cleanup, rotation journal
+A CA maintenance transition that creates and trusts an immutable Candidate generation and atomically persists its fingerprint as active independently of list-specific provider projection. A live Gateway then synchronously stages a provider from the new source and current effective list while the old trusted provider keeps serving; success atomically swaps providers, projection failure deactivates HTTPS without reversing successful rotation, and a closing runtime skips projection because the durable marker is sufficient for the next start.
+_Avoid_: list-bound rotation commit, TLS handshake barrier, connection registry, stop-required renewal, synchronous retired-root cleanup, rotation journal
 
 **Interrupted UserCA Rotation**:
 A recoverable state with a marked valid Active UserCA and non-active owned authority residue. Gateway restart serves the marked authority without mutating OS trust, while the next UserCA lifecycle event privately reconciles non-active authority state before adding another authority.
@@ -252,20 +256,16 @@ _Avoid_: file-only installation, assuming trust from local material
 A CA lifecycle behavior where otherwise-valid Installed User CA material with loose local file permissions is tightened in place without replacing trusted CA identity.
 _Avoid_: permission-triggered CA rotation, loose CA key permissions
 
-**Leaf Certificate Reuse**:
-A UserCA behavior where generated per-host HTTPS certificates may be reused by one HTTPS Certificate Provider until their generation age exceeds the private cache reuse limit. Regenerated leaves never outlive their Active UserCA, and the provider-scoped cache is discarded when Gateway replaces or deactivates that provider.
-_Avoid_: cross-generation leaf cache, persistent leaf certificate inventory, per-request certificate churn, expiry-only cache policy
-
-**Per-Host Leaf Certificate**:
-An automatically issued and renewed HTTPS server certificate for one upstream hostname being intercepted, signed locally by the Active UserCA without changing OS trust. UserCA owns its construction, validity policy, and reuse behind an HTTPS Certificate Provider; CORS Proxy only requests it for a host.
-_Avoid_: leaf CA certificate, user-installed leaf trust, Upstream List-wide leaf certificate, wildcard-first certificate strategy, persisted leaf identity
+**Selector Certificate**:
+A pre-generated in-memory HTTPS server certificate for one exact hostname or Single-Label Wildcard represented by a Host Selector or HTTPS Origin Selector in the effective Upstream List Projection, signed locally by the Active UserCA, valid until that authority expires, and backed by the provider generation's shared leaf key. Certificate identity ignores origin ports, identical identities are deduplicated, exact and wildcard identities remain distinct, and an exact certificate takes lookup precedence over a covering wildcard; the complete set is regenerated on Gateway start, effective Upstream List change, or successful live UserCA installation.
+_Avoid_: on-demand leaf certificate, leaf CA certificate, user-installed leaf trust, Upstream List-wide leaf certificate, persisted leaf identity
 
 **Certificate Provisioning Disposition**:
-The operational classification attached by an HTTPS Certificate Provider to a failed Per-Host Leaf Certificate request while preserving its original diagnostic cause: `expired` signals Gateway to freshly reassess UserCA, `invalid-request` remains entirely request-local under CORS Proxy and goproxy behavior without Gateway notification or status, and `provider-failure` disables the provider globally as an HTTPS Interception Failure. Construction-time invalid or expired authority facts prevent provider creation instead of producing a runtime disposition.
+The operational classification attached by an HTTPS Certificate Provider to an unsuccessful certificate lookup while preserving its original diagnostic cause: `not-covered` and `invalid-request` direct-tunnel the CONNECT request without Gateway notification or status, `expired` signals Gateway to freshly reassess UserCA, and `provider-failure` disables the provider globally as an HTTPS Interception Failure. Invalid or expired authority facts prevent HTTPS Provider Source construction, while fallible Selector Certificate construction belongs to Gateway's provider-projection consequence.
 _Avoid_: public low-level error taxonomy, cause-string parsing, every issuance error disables HTTPS, malformed host disables provider
 
 **Provider Deadline Signal**:
-A signal emitted when Gateway's active-provider deadline timer fires or the current HTTPS Certificate Provider encounters its expiry boundary during issuance. UserCA and its provider remain passive: Gateway owns the timer because it coordinates CORS Proxy, status, and PAC Routing, while the provider check is a safety backstop for timer delay. The signal carries no authority facts or adoption identity; Gateway reconstructs current truth through a fresh UserCA Assessment and deactivates HTTPS Readiness only when that assessment is expired or otherwise unusable, making a stale signal harmless without a provider-adoption token. A signal arriving during admitted CA lifecycle mutation is conflated and deferred until mutation plus runtime adoption or deactivation settles, then causes one additional fresh assessment; ordinary install otherwise uses its returned assessment without reassessing.
+A signal emitted when Gateway's active-provider deadline timer fires or the current HTTPS Certificate Provider encounters its Active UserCA expiry boundary during certificate lookup. UserCA and its provider remain passive: Gateway owns the timer because it coordinates CORS Proxy, status, and PAC Routing, while the provider check is a safety backstop for timer delay. The signal carries no authority facts or adoption identity; Gateway reconstructs current truth through a fresh UserCA Assessment and deactivates HTTPS Readiness only when that assessment is expired or otherwise unusable, making a stale signal harmless without a provider-adoption token. A signal arriving during admitted CA lifecycle mutation is deferred until that mutation and its live provider consequence settle.
 _Avoid_: timer-owned readiness decision, cached expiry truth, provider adoption token, signal-carried UserCA state, silent renewal
 
 **HTTPS Intent**:
@@ -285,7 +285,7 @@ A foreground lifecycle callback that publishes a surface-neutral HTTPS Warning s
 _Avoid_: Gateway-owned terminal output, warning polling in the foreground CLI, warning event history, required HTTP event stream
 
 **HTTPS Readiness**:
-The runtime-assessed state of whether UserCA capability can support Trusted HTTPS Interception, expressed as `ready` or `not-ready` from a UserCA Assessment. UserCA refuses to construct an HTTPS Certificate Provider from an invalid or expired authority; Gateway schedules a Provider Deadline Signal at the admitted provider's validity deadline, while the provider also enforces that boundary against timer delay or races. Gateway freshly reassesses UserCA before changing readiness, renewal remains explicit, and unexpected issuance failures belong to HTTPS Interception State instead.
+The runtime-assessed state of whether UserCA capability can support Trusted HTTPS Interception, expressed as `ready` or `not-ready` from a UserCA Assessment. UserCA refuses to expose an HTTPS Provider Source from an invalid or expired authority; Gateway schedules a Provider Deadline Signal at the adopted provider's Active UserCA expiry, while the provider also enforces that boundary against timer delay or races. Gateway freshly reassesses UserCA before changing readiness, renewal remains explicit, and provider-projection failures belong to HTTPS Interception State instead.
 _Avoid_: proxy health, continuous trust-store polling, installed-file check, expiry warning as not-ready
 
 **HTTPS Readiness Loss**:
@@ -293,15 +293,15 @@ A runtime transition from ready to not-ready HTTPS Readiness when a fresh UserCA
 _Avoid_: proxy operational failure, failed gateway, continuous trust-store revalidation, status mutation
 
 **HTTPS Interception State**:
-The runtime behavior state derived from HTTPS Readiness and gateway-owned proxy operation: `inactive` when readiness is not-ready, `active` when readiness is ready and interception works, or `failed` with a stable reason such as `signer-unavailable`, `leaf-certificate-failed`, `tls-configuration-failed`, or `active-signer-mismatch` when readiness remains ready but interception fails.
+The runtime behavior state derived from HTTPS Readiness and gateway-owned proxy operation: `inactive` when readiness is not-ready, `active` when readiness is ready and interception works, or `failed` with a stable reason such as `certificate-projection-failed`, `tls-configuration-failed`, or `active-signer-mismatch` when readiness remains ready but interception fails.
 _Avoid_: HTTPS Interception Health, separate active boolean, UserCA health, client connection health, upstream availability
 
 **Pre-MITM Interception Admission**:
-A CONNECT boundary that atomically loads one HTTPS Certificate Provider and successfully obtains its host leaf certificate before CORS Proxy commits the connection to MITM. CORS Proxy reacts only to the provider's Certificate Provisioning Disposition: `invalid-request` remains request-scoped, `expired` atomically deactivates that still-current provider and emits a Provider Deadline Signal, and `provider-failure` atomically disables that still-current provider and reports HTTPS Interception Failure.
+A CONNECT boundary that atomically loads one HTTPS Certificate Provider and successfully obtains its Selector Certificate before CORS Proxy commits the connection to MITM. CORS Proxy direct-tunnels `not-covered` and `invalid-request` requests, atomically deactivates a still-current `expired` provider and emits a Provider Deadline Signal, and atomically disables a still-current `provider-failure` provider as an HTTPS Interception Failure.
 _Avoid_: post-200 leaf generation, failed TLS handshake as fallback, partial MITM commitment
 
 **HTTPS Interception Failure**:
-A `provider-failure` Certificate Provisioning Disposition from the active HTTPS Certificate Provider, covering conditions such as signer or key mismatch, randomness or key-generation failure, certificate construction or parsing failure, or an implementation or platform error. CORS Proxy uses atomic compare-and-swap so only the still-current provider can report this global failure; Gateway cancels the provider deadline timer, changes HTTPS Interception State from active to failed while leaving the latched UserCA Snapshot usable and HTTPS Readiness ready, withdraws HTTPS routes, and preserves the diagnostic cause without automatically reassessing UserCA. Recovery occurs only through explicit install and its fresh provider replacement; `expired`, `invalid-request`, client, browser, upstream TLS, and network failures do not cause this transition.
+A global failure of Trusted HTTPS Interception caused by an active provider's `provider-failure` disposition or failure to project a new HTTPS Certificate Provider from the effective Upstream List. Gateway deactivates interception and withdraws HTTPS routes while leaving the Installed UserCA usable, HTTPS Readiness ready, and HTTP proxying active; a later successful Upstream List observation retries projection even when list identity is unchanged, while explicit install also projects a fresh provider.
 _Avoid_: malformed host policy, any TLS error, client failure as global state, upstream outage as readiness loss, UserCA rotation
 
 **HTTPS Readiness Recovery**:
@@ -309,8 +309,8 @@ A runtime transition from not-ready to ready HTTPS Readiness immediately after s
 _Avoid_: restart-required HTTPS activation, delayed readiness after successful install, Config File toggle
 
 **HTTPS Interception Reset**:
-A transition from failed to active HTTPS Interception State after explicit install freshly validates UserCA Usability, constructs a new HTTPS Certificate Provider, and infallibly atomically replaces the runtime provider without unnecessary OS trust mutation. Every successful install performs this provider replacement even when it reuses the same Active UserCA; a failed or expired provider is never repaired or mutated in place, and runtime adoption cannot turn successful installation into partial success while the runtime remains active.
-_Avoid_: provider reuse after install, in-place provider repair, unnecessary UserCA rotation, implicit retry loop, restart-required proxy repair
+A transition from failed to active HTTPS Interception State after a successful Upstream List observation or explicit install projects and atomically adopts a fresh HTTPS Certificate Provider. A failed or expired provider is never repaired or mutated in place, and provider projection failure does not reverse successful UserCA installation, repair, or renewal.
+_Avoid_: provider reuse after install, in-place provider repair, unnecessary UserCA rotation, failed CA install after trust succeeds, restart-required proxy repair
 
 **Trusted HTTPS Interception**:
 A runtime behavior present only while HTTPS Interception State is active. HTTPS Origin Selectors and Host Selectors then produce HTTPS routes; inactive or failed state removes those routes while the gateway continues serving HTTP and stale-routed HTTPS direct-tunnels.
@@ -365,8 +365,8 @@ A listener behavior where gateway endpoints bind to loopback.
 _Avoid_: LAN-exposed proxy, user-selected bind address
 
 **Proxy Listener**:
-A local proxy endpoint where traffic that reaches it is eligible for CORS repair, normally reached through PAC Routing for Upstream List matches.
-_Avoid_: manual proxy endpoint, browser setup address, generic listen, gatewayListen
+A host-local general proxy endpoint that accepts traffic independently of PAC Routing. The Upstream List controls Generated PAC selection and Trusted HTTPS Interception scope rather than proxy admission; HTTP traffic remains eligible for CORS repair, covered HTTPS is intercepted for repair, and uncovered HTTPS is direct-tunneled.
+_Avoid_: Upstream-gated proxy, PAC-only proxy, LAN-exposed proxy, gatewayListen
 
 **CORS Proxy**:
 The gateway module behind the Proxy Listener that owns CORS repair, Local Preflight Answer, Response Repair, and Trusted HTTPS Interception behavior for traffic that reaches it.
@@ -557,15 +557,15 @@ Top-level user-facing commands that explicitly install, repair, or remove the In
 _Avoid_: nested CA command tree, hidden CA removal, per-start CA trust, config editing command, separate readiness command
 
 **Upstream-Independent CA Install**:
-A CA lifecycle command boundary where installing or repairing the Installed User CA does not read, require, create, or modify the Upstream List. When a gateway is running with not-ready HTTPS Readiness, successful install performs immediate HTTPS Readiness Recovery.
+A CA lifecycle command boundary where installing or repairing the Installed User CA does not read, require, create, or modify the Upstream List. When a Gateway is live, Gateway separately supplies its current effective projection to the returned HTTPS Provider Source and settles that runtime consequence without making provider success part of CA installation success.
 _Avoid_: install-time configuration bootstrap, intent-dependent install, separate readiness endpoint, restart-required recovery
 
 **UserCA Install Reconciliation**:
-An install order that first attempts Non-Active UserCA Cleanup, then reuses a valid Active UserCA for a fresh HTTPS Certificate Provider, repairs its missing OS trust when required, or installs/rotates authority state that is invalid, expired, mismatched, or renewal-due. Failed cleanup blocks only work that would add another trusted root: a valid Active authority can still produce a fresh provider, while required rotation stops before Candidate creation; discovering missing active trust makes HTTPS Readiness not-ready until repair succeeds.
+An install order that first attempts Non-Active UserCA Cleanup, then reuses a valid Active UserCA for a fresh HTTPS Provider Source, repairs its missing OS trust when required, or installs/rotates authority state that is invalid, expired, mismatched, or renewal-due. Failed cleanup blocks only work that would add another trusted root: a valid Active authority can still produce a fresh source, while required rotation stops before Candidate creation; discovering missing active trust makes HTTPS Readiness not-ready until repair succeeds.
 _Avoid_: proxy failure-triggered CA rotation, trust repair before non-active reconciliation, arbitrary non-active adoption, unbounded trusted roots
 
 **Idempotent CA Install**:
-A CA lifecycle command behavior where installing reuses valid Active UserCA trust without requesting platform approval or changing CA material, while still constructing and adopting a fresh HTTPS Certificate Provider when Gateway Runtime is active.
+A CA lifecycle command behavior where installing reuses valid Active UserCA trust without requesting platform approval or changing CA material, while Gateway still projects and adopts a fresh HTTPS Certificate Provider when Gateway Runtime is active.
 _Avoid_: reinstalling valid CA, provider reuse after install, proxy failure-triggered rotation, noisy no-op install, repeated trust approval
 
 **Active HTTPS Uninstall Consent**:
@@ -633,16 +633,16 @@ An immutable status-only result freshly inspected by UserCA from authority mater
 _Avoid_: certificate container, provider accessor, exported Active authority type, raw PEM, CA storage paths, cached CA state, live CA watcher, mutable authority record, storage snapshot, public trust-store facts
 
 **UserCA Assessment**:
-One coherent UserCA result containing a status-only UserCA Snapshot and, only when usable, the matching opaque HTTPS Certificate Provider. Inspection and successful installation return this pair from the same authority facts so Gateway never reconstructs or matches signing material itself; provider construction and a signing self-test are prerequisites for committing a new Active UserCA and for returning install success, while an unusable or uninstalled assessment has no provider.
-_Avoid_: Gateway provider construction, independently loaded snapshot and signer, raw TLS material, optional invalid provider
+One coherent UserCA result containing a status-only UserCA Snapshot and, only when usable, the matching opaque HTTPS Provider Source. Inspection and successful installation return this pair from the same authority facts so Gateway never reconstructs or matches signing material itself; source construction and an authority signing self-test precede a new Active UserCA commit, while list-specific provider projection remains a separate fallible runtime consequence that cannot reverse successful installation.
+_Avoid_: Gateway certificate construction, independently loaded snapshot and signer, raw TLS material, list-bound install success, optional invalid source
 
 **Diagnostic Runtime Endpoint**:
 An automatically selected listener address shown by status for troubleshooting, not for user proxy setup or configuration.
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Upstream List**:
-The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. Except for consented Upstream List Creation, seamless-cors only observes this ordinary-file source and never repairs, rewrites, or recreates it.
-_Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, interception rules, proxy rules
+The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing and HTTPS certificate scope. Except for consented Upstream List Creation, seamless-cors only observes this ordinary-file source and never repairs, rewrites, or recreates it.
+_Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, proxy rules
 
 **Upstream List Comment**:
 A full-line or inline note in the Upstream List that is ignored during matching.
@@ -665,7 +665,7 @@ A normalized routing value decoded by the Upstream List module as either a Host 
 _Avoid_: source-text-bearing entry, rule, matcher expression
 
 **Host Selector**:
-An Upstream List Entry variant containing a lowercase ASCII hostname and Hostname Match without a scheme or port, selecting matching hosts across HTTP and HTTPS on any port. Host Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
+An Upstream List Entry variant containing a lowercase ASCII hostname without a scheme or port, selecting that exact hostname across HTTP and HTTPS on any port unless its source uses `*.` to select a Single-Label Wildcard. Host Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
 _Avoid_: Domain Selector, Hostname Selector, Hostname Shorthand, scheme-less origin, port-qualified domain
 
 **Host Route**:
@@ -673,23 +673,19 @@ A scheme-qualified hostname match derived from a Host Selector for the PAC Route
 _Avoid_: Domain Route, Origin Route, port-qualified domain, PAC-owned selector
 
 **Origin Selector**:
-An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname, and optional normalized explicit port, matched exactly without applying Host Selector wildcard semantics. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; accepted explicit ports are not range-validated, and IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
-_Avoid_: Full Origin, URL selector, scheme-qualified domain
+An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname without wildcard syntax, and optional normalized explicit port from 1 through 65535, matched exactly. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
+_Avoid_: Full Origin, URL selector, scheme-qualified domain, wildcard-bearing origin
 
 **Origin Route**:
 An exact origin representation derived from an Origin Selector for the PAC Route Set. PAC Routing owns default-port interpretation: an HTTP selector always derives Origin Routes, while an HTTPS selector derives them only when Trusted HTTPS Interception is enabled; a selector with an omitted or explicit default port derives both implicit-port and explicit-port Origin Routes, while any other port derives one Origin Route. Equivalent derived routes are deduplicated.
 _Avoid_: duplicate Origin Selector, URL rule, inferred PAC port
-
-**Hostname Match**:
-The explicit Host Selector meaning that selects an exact hostname, exactly one leading subdomain label, or one-or-more leading subdomain labels without encoding that meaning in the normalized hostname.
-_Avoid_: wildcard-bearing hostname, consumer-parsed wildcard
 
 **Upstream List Routing Policy**:
 A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries from the current effective Upstream List Projection rather than a source representation or diagnostic state.
 _Avoid_: Gateway diagnostic-state dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Upstream List validation
 
 **Line-Level Upstream Validation**:
-An Upstream List behavior where each line is validated independently so valid Upstream List Entries are applied while invalid lines are ignored and reported precisely as Upstream List Warnings.
+An Upstream List behavior where each line is validated independently so valid Upstream List Entries are applied while invalid lines are ignored and reported precisely as Upstream List Warnings. Host Selectors and Origin Selectors use the same conservative DNS/IP hostname validation; only Host Selectors support Single-Label Wildcard matching.
 _Avoid_: Line-Level Domain Validation, silent invalid entry, whole-list rejection, invalid line as active entry
 
 **Upstream List Deduplication**:
@@ -697,16 +693,12 @@ An Upstream List module behavior where equivalent normalized source-level entrie
 _Avoid_: duplicate source selectors, line-count domains, PAC-owned source deduplication
 
 **Exact Host Match**:
-A Host Match that selects only the named hostname.
+A Host Selector behavior that selects only the named hostname.
 _Avoid_: Exact Domain Match, implicit subdomain match, broad domain match
 
 **Single-Label Wildcard**:
-A Host Match written as `*.example.com` that selects exactly one leading subdomain label and does not select the parent domain or deeper subdomains.
-_Avoid_: recursive wildcard, parent-domain wildcard, wildcard-bearing hostname
-
-**Recursive Wildcard**:
-A Host Match written as `**.example.com` that selects one or more leading subdomain labels at any depth without selecting the parent domain.
-_Avoid_: zero-label wildcard, parent-domain wildcard, wildcard-bearing hostname
+A Host Selector behavior written as `*.example.com` that selects exactly one leading subdomain label and does not select the parent domain or deeper subdomains.
+_Avoid_: parent-domain wildcard, wildcard-bearing hostname
 
 **Local Upstream**:
 A localhost, loopback, private IP, or plain HTTP upstream entry that may be included in the Upstream List for DEV/QA work.
@@ -805,6 +797,10 @@ QA engineer: "No, the Managed System Proxy handles that while the gateway is run
 Developer: "Will unrelated browser traffic go through the gateway?"
 
 QA engineer: "No, Selective Managed Proxy uses PAC Routing so only Upstream List matches go through the gateway."
+
+Developer: "Can another host-local client configure the Proxy Listener directly?"
+
+QA engineer: "Yes. The Proxy Listener is independent of PAC Routing: it proxies arbitrary HTTP traffic, intercepts HTTPS covered by the effective Upstream List, and direct-tunnels uncovered HTTPS."
 
 Developer: "When will HTTPS domains route through the gateway?"
 
@@ -996,7 +992,7 @@ QA engineer: "No, Exact Host Match requires an explicit wildcard when subdomains
 
 Developer: "Does `*.example.com` match `deep.api.example.com`?"
 
-QA engineer: "No, Single-Label Wildcard matches only one subdomain label; use Recursive Wildcard when deeper subdomains should also match."
+QA engineer: "No, Single-Label Wildcard matches only one subdomain label; add `*.api.example.com` when that deeper level should also match."
 
 Developer: "Can I include my local API or a LAN staging service?"
 

@@ -1,0 +1,19 @@
+# Project upstream-bounded HTTPS providers
+
+**Status:** accepted
+
+UserCA exposes an immutable HTTPS Provider Source for the valid Active UserCA, and Gateway supplies the normalized effective Upstream List Projection when asking it to build an immutable HTTPS Certificate Provider. The provider eagerly creates one in-memory Selector Certificate per deduplicated exact hostname or Single-Label Wildcard, uses one provider-scoped RSA-2048 leaf key, gives exact lookup precedence over wildcard lookup, remains valid until the Active UserCA expires, and reports valid CONNECT hosts outside its scope as `not-covered` for direct tunneling by CORS Proxy; no certificates or leaf keys are persisted, no periodic leaf refresh exists, and no arbitrary certificate-count limit is imposed.
+
+Host Selectors contribute exact or single-label-wildcard certificate identities whenever UserCA is installed, HTTPS Origin Selectors contribute exact identities without port significance, and HTTP Origin Selectors contribute none. All Host and Origin Selectors use the same conservative DNS/IP hostname validation to keep the Upstream List format and implementation uniform, and Origin Selectors reject wildcard syntax. HTTPS Intent remains narrower than certificate scope: only an HTTPS Origin Selector expresses intent and makes missing UserCA readiness warning-worthy.
+
+Gateway synchronously serializes provider projection and adoption across Gateway start, every adopted effective Upstream List Projection change, and successful live UserCA installation. While staging, the previous projection and provider keep serving; success atomically adopts the candidate provider before matching HTTPS PAC routes, while any certificate-generation failure discards the whole candidate, adopts a changed list for HTTP, deactivates HTTPS with `certificate-projection-failed`, and leaves UserCA readiness and committed installation success intact. Start and live install return settled, successful-but-degraded results when projection fails; a later successful list observation retries even when projection identity is unchanged, and stop cancels list-driven generation while skipping post-install projection after runtime closure.
+
+The loopback Proxy Listener remains a general host-local proxy rather than an Upstream List or PAC admission point. PAC Routing is one consumer that selects managed browser traffic; arbitrary direct HTTP proxy traffic remains eligible for CORS repair, covered HTTPS is intercepted, and uncovered or invalid CONNECT hosts are direct-tunneled without Gateway warning.
+
+## Considered Options
+
+- Retain dynamic exact-host issuance, or prewarm listed certificates while keeping dynamic fallback. Both preserve an unbounded signer and the provider cache that this decision removes.
+- Let UserCA read and observe the file itself. Gateway instead remains the sole observer and supplies the normalized projection, avoiding duplicated source and failure state.
+- Create one Upstream-List-wide multi-SAN certificate. Per-identity certificates avoid disclosing every configured hostname in every handshake and avoid unbounded certificate growth.
+- Couple CA installation success to list-specific provider construction, or reconcile live installation asynchronously. CA mutation remains Upstream-independent, while Gateway synchronously settles the separate runtime consequence before returning so no new `reconciling` state is needed.
+This supersedes ADR-0022's assessment shape, dynamic per-host issuance, leaf-cache, and list-independent provider-construction decisions; ADR-0018's provider-before-CA-commit and provider-adoption-as-install-success decisions; and ADR-0024's feature-independence rule only where UserCA now consumes an Upstream List Projection for certificate projection. Their remaining ownership, expiry, rotation, observation, and PAC-projection decisions remain accepted.

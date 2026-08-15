@@ -23,8 +23,8 @@ func TestInspectMissingIsNotUsable(t *testing.T) {
 	if snapshot.Snapshot().Usable() {
 		t.Fatal("missing UserCA reported usable")
 	}
-	if _, ok := snapshot.Provider(); ok {
-		t.Fatal("not-usable assessment exposed a provider")
+	if _, ok := snapshot.Source(); ok {
+		t.Fatal("not-usable assessment exposed a provider source")
 	}
 }
 
@@ -43,9 +43,9 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstProvider, ok := first.Current().Provider()
+	firstSource, ok := first.Current().Source()
 	if !ok {
-		t.Fatal("first install omitted provider")
+		t.Fatal("first install omitted provider source")
 	}
 
 	second, err := ca.Install(context.Background())
@@ -59,12 +59,12 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if err != nil || secondFingerprint != firstFingerprint {
 		t.Fatal("idempotent install replaced the authority")
 	}
-	secondProvider, ok := second.Current().Provider()
+	secondSource, ok := second.Current().Source()
 	if !ok {
-		t.Fatal("second install omitted provider")
+		t.Fatal("second install omitted provider source")
 	}
-	if firstProvider == secondProvider {
-		t.Fatal("idempotent install reused the previous provider")
+	if firstSource == secondSource {
+		t.Fatal("idempotent install reused the previous provider source")
 	}
 }
 
@@ -350,8 +350,8 @@ func TestAssessmentCarriesProviderOnlyWhenUsable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := result.Current().Provider(); !ok {
-		t.Fatal("usable assessment omitted its provider")
+	if _, ok := result.Current().Source(); !ok {
+		t.Fatal("usable assessment omitted its provider source")
 	}
 }
 

@@ -8,7 +8,6 @@ Upstream List Warning.
 # Host Selectors: HTTP and HTTPS, any port
 api.example.test
 *.qa.example.test
-**.dev.example.test
 localhost
 [::1]
 
@@ -50,22 +49,23 @@ match marker:
 
 - `example.test` matches exactly that hostname.
 - `*.example.test` matches exactly one leading subdomain label.
-- `**.example.test` matches one or more leading subdomain labels.
 
 A wildcard never includes the parent hostname. List the parent separately when
-it should also match. Any other use of `*` is invalid.
+it should also match. Any other use of `*` is invalid and produces an Upstream
+List Warning.
 
 The complete Host Selector text must equal the hostname representation
 produced by URL parsing. Brackets are restored around a parsed IPv6 hostname
-for this comparison. The leading `*.` and `**.` markers remain part of the
-parsed hostname representation and are interpreted only after this shape
-validation.
+for this comparison. The leading `*.` marker remains part of the parsed
+hostname representation and is interpreted only after this shape validation.
 
 Host Selectors:
 
 - have no scheme, port, user information, path, query, or fragment;
 - accept non-empty ASCII hostnames as parsed by Go's `net/url`, including
   single-label names, IPv4 literals, and bracketed IPv6 literals;
+- require conservative DNS or IP hostnames, reject underscores and trailing
+  dots, and allow wildcard syntax only for DNS-name bases;
 - match HTTP and HTTPS on any port;
 - produce an HTTPS PAC route only while Trusted HTTPS Interception is enabled.
 
@@ -84,15 +84,16 @@ only when its request target is `/`. Both an omitted path and an explicit root
 path produce that target. A non-root path or query produces a different target,
 and a fragment fails request-URI parsing, so each makes the line invalid.
 
-Host Selector wildcard semantics are never applied to an Origin Selector.
-For example, if Go's `net/url` accepts `https://*.example.test`, the `*` remains
-a literal hostname character rather than becoming a wildcard match.
+Wildcard syntax is invalid in an Origin Selector and produces an Upstream List
+Warning requiring a Host Selector. Origin Selectors use the same conservative
+DNS/IP hostname validation as Host Selectors.
 
-An omitted port remains absent. An explicit port is stored as a normalized
-decimal string with leading zeroes removed. A port delimiter without a port
-produces an Upstream List Warning. Thus `https://example.test:443` and
-`https://example.test:0443` identify the same Origin Selector, while
-`https://example.test` remains a distinct selector with no explicit port.
+An omitted port remains absent. An explicit port must be a decimal integer from
+1 through 65535 and is stored with leading zeroes removed. An empty, zero, or
+out-of-range explicit port produces an Upstream List Warning. Thus
+`https://example.test:443` and `https://example.test:0443` identify the same
+Origin Selector, while `https://example.test` remains a distinct selector with
+no explicit port.
 
 PAC Routing owns effective-port interpretation. An HTTP Origin Selector always
 produces PAC routes. An HTTPS Origin Selector produces PAC routes only while
@@ -109,8 +110,7 @@ produces one Origin Route. Equivalent derived Origin Routes are deduplicated.
 - Scheme and hostname letters are normalized to lowercase.
 - Hostnames must be ASCII; Unicode hostnames must be written as punycode.
 - User information is retained by neither selector type.
-- No DNS lookup, DNS label-syntax validation, IDNA conversion, IP literal
-  canonicalization, or explicit browser port-range validation is performed.
+- No DNS lookup, IDNA conversion, or IP literal canonicalization is performed.
 
 ## Warnings and deduplication
 
