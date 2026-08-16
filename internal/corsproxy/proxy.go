@@ -45,7 +45,7 @@ type providerState struct {
 	provider CertificateProvider
 }
 
-func New(opts Options) (*Core, error) {
+func New(opts Options) *Core {
 	proxy := goproxy.NewProxyHttpServer()
 	configureProxyLogging(proxy)
 	proxy.Tr = opts.Transport
@@ -78,7 +78,7 @@ func New(opts Options) (*Core, error) {
 		return resp
 	})
 
-	return core, nil
+	return core
 }
 
 type Options struct {

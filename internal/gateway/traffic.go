@@ -170,13 +170,10 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(ctx context.Context, assessmen
 			projectionErr = fmt.Errorf("certificate projection failed: %w", projectionErr)
 		}
 	}
-	proxyHandler, err := corsproxy.New(corsproxy.Options{
+	proxyHandler := corsproxy.New(corsproxy.Options{
 		Provider:       provider,
 		OnHTTPSFailure: r.handleHTTPSFailure,
 	})
-	if err != nil {
-		return err
-	}
 	r.proxyHandler.Set(proxyHandler)
 	r.mu.Lock()
 	r.userCA = snapshot

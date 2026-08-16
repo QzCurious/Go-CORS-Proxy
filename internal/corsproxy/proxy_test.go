@@ -479,11 +479,7 @@ func minTestTime(left, right time.Time) time.Time {
 
 func newTestCore(t *testing.T, opts Options) *Core {
 	t.Helper()
-	core, err := New(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return core
+	return New(opts)
 }
 
 func testTransport(t *testing.T, client *http.Client) *http.Transport {
