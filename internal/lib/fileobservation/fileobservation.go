@@ -13,36 +13,31 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-type Options struct{ Debounce time.Duration }
-
 type Observation struct {
 	path        string
 	debounce    time.Duration
-	watcher     eventWatcher
 	openWatcher watcherFactory
 	outcomes    chan Outcome
 	stop        chan struct{}
 	done        chan struct{}
 	closeOnce   sync.Once
-	closeErr    error
 }
 
-func Open(path string, options Options) (*Observation, error) {
-	return open(path, options, openFSNotifyWatcher)
+func Open(path string) *Observation {
+	return open(path, defaultDebounce, openFSNotifyWatcher)
 }
 
 func (o *Observation) Outcomes() <-chan Outcome { return o.outcomes }
 
-func (o *Observation) Close() error {
+func (o *Observation) Close() {
 	o.closeOnce.Do(func() {
 		close(o.stop)
 		<-o.done
 	})
-	return o.closeErr
 }
 
-// Outcome is one complete fact produced by an Observation. Its concrete value
-// is exactly Contents, ReadError, or ObservationStoppedError. Outcomes must be
+// Outcome is one complete fact produced by an Observation. Observations publish
+// exactly Contents, ReadError, or ObservationStoppedError. Outcomes must be
 // inspected with a type switch and must not be compared directly.
 type Outcome interface {
 	outcome()
@@ -81,57 +76,53 @@ func (ObservationStoppedError) outcome() {}
 
 const defaultDebounce = 100 * time.Millisecond
 
-type eventWatcher interface {
-	Events() <-chan fsnotify.Event
-	Errors() <-chan error
-	Close() error
+type eventWatcher struct {
+	events <-chan fsnotify.Event
+	errs   <-chan error
+	close  func()
 }
-
-type fsnotifyEventWatcher struct{ watcher *fsnotify.Watcher }
-
-func (w fsnotifyEventWatcher) Events() <-chan fsnotify.Event { return w.watcher.Events }
-func (w fsnotifyEventWatcher) Errors() <-chan error          { return w.watcher.Errors }
-func (w fsnotifyEventWatcher) Close() error                  { return w.watcher.Close() }
 
 type watcherFactory func(string) (eventWatcher, error)
 
-func open(path string, options Options, openWatcher watcherFactory) (*Observation, error) {
-	if options.Debounce < 0 {
-		return nil, errors.New("file observation debounce must not be negative")
-	}
-	if options.Debounce == 0 {
-		options.Debounce = defaultDebounce
-	}
+func open(path string, debounce time.Duration, openWatcher watcherFactory) *Observation {
 	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return nil, stopped(path, err)
+	if err == nil {
+		path = absolute
 	}
-	absolute = filepath.Clean(absolute)
-	watcher, err := openWatcher(filepath.Dir(absolute))
-	if err != nil {
-		return nil, stopped(absolute, err)
-	}
-	o := &Observation{path: absolute, debounce: options.Debounce, watcher: watcher, openWatcher: openWatcher, outcomes: make(chan Outcome), stop: make(chan struct{}), done: make(chan struct{})}
-	go o.observe()
-	return o, nil
+	o := &Observation{path: path, debounce: debounce, openWatcher: openWatcher, outcomes: make(chan Outcome), stop: make(chan struct{}), done: make(chan struct{})}
+	go o.observe(err)
+	return o
 }
 
 func openFSNotifyWatcher(directory string) (eventWatcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, err
+		return eventWatcher{}, err
 	}
 	if err := watcher.Add(directory); err != nil {
 		_ = watcher.Close()
-		return nil, err
+		return eventWatcher{}, err
 	}
-	return fsnotifyEventWatcher{watcher: watcher}, nil
+	return eventWatcher{
+		events: watcher.Events,
+		errs:   watcher.Errors,
+		close:  func() { _ = watcher.Close() },
+	}, nil
 }
 
-func (o *Observation) observe() {
+func (o *Observation) observe(openErr error) {
 	defer close(o.done)
 	defer close(o.outcomes)
-	defer func() { o.closeErr = o.watcher.Close() }()
+	if openErr != nil {
+		o.publish(stopped(o.path, openErr))
+		return
+	}
+	watcher, err := o.openWatcher(filepath.Dir(o.path))
+	if err != nil {
+		o.publish(stopped(o.path, err))
+		return
+	}
+	defer func() { watcher.close() }()
 	if !o.publish(o.read()) {
 		return
 	}
@@ -142,22 +133,13 @@ func (o *Observation) observe() {
 		if timer == nil {
 			timer = time.NewTimer(o.debounce)
 		} else {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			timer.Reset(o.debounce)
 		}
 		timerC = timer.C
 	}
 	disarm := func() {
-		if timer != nil && !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
+		if timer != nil {
+			timer.Stop()
 		}
 		timerC = nil
 	}
@@ -166,14 +148,18 @@ func (o *Observation) observe() {
 			timer.Stop()
 		}
 	}()
-	events, errs := o.watcher.Events(), o.watcher.Errors()
+	events, errs := watcher.events, watcher.errs
 	recoverObservation := func(cause error) bool {
 		disarm()
-		if err := o.rebuildWatcher(cause); err != nil {
-			o.publish(stopped(o.path, err))
+		next, err := o.openWatcher(filepath.Dir(o.path))
+		if err != nil {
+			o.publish(stopped(o.path, fmt.Errorf("rebuild after watcher failure %v: %w", cause, err)))
 			return false
 		}
-		events, errs = o.watcher.Events(), o.watcher.Errors()
+		previous := watcher
+		watcher = next
+		events, errs = watcher.events, watcher.errs
+		previous.close()
 		return o.publish(o.read())
 	}
 	for {
@@ -187,7 +173,13 @@ func (o *Observation) observe() {
 			}
 		case event, ok := <-events:
 			if !ok {
-				if o.stopping() || !recoverObservation(errors.New("filesystem event channel closed")) {
+				if !recoverObservation(errors.New("filesystem event channel closed")) {
+					return
+				}
+				continue
+			}
+			if o.parentLost(event) {
+				if !recoverObservation(errors.New("watched directory removed or renamed")) {
 					return
 				}
 				continue
@@ -197,7 +189,7 @@ func (o *Observation) observe() {
 			}
 		case err, ok := <-errs:
 			if !ok {
-				if o.stopping() || !recoverObservation(errors.New("filesystem error channel closed")) {
+				if !recoverObservation(errors.New("filesystem error channel closed")) {
 					return
 				}
 				continue
@@ -213,31 +205,7 @@ func (o *Observation) observe() {
 	}
 }
 
-func (o *Observation) rebuildWatcher(cause error) error {
-	_ = o.watcher.Close()
-	next, err := o.openWatcher(filepath.Dir(o.path))
-	if err != nil {
-		return fmt.Errorf("rebuild after watcher failure %v: %w", cause, err)
-	}
-	o.watcher = next
-	return nil
-}
-
-func (o *Observation) stopping() bool {
-	select {
-	case <-o.stop:
-		return true
-	default:
-		return false
-	}
-}
-
 func (o *Observation) publish(outcome Outcome) bool {
-	switch outcome.(type) {
-	case Contents, ReadError, ObservationStoppedError:
-	default:
-		panic(fmt.Sprintf("file observation cannot publish outcome %T", outcome))
-	}
 	select {
 	case o.outcomes <- outcome:
 		return true
@@ -246,11 +214,16 @@ func (o *Observation) publish(outcome Outcome) bool {
 	}
 }
 
+func (o *Observation) parentLost(event fsnotify.Event) bool {
+	return filepath.Clean(event.Name) == filepath.Dir(o.path) && event.Op&(fsnotify.Remove|fsnotify.Rename) != 0
+}
+
 func (o *Observation) relevant(event fsnotify.Event) bool {
-	if filepath.Clean(event.Name) != o.path {
-		return false
+	name := filepath.Clean(event.Name)
+	if name == filepath.Dir(o.path) {
+		return event.Op&fsnotify.Chmod != 0
 	}
-	return event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) != 0
+	return name == o.path && event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) != 0
 }
 
 // Debouncing handles the common source of duplicate reads, making raw-byte

@@ -562,6 +562,7 @@ func renderFileSyncIssue(stdout io.Writer, issue *gateway.FileSyncIssue) {
 		return
 	}
 	fmt.Fprintf(stdout, "warning: upstream-list file unreadable: %s\n", issue.Cause)
+	fmt.Fprintln(stdout, "action: restore the upstream-list file; observation will resume automatically")
 }
 
 func renderUpstreamListProjectionIssue(stdout io.Writer, issue *gateway.UpstreamListProjectionIssue) {

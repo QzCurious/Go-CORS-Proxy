@@ -121,6 +121,23 @@ func TestStartResultRendersIndependentUpstreamListIssues(t *testing.T) {
 	}
 }
 
+func TestRecoverableFileSyncIssueRendersRepairAction(t *testing.T) {
+	var out bytes.Buffer
+	renderFileSyncIssue(&out, &gateway.FileSyncIssue{
+		Kind:  gateway.FileSyncIssueFileUnreadable,
+		Cause: "file missing",
+	})
+
+	for _, want := range []string{
+		"upstream-list file unreadable: file missing",
+		"restore the upstream-list file; observation will resume automatically",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("file issue output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
 	var out bytes.Buffer
 	result := gateway.StartNoManageablePACServices{

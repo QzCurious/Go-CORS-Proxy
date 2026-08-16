@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 
@@ -54,28 +53,14 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		}
 		return assessmentResult, nil
 	}
-	upstreamListObservation, err := fileobservation.Open(upstreamListPath, fileobservation.Options{})
-	var initialUpstreamOutcome fileobservation.Outcome
-	if err != nil {
-		stopped, ok := err.(fileobservation.ObservationStoppedError)
-		if !ok {
-			return postStartFailure(fmt.Errorf("open upstream list observation: %w", err))
-		}
-		initialUpstreamOutcome = stopped
-	}
-	closeUpstreamListObservation := upstreamListObservation != nil
+	upstreamListObservation := fileobservation.Open(upstreamListPath)
+	closeUpstreamListObservation := true
 	defer func() {
 		if closeUpstreamListObservation {
-			_ = upstreamListObservation.Close()
+			upstreamListObservation.Close()
 		}
 	}()
-	if upstreamListObservation != nil {
-		var ok bool
-		initialUpstreamOutcome, ok = <-upstreamListObservation.Outcomes()
-		if !ok {
-			initialUpstreamOutcome = fileobservation.ObservationStoppedError{Path: upstreamListPath, Cause: errors.New("observation closed before its initial outcome")}
-		}
-	}
+	initialUpstreamOutcome := <-upstreamListObservation.Outcomes()
 
 	engine, err := newRuntime(upstreamListPath, upstreamListObservation, initialUpstreamOutcome)
 	if err != nil {

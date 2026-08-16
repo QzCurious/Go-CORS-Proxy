@@ -555,10 +555,7 @@ func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*fileobse
 		t.Fatal(err)
 	}
 	writeTrafficTestFile(t, upstreamPath, upstreams)
-	source, err := fileobservation.Open(upstreamPath, fileobservation.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	source := fileobservation.Open(upstreamPath)
 	select {
 	case initial := <-source.Outcomes():
 		return source, initial, upstreamPath

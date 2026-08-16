@@ -12,10 +12,7 @@ import (
 
 func TestMissingFileIsAResultAndLaterCreationRecovers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upstreams.txt")
-	observation, err := fileobservation.Open(path, fileobservation.Options{Debounce: 10 * time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
+	observation := fileobservation.Open(path)
 	defer observation.Close()
 	first := waitOutcome(t, observation.Outcomes())
 	observed, ok := first.(fileobservation.ReadError)
@@ -40,10 +37,7 @@ func TestUnchangedHealthyContentsArePublished(t *testing.T) {
 	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	observation, err := fileobservation.Open(path, fileobservation.Options{Debounce: 10 * time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
+	observation := fileobservation.Open(path)
 	defer observation.Close()
 	waitOutcome(t, observation.Outcomes())
 	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
@@ -53,6 +47,41 @@ func TestUnchangedHealthyContentsArePublished(t *testing.T) {
 	contents, ok := outcome.(fileobservation.Contents)
 	if !ok || string(contents) != "value" {
 		t.Fatalf("outcome = %#v", outcome)
+	}
+}
+
+func TestMissingParentStopsObservation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "upstreams.txt")
+	observation := fileobservation.Open(path)
+	defer observation.Close()
+
+	outcome := waitOutcome(t, observation.Outcomes())
+	if _, ok := outcome.(fileobservation.ObservationStoppedError); !ok {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+}
+
+func TestParentRemovalStopsObservation(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "upstreams.txt")
+	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation := fileobservation.Open(path)
+	defer observation.Close()
+	waitOutcome(t, observation.Outcomes())
+
+	if err := os.RemoveAll(parent); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		outcome := waitOutcome(t, observation.Outcomes())
+		if _, ok := outcome.(fileobservation.ObservationStoppedError); ok {
+			return
+		}
 	}
 }
 

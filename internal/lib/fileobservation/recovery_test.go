@@ -19,9 +19,9 @@ func newFakeEventWatcher() *fakeEventWatcher {
 	return &fakeEventWatcher{events: make(chan fsnotify.Event, 1), errs: make(chan error, 1)}
 }
 
-func (w *fakeEventWatcher) Events() <-chan fsnotify.Event { return w.events }
-func (w *fakeEventWatcher) Errors() <-chan error          { return w.errs }
-func (w *fakeEventWatcher) Close() error                  { return nil }
+func (w *fakeEventWatcher) observationWatcher() eventWatcher {
+	return eventWatcher{events: w.events, errs: w.errs, close: func() {}}
+}
 
 func TestWatcherFailureRebuildsAndRereadsCurrentContents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upstreams.txt")
@@ -29,15 +29,12 @@ func TestWatcherFailureRebuildsAndRereadsCurrentContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := newFakeEventWatcher(), newFakeEventWatcher()
-	watchers := []eventWatcher{first, second}
-	observation, err := open(path, Options{Debounce: time.Millisecond}, func(string) (eventWatcher, error) {
+	watchers := []eventWatcher{first.observationWatcher(), second.observationWatcher()}
+	observation := open(path, time.Millisecond, func(string) (eventWatcher, error) {
 		watcher := watchers[0]
 		watchers = watchers[1:]
 		return watcher, nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer observation.Close()
 	assertContentsOutcome(t, waitInternalOutcome(t, observation.Outcomes()), "value")
 
@@ -51,15 +48,12 @@ func TestWatcherRecoveryReportsReadErrorAndContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := newFakeEventWatcher(), newFakeEventWatcher()
-	watchers := []eventWatcher{first, second}
-	observation, err := open(path, Options{Debounce: time.Millisecond}, func(string) (eventWatcher, error) {
+	watchers := []eventWatcher{first.observationWatcher(), second.observationWatcher()}
+	observation := open(path, time.Millisecond, func(string) (eventWatcher, error) {
 		watcher := watchers[0]
 		watchers = watchers[1:]
 		return watcher, nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer observation.Close()
 	waitInternalOutcome(t, observation.Outcomes())
 	if err := os.Remove(path); err != nil {
@@ -89,16 +83,13 @@ func TestWatcherRebuildFailureStopsObservation(t *testing.T) {
 	}
 	first := newFakeEventWatcher()
 	calls := 0
-	observation, err := open(path, Options{Debounce: time.Millisecond}, func(string) (eventWatcher, error) {
+	observation := open(path, time.Millisecond, func(string) (eventWatcher, error) {
 		calls++
 		if calls == 1 {
-			return first, nil
+			return first.observationWatcher(), nil
 		}
-		return nil, errors.New("cannot rebuild watcher")
+		return eventWatcher{}, errors.New("cannot rebuild watcher")
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer observation.Close()
 	waitInternalOutcome(t, observation.Outcomes())
 
@@ -131,12 +122,29 @@ func assertContentsOutcome(t *testing.T, outcome Outcome, want string) {
 	}
 }
 
-func TestPublishRejectsInvalidOutcome(t *testing.T) {
-	observation := &Observation{outcomes: make(chan Outcome)}
-	defer func() {
-		if recover() == nil {
-			t.Fatal("publish accepted an invalid outcome")
+func TestParentDirectoryLossStopsObservation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config", "upstreams.txt")
+	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := newFakeEventWatcher()
+	calls := 0
+	observation := open(path, time.Millisecond, func(string) (eventWatcher, error) {
+		calls++
+		if calls == 1 {
+			return first.observationWatcher(), nil
 		}
-	}()
-	observation.publish((*ReadError)(nil))
+		return eventWatcher{}, errors.New("parent unavailable")
+	})
+	defer observation.Close()
+	waitInternalOutcome(t, observation.Outcomes())
+
+	first.events <- fsnotify.Event{Name: filepath.Dir(path), Op: fsnotify.Remove}
+	outcome := waitInternalOutcome(t, observation.Outcomes())
+	if _, ok := outcome.(ObservationStoppedError); !ok {
+		t.Fatalf("parent loss outcome = %#v", outcome)
+	}
 }

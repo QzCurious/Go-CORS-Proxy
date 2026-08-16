@@ -358,8 +358,10 @@ func (r *trafficRuntime) Close() error {
 }
 
 func (r *trafficRuntime) CloseTraffic() error {
+	if r.upstreamListObservation != nil {
+		r.upstreamListObservation.Close()
+	}
 	return errors.Join(
-		closeObservation(r.upstreamListObservation),
 		r.proxy.Close(),
 		r.pac.Close(),
 	)
@@ -568,13 +570,6 @@ func (r *trafficRuntime) updatePACProjectionLocked() bool {
 	r.pacProjection = next
 	r.pacHandler.Set(next)
 	return true
-}
-
-func closeObservation(observation *fileobservation.Observation) error {
-	if observation == nil {
-		return nil
-	}
-	return observation.Close()
 }
 
 func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
