@@ -14,35 +14,73 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-type Result struct {
-	Contents []byte
-	Err      error
-	Snapshot bool
+type Options struct{ Debounce time.Duration }
+
+type Observation struct {
+	path           string
+	debounce       time.Duration
+	watcher        eventWatcher
+	openWatcher    watcherFactory
+	outcomes       chan Outcome
+	stop           chan struct{}
+	done           chan struct{}
+	closeOnce      sync.Once
+	closeErr       error
+	hasFingerprint bool
+	fingerprint    [sha256.Size]byte
 }
+
+func Open(path string, options Options) (*Observation, error) {
+	return open(path, options, openFSNotifyWatcher)
+}
+
+func (o *Observation) Outcomes() <-chan Outcome { return o.outcomes }
+
+func (o *Observation) Close() error {
+	o.closeOnce.Do(func() {
+		close(o.stop)
+		<-o.done
+	})
+	return o.closeErr
+}
+
+// Outcome is one complete fact produced by an Observation. Its concrete value
+// is exactly Contents, ReadError, or ObservationStoppedError. Outcomes must be
+// inspected with a type switch and must not be compared directly.
+type Outcome interface {
+	outcome()
+}
+
+// Contents is the complete contents observed during one successful read.
+type Contents []byte
+
+func (Contents) outcome() {}
 
 type ReadError struct {
 	Path  string
 	Cause error
 }
 
-func (e *ReadError) Error() string {
+func (e ReadError) Error() string {
 	return fmt.Sprintf("file observation cannot read %q: %v", e.Path, e.Cause)
 }
 
-func (e *ReadError) Unwrap() error { return e.Cause }
+func (e ReadError) Unwrap() error { return e.Cause }
+
+func (ReadError) outcome() {}
 
 type ObservationStoppedError struct {
 	Path  string
 	Cause error
 }
 
-func (e *ObservationStoppedError) Error() string {
+func (e ObservationStoppedError) Error() string {
 	return fmt.Sprintf("file observation stopped for %q: %v", e.Path, e.Cause)
 }
 
-func (e *ObservationStoppedError) Unwrap() error { return e.Cause }
+func (e ObservationStoppedError) Unwrap() error { return e.Cause }
 
-type Options struct{ Debounce time.Duration }
+func (ObservationStoppedError) outcome() {}
 
 const defaultDebounce = 100 * time.Millisecond
 
@@ -60,24 +98,6 @@ func (w fsnotifyEventWatcher) Close() error                  { return w.watcher.
 
 type watcherFactory func(string) (eventWatcher, error)
 
-type Observation struct {
-	path           string
-	debounce       time.Duration
-	watcher        eventWatcher
-	openWatcher    watcherFactory
-	results        chan Result
-	stop           chan struct{}
-	done           chan struct{}
-	closeOnce      sync.Once
-	closeErr       error
-	hasFingerprint bool
-	fingerprint    [sha256.Size]byte
-}
-
-func Open(path string, options Options) (*Observation, error) {
-	return open(path, options, openFSNotifyWatcher)
-}
-
 func open(path string, options Options, openWatcher watcherFactory) (*Observation, error) {
 	if options.Debounce < 0 {
 		return nil, errors.New("file observation debounce must not be negative")
@@ -94,7 +114,7 @@ func open(path string, options Options, openWatcher watcherFactory) (*Observatio
 	if err != nil {
 		return nil, stopped(absolute, err)
 	}
-	o := &Observation{path: absolute, debounce: options.Debounce, watcher: watcher, openWatcher: openWatcher, results: make(chan Result), stop: make(chan struct{}), done: make(chan struct{})}
+	o := &Observation{path: absolute, debounce: options.Debounce, watcher: watcher, openWatcher: openWatcher, outcomes: make(chan Outcome), stop: make(chan struct{}), done: make(chan struct{})}
 	go o.observe()
 	return o, nil
 }
@@ -111,21 +131,11 @@ func openFSNotifyWatcher(directory string) (eventWatcher, error) {
 	return fsnotifyEventWatcher{watcher: watcher}, nil
 }
 
-func (o *Observation) Results() <-chan Result { return o.results }
-
-func (o *Observation) Close() error {
-	o.closeOnce.Do(func() {
-		close(o.stop)
-		<-o.done
-	})
-	return o.closeErr
-}
-
 func (o *Observation) observe() {
 	defer close(o.done)
-	defer close(o.results)
+	defer close(o.outcomes)
 	defer func() { o.closeErr = o.watcher.Close() }()
-	if result, changed := o.read(); changed && !o.publish(result) {
+	if outcome, changed := o.read(); changed && !o.publish(outcome) {
 		return
 	}
 
@@ -163,12 +173,12 @@ func (o *Observation) observe() {
 	recoverObservation := func(cause error) bool {
 		disarm()
 		if err := o.rebuildWatcher(cause); err != nil {
-			o.publish(Result{Err: stopped(o.path, err)})
+			o.publish(stopped(o.path, err))
 			return false
 		}
 		events, errs = o.watcher.Events(), o.watcher.Errors()
-		if result, changed := o.read(); changed {
-			return o.publish(result)
+		if outcome, changed := o.read(); changed {
+			return o.publish(outcome)
 		}
 		return true
 	}
@@ -178,7 +188,7 @@ func (o *Observation) observe() {
 			return
 		case <-timerC:
 			timerC = nil
-			if result, changed := o.read(); changed && !o.publish(result) {
+			if outcome, changed := o.read(); changed && !o.publish(outcome) {
 				return
 			}
 		case event, ok := <-events:
@@ -230,9 +240,14 @@ func (o *Observation) stopping() bool {
 	}
 }
 
-func (o *Observation) publish(result Result) bool {
+func (o *Observation) publish(outcome Outcome) bool {
+	switch outcome.(type) {
+	case Contents, ReadError, ObservationStoppedError:
+	default:
+		panic(fmt.Sprintf("file observation cannot publish outcome %T", outcome))
+	}
 	select {
-	case o.results <- result:
+	case o.outcomes <- outcome:
 		return true
 	case <-o.stop:
 		return false
@@ -246,29 +261,29 @@ func (o *Observation) relevant(event fsnotify.Event) bool {
 	return event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) != 0
 }
 
-func (o *Observation) read() (Result, bool) {
+func (o *Observation) read() (Outcome, bool) {
 	info, err := os.Lstat(o.path)
 	if err != nil {
 		o.hasFingerprint = false
-		return Result{Err: &ReadError{Path: o.path, Cause: err}}, true
+		return ReadError{Path: o.path, Cause: err}, true
 	}
 	if !info.Mode().IsRegular() {
 		o.hasFingerprint = false
-		return Result{Err: &ReadError{Path: o.path, Cause: errors.New("must be an ordinary file")}}, true
+		return ReadError{Path: o.path, Cause: errors.New("must be an ordinary file")}, true
 	}
 	contents, err := os.ReadFile(o.path)
 	if err != nil {
 		o.hasFingerprint = false
-		return Result{Err: &ReadError{Path: o.path, Cause: err}}, true
+		return ReadError{Path: o.path, Cause: err}, true
 	}
 	fingerprint := sha256.Sum256(contents)
 	if o.hasFingerprint && o.fingerprint == fingerprint {
-		return Result{}, false
+		return nil, false
 	}
 	o.hasFingerprint, o.fingerprint = true, fingerprint
-	return Result{Contents: contents, Snapshot: true}, true
+	return Contents(contents), true
 }
 
-func stopped(path string, err error) error {
-	return &ObservationStoppedError{Path: path, Cause: err}
+func stopped(path string, err error) ObservationStoppedError {
+	return ObservationStoppedError{Path: path, Cause: err}
 }

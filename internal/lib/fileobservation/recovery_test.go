@@ -39,10 +39,10 @@ func TestWatcherFailureRebuildsAndRereadsCurrentContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer observation.Close()
-	assertContentsResult(t, waitInternalResult(t, observation.Results()), "value")
+	assertContentsOutcome(t, waitInternalOutcome(t, observation.Outcomes()), "value")
 
 	first.errs <- errors.New("watcher uncertain")
-	assertContentsResult(t, waitInternalResult(t, observation.Results()), "value")
+	assertContentsOutcome(t, waitInternalOutcome(t, observation.Outcomes()), "value")
 }
 
 func TestWatcherRecoveryReportsReadErrorAndContinues(t *testing.T) {
@@ -61,22 +61,25 @@ func TestWatcherRecoveryReportsReadErrorAndContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer observation.Close()
-	waitInternalResult(t, observation.Results())
+	waitInternalOutcome(t, observation.Outcomes())
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 
 	first.errs <- errors.New("watcher uncertain")
-	result := waitInternalResult(t, observation.Results())
-	var readErr *ReadError
-	if !errors.As(result.Err, &readErr) {
-		t.Fatalf("recovery result = %#v", result)
+	outcome := waitInternalOutcome(t, observation.Outcomes())
+	readErr, ok := outcome.(ReadError)
+	if !ok {
+		t.Fatalf("recovery outcome = %#v", outcome)
+	}
+	if !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("recovery cause = %v", readErr)
 	}
 	if err := os.WriteFile(path, []byte("after"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	second.events <- fsnotify.Event{Name: path, Op: fsnotify.Write}
-	assertContentsResult(t, waitInternalResult(t, observation.Results()), "after")
+	assertContentsOutcome(t, waitInternalOutcome(t, observation.Outcomes()), "after")
 }
 
 func TestWatcherRebuildFailureStopsObservation(t *testing.T) {
@@ -97,33 +100,43 @@ func TestWatcherRebuildFailureStopsObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer observation.Close()
-	waitInternalResult(t, observation.Results())
+	waitInternalOutcome(t, observation.Outcomes())
 
 	first.errs <- errors.New("watcher uncertain")
-	result := waitInternalResult(t, observation.Results())
-	var stoppedErr *ObservationStoppedError
-	if !errors.As(result.Err, &stoppedErr) {
-		t.Fatalf("recovery result = %#v", result)
+	outcome := waitInternalOutcome(t, observation.Outcomes())
+	if _, ok := outcome.(ObservationStoppedError); !ok {
+		t.Fatalf("recovery outcome = %#v", outcome)
 	}
 }
 
-func waitInternalResult(t *testing.T, results <-chan Result) Result {
+func waitInternalOutcome(t *testing.T, outcomes <-chan Outcome) Outcome {
 	t.Helper()
 	select {
-	case result, ok := <-results:
+	case outcome, ok := <-outcomes:
 		if !ok {
-			t.Fatal("results closed")
+			t.Fatal("outcomes closed")
 		}
-		return result
+		return outcome
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for observation result")
-		return Result{}
+		t.Fatal("timed out waiting for observation outcome")
+		return nil
 	}
 }
 
-func assertContentsResult(t *testing.T, result Result, want string) {
+func assertContentsOutcome(t *testing.T, outcome Outcome, want string) {
 	t.Helper()
-	if result.Err != nil || !result.Snapshot || string(result.Contents) != want {
-		t.Fatalf("result = %#v, want contents %q", result, want)
+	contents, ok := outcome.(Contents)
+	if !ok || string(contents) != want {
+		t.Fatalf("outcome = %#v, want contents %q", outcome, want)
 	}
+}
+
+func TestPublishRejectsInvalidOutcome(t *testing.T) {
+	observation := &Observation{outcomes: make(chan Outcome)}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("publish accepted an invalid outcome")
+		}
+	}()
+	observation.publish((*ReadError)(nil))
 }

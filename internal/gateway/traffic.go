@@ -85,7 +85,7 @@ type serverError struct {
 	err    error
 }
 
-func newRuntime(upstreamListPath string, observation *fileobservation.Observation, initial fileobservation.Result) (*trafficRuntime, error) {
+func newRuntime(upstreamListPath string, observation *fileobservation.Observation, initial fileobservation.Outcome) (*trafficRuntime, error) {
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -101,15 +101,29 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 	initialList := upstreamlist.Projection{}
 	var fileIssue *FileSyncIssue
 	var projectionIssue *UpstreamListProjectionIssue
-	if initial.Err != nil {
-		fileIssue, err = classifyFileSyncIssue(initial.Err)
+	var initialContents fileobservation.Contents
+	var initialObservationError error
+	switch initial := initial.(type) {
+	case fileobservation.Contents:
+		initialContents = initial
+	case fileobservation.ReadError:
+		initialObservationError = initial
+	case fileobservation.ObservationStoppedError:
+		initialObservationError = initial
+	default:
+		_ = proxyListener.Close()
+		_ = pacListener.Close()
+		return nil, fmt.Errorf("unsupported initial file observation outcome %T", initial)
+	}
+	if initialObservationError != nil {
+		fileIssue, err = classifyFileSyncIssue(initialObservationError)
 		if err != nil {
 			_ = proxyListener.Close()
 			_ = pacListener.Close()
 			return nil, err
 		}
 	} else {
-		initialList, err = upstreamlist.Project(initial.Contents)
+		initialList, err = upstreamlist.Project(initialContents)
 		if err != nil {
 			projectionIssue = &UpstreamListProjectionIssue{Cause: err.Error()}
 		}
@@ -382,16 +396,16 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 	if r.upstreamListObservation == nil {
 		return
 	}
-	updates := r.upstreamListObservation.Results()
+	outcomes := r.upstreamListObservation.Outcomes()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case result, ok := <-updates:
+		case outcome, ok := <-outcomes:
 			if !ok {
 				return
 			}
-			if err := r.applyUpstreamListResultContext(ctx, result); err != nil {
+			if err := r.applyUpstreamListOutcomeContext(ctx, outcome); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
@@ -402,21 +416,34 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 	}
 }
 
-func (r *trafficRuntime) applyUpstreamListResult(result fileobservation.Result) error {
-	return r.applyUpstreamListResultContext(context.Background(), result)
+func (r *trafficRuntime) applyUpstreamListOutcome(outcome fileobservation.Outcome) error {
+	return r.applyUpstreamListOutcomeContext(context.Background(), outcome)
 }
 
-func (r *trafficRuntime) applyUpstreamListResultContext(ctx context.Context, result fileobservation.Result) error {
+func (r *trafficRuntime) applyUpstreamListOutcomeContext(ctx context.Context, outcome fileobservation.Outcome) error {
+	var contents fileobservation.Contents
+	var observationError error
+	switch outcome := outcome.(type) {
+	case fileobservation.Contents:
+		contents = outcome
+	case fileobservation.ReadError:
+		observationError = outcome
+	case fileobservation.ObservationStoppedError:
+		observationError = outcome
+	default:
+		return fmt.Errorf("unsupported file observation outcome %T", outcome)
+	}
+
 	var nextFileIssue *FileSyncIssue
 	var err error
-	if result.Err != nil {
-		nextFileIssue, err = classifyFileSyncIssue(result.Err)
+	if observationError != nil {
+		nextFileIssue, err = classifyFileSyncIssue(observationError)
 		if err != nil {
 			return err
 		}
 	}
 
-	if result.Err != nil {
+	if observationError != nil {
 		r.mu.Lock()
 		statusChanged := false
 		if !sameFileSyncIssue(r.fileSyncIssue, nextFileIssue) {
@@ -430,7 +457,7 @@ func (r *trafficRuntime) applyUpstreamListResultContext(ctx context.Context, res
 		return nil
 	}
 
-	candidate, projectErr := upstreamlist.Project(result.Contents)
+	candidate, projectErr := upstreamlist.Project(contents)
 	var nextProjectionIssue *UpstreamListProjectionIssue
 	if projectErr != nil {
 		nextProjectionIssue = &UpstreamListProjectionIssue{Cause: projectErr.Error()}
@@ -496,15 +523,14 @@ func (r *trafficRuntime) applyUpstreamListResultContext(ctx context.Context, res
 }
 
 func classifyFileSyncIssue(err error) (*FileSyncIssue, error) {
-	var readErr *fileobservation.ReadError
-	if errors.As(err, &readErr) {
+	switch err := err.(type) {
+	case fileobservation.ReadError:
 		return &FileSyncIssue{Kind: FileSyncIssueFileUnreadable, Cause: err.Error()}, nil
-	}
-	var stoppedErr *fileobservation.ObservationStoppedError
-	if errors.As(err, &stoppedErr) {
+	case fileobservation.ObservationStoppedError:
 		return &FileSyncIssue{Kind: FileSyncIssueObservationStopped, Cause: err.Error()}, nil
+	default:
+		return nil, fmt.Errorf("unsupported file observation error %T: %w", err, err)
 	}
-	return nil, fmt.Errorf("unsupported file observation error %T: %w", err, err)
 }
 
 func sameFileSyncIssue(left, right *FileSyncIssue) bool {

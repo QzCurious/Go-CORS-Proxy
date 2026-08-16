@@ -17,16 +17,20 @@ func TestMissingFileIsAResultAndLaterCreationRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer observation.Close()
-	first := waitResult(t, observation.Results())
-	var observed *fileobservation.ReadError
-	if !errors.As(first.Err, &observed) {
+	first := waitOutcome(t, observation.Outcomes())
+	observed, ok := first.(fileobservation.ReadError)
+	if !ok {
 		t.Fatalf("first = %#v", first)
+	}
+	if !errors.Is(observed, os.ErrNotExist) {
+		t.Fatalf("first cause = %v", observed)
 	}
 	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	second := waitResult(t, observation.Results())
-	if !second.Snapshot || string(second.Contents) != "value" || second.Err != nil {
+	second := waitOutcome(t, observation.Outcomes())
+	contents, ok := second.(fileobservation.Contents)
+	if !ok || string(contents) != "value" {
 		t.Fatalf("second = %#v", second)
 	}
 }
@@ -41,27 +45,30 @@ func TestUnchangedHealthyContentsAreSuppressed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer observation.Close()
-	waitResult(t, observation.Results())
+	waitOutcome(t, observation.Outcomes())
 	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case result := <-observation.Results():
-		t.Fatalf("unexpected result %#v", result)
+	case outcome, ok := <-observation.Outcomes():
+		if !ok {
+			t.Fatal("outcomes closed")
+		}
+		t.Fatalf("unexpected outcome %#v", outcome)
 	case <-time.After(150 * time.Millisecond):
 	}
 }
 
-func waitResult(t *testing.T, results <-chan fileobservation.Result) fileobservation.Result {
+func waitOutcome(t *testing.T, outcomes <-chan fileobservation.Outcome) fileobservation.Outcome {
 	t.Helper()
 	select {
-	case result, ok := <-results:
+	case outcome, ok := <-outcomes:
 		if !ok {
-			t.Fatal("results closed")
+			t.Fatal("outcomes closed")
 		}
-		return result
+		return outcome
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout")
-		return fileobservation.Result{}
+		return nil
 	}
 }

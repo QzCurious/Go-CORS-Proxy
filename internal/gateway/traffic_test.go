@@ -17,8 +17,8 @@ import (
 )
 
 func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
-	observed := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Err: observed})
+	observed := fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,14 +30,45 @@ func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
 	}
 }
 
-func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: []byte("api.example.test\n")})
+func TestRuntimeRejectsInvalidInitialFileObservationOutcome(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome fileobservation.Outcome
+	}{
+		{name: "nil", outcome: nil},
+		{name: "pointer", outcome: &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, err := newRuntime("/tmp/upstreams.txt", nil, test.outcome)
+			if err == nil || !strings.Contains(err.Error(), "unsupported initial file observation outcome") {
+				t.Fatalf("runtime = %#v, error = %v", runtime, err)
+			}
+		})
+	}
+}
+
+func TestRuntimeRejectsInvalidFileObservationUpdate(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
 
-	if err := runtime.applyUpstreamListResult(fileobservation.Result{Contents: []byte{0xff}}); err != nil {
+	invalid := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}
+	if err := runtime.applyUpstreamListOutcome(invalid); err == nil || !strings.Contains(err.Error(), "unsupported file observation outcome") {
+		t.Fatalf("invalid update error = %v", err)
+	}
+}
+
+func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents("api.example.test\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents{0xff}); err != nil {
 		t.Fatal(err)
 	}
 	state := runtime.snapshot()
@@ -45,8 +76,8 @@ func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
 		t.Fatalf("rejected contents state = %#v", state)
 	}
 
-	readErr := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("temporarily unavailable")}
-	if err := runtime.applyUpstreamListResult(fileobservation.Result{Err: readErr}); err != nil {
+	readErr := fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("temporarily unavailable")}
+	if err := runtime.applyUpstreamListOutcome(readErr); err != nil {
 		t.Fatal(err)
 	}
 	state = runtime.snapshot()
@@ -56,17 +87,17 @@ func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
 }
 
 func TestSuccessfulEqualProjectionClearsIssuesWithoutPACPublication(t *testing.T) {
-	readErr := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("temporarily unavailable")}
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Err: readErr})
+	readErr := fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("temporarily unavailable")}
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, readErr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
 
-	if err := runtime.applyUpstreamListResult(fileobservation.Result{Contents: []byte{0xff}}); err != nil {
+	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents{0xff}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.applyUpstreamListResult(fileobservation.Result{Contents: nil}); err != nil {
+	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents(nil)); err != nil {
 		t.Fatal(err)
 	}
 	state := runtime.snapshot()
@@ -81,14 +112,14 @@ func TestSuccessfulEqualProjectionClearsIssuesWithoutPACPublication(t *testing.T
 }
 
 func TestEquivalentFileSyncIssueDoesNotInvalidateStatusAgain(t *testing.T) {
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: nil})
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	result := fileobservation.Result{Err: &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("missing")}}
+	outcome := fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("missing")}
 
-	if err := runtime.applyUpstreamListResult(result); err != nil {
+	if err := runtime.applyUpstreamListOutcome(outcome); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -96,7 +127,7 @@ func TestEquivalentFileSyncIssueDoesNotInvalidateStatusAgain(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first issue did not invalidate status")
 	}
-	if err := runtime.applyUpstreamListResult(result); err != nil {
+	if err := runtime.applyUpstreamListOutcome(outcome); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -225,7 +256,7 @@ func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
 }
 
 func TestInitialCertificateProjectionFailureStartsHTTPSDegraded(t *testing.T) {
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: []byte("https://secure.example.test\n")})
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents("https://secure.example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +287,7 @@ func TestInitialCertificateProjectionFailureStartsHTTPSDegraded(t *testing.T) {
 }
 
 func TestSuccessfulSameListObservationRetriesFailedCertificateProjection(t *testing.T) {
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Result{Contents: []byte("https://first.example.test\n")})
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents("https://first.example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,15 +313,15 @@ func TestSuccessfulSameListObservationRetriesFailedCertificateProjection(t *test
 	}
 
 	projectionErr = errors.New("random unavailable")
-	update := fileobservation.Result{Contents: []byte("https://second.example.test\n")}
-	if err := runtime.applyUpstreamListResult(update); err != nil {
+	update := fileobservation.Contents("https://second.example.test\n")
+	if err := runtime.applyUpstreamListOutcome(update); err != nil {
 		t.Fatal(err)
 	}
 	if failed := runtime.snapshot(); failed.HTTPSInterception != HTTPSInterceptionFailed || failed.UpstreamCount != 1 {
 		t.Fatalf("failed list adoption = %#v", failed)
 	}
 	projectionErr = nil
-	if err := runtime.applyUpstreamListResult(update); err != nil {
+	if err := runtime.applyUpstreamListOutcome(update); err != nil {
 		t.Fatal(err)
 	}
 	if recovered := runtime.snapshot(); recovered.HTTPSInterception != HTTPSInterceptionActive {
@@ -506,13 +537,13 @@ func writeTrafficTestFile(t *testing.T, path, contents string) {
 	}
 }
 
-func createTrafficConfig(t *testing.T, upstreams string) (*fileobservation.Observation, fileobservation.Result, string) {
+func createTrafficConfig(t *testing.T, upstreams string) (*fileobservation.Observation, fileobservation.Outcome, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	return createTrafficConfigAtCurrentHome(t, upstreams)
 }
 
-func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*fileobservation.Observation, fileobservation.Result, string) {
+func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*fileobservation.Observation, fileobservation.Outcome, string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -529,11 +560,11 @@ func createTrafficConfigAtCurrentHome(t *testing.T, upstreams string) (*fileobse
 		t.Fatal(err)
 	}
 	select {
-	case initial := <-source.Results():
+	case initial := <-source.Outcomes():
 		return source, initial, upstreamPath
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial Upstream List state")
-		return nil, fileobservation.Result{}, ""
+		return nil, nil, ""
 	}
 }
 
