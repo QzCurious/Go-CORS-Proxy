@@ -3,7 +3,6 @@
 package fileobservation
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -17,17 +16,15 @@ import (
 type Options struct{ Debounce time.Duration }
 
 type Observation struct {
-	path           string
-	debounce       time.Duration
-	watcher        eventWatcher
-	openWatcher    watcherFactory
-	outcomes       chan Outcome
-	stop           chan struct{}
-	done           chan struct{}
-	closeOnce      sync.Once
-	closeErr       error
-	hasFingerprint bool
-	fingerprint    [sha256.Size]byte
+	path        string
+	debounce    time.Duration
+	watcher     eventWatcher
+	openWatcher watcherFactory
+	outcomes    chan Outcome
+	stop        chan struct{}
+	done        chan struct{}
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func Open(path string, options Options) (*Observation, error) {
@@ -135,7 +132,7 @@ func (o *Observation) observe() {
 	defer close(o.done)
 	defer close(o.outcomes)
 	defer func() { o.closeErr = o.watcher.Close() }()
-	if outcome, changed := o.read(); changed && !o.publish(outcome) {
+	if !o.publish(o.read()) {
 		return
 	}
 
@@ -177,10 +174,7 @@ func (o *Observation) observe() {
 			return false
 		}
 		events, errs = o.watcher.Events(), o.watcher.Errors()
-		if outcome, changed := o.read(); changed {
-			return o.publish(outcome)
-		}
-		return true
+		return o.publish(o.read())
 	}
 	for {
 		select {
@@ -188,7 +182,7 @@ func (o *Observation) observe() {
 			return
 		case <-timerC:
 			timerC = nil
-			if outcome, changed := o.read(); changed && !o.publish(outcome) {
+			if !o.publish(o.read()) {
 				return
 			}
 		case event, ok := <-events:
@@ -209,7 +203,6 @@ func (o *Observation) observe() {
 				continue
 			}
 			if errors.Is(err, fsnotify.ErrEventOverflow) {
-				o.hasFingerprint = false
 				arm()
 				continue
 			}
@@ -227,7 +220,6 @@ func (o *Observation) rebuildWatcher(cause error) error {
 		return fmt.Errorf("rebuild after watcher failure %v: %w", cause, err)
 	}
 	o.watcher = next
-	o.hasFingerprint = false
 	return nil
 }
 
@@ -261,27 +253,21 @@ func (o *Observation) relevant(event fsnotify.Event) bool {
 	return event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) != 0
 }
 
-func (o *Observation) read() (Outcome, bool) {
+// Debouncing handles the common source of duplicate reads, making raw-byte
+// deduplication unnecessary.
+func (o *Observation) read() Outcome {
 	info, err := os.Lstat(o.path)
 	if err != nil {
-		o.hasFingerprint = false
-		return ReadError{Path: o.path, Cause: err}, true
+		return ReadError{Path: o.path, Cause: err}
 	}
 	if !info.Mode().IsRegular() {
-		o.hasFingerprint = false
-		return ReadError{Path: o.path, Cause: errors.New("must be an ordinary file")}, true
+		return ReadError{Path: o.path, Cause: errors.New("must be an ordinary file")}
 	}
 	contents, err := os.ReadFile(o.path)
 	if err != nil {
-		o.hasFingerprint = false
-		return ReadError{Path: o.path, Cause: err}, true
+		return ReadError{Path: o.path, Cause: err}
 	}
-	fingerprint := sha256.Sum256(contents)
-	if o.hasFingerprint && o.fingerprint == fingerprint {
-		return nil, false
-	}
-	o.hasFingerprint, o.fingerprint = true, fingerprint
-	return Contents(contents), true
+	return Contents(contents)
 }
 
 func stopped(path string, err error) ObservationStoppedError {

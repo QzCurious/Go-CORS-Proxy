@@ -35,7 +35,7 @@ func TestMissingFileIsAResultAndLaterCreationRecovers(t *testing.T) {
 	}
 }
 
-func TestUnchangedHealthyContentsAreSuppressed(t *testing.T) {
+func TestUnchangedHealthyContentsArePublished(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upstreams.txt")
 	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,13 +49,10 @@ func TestUnchangedHealthyContentsAreSuppressed(t *testing.T) {
 	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case outcome, ok := <-observation.Outcomes():
-		if !ok {
-			t.Fatal("outcomes closed")
-		}
-		t.Fatalf("unexpected outcome %#v", outcome)
-	case <-time.After(150 * time.Millisecond):
+	outcome := waitOutcome(t, observation.Outcomes())
+	contents, ok := outcome.(fileobservation.Contents)
+	if !ok || string(contents) != "value" {
+		t.Fatalf("outcome = %#v", outcome)
 	}
 }
 
