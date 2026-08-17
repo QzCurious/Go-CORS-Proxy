@@ -27,12 +27,12 @@ http://[::1]:3000
 - A `#` without preceding whitespace is part of the selector and makes that
   line invalid because fragments are unsupported.
 
-## Classification
+## Selector recognition
 
-An active line containing `://` is decoded as an Origin Selector. Every other
-active line is decoded as a Host Selector. A line that does not satisfy its
-selected form becomes an Upstream List Warning; it is not retried as the other
-form.
+An active line is accepted only when it satisfies the complete Host Selector or
+Origin Selector form. Text that satisfies neither form becomes an Upstream List
+Warning with the diagnostic
+`invalid selector: expected a hostname or HTTP(S) origin`.
 
 Consequently:
 
@@ -54,16 +54,14 @@ A wildcard never includes the parent hostname. List the parent separately when
 it should also match. Any other use of `*` is invalid and produces an Upstream
 List Warning.
 
-The complete Host Selector text must equal the hostname representation
-produced by URL parsing. Brackets are restored around a parsed IPv6 hostname
-for this comparison. The leading `*.` marker remains part of the parsed
-hostname representation and is interpreted only after this shape validation.
+The complete Host Selector text contains only its optional leading `*.` marker
+and hostname. IPv6 literals use brackets in the source text.
 
 Host Selectors:
 
 - have no scheme, port, user information, path, query, or fragment;
-- accept non-empty ASCII hostnames as parsed by Go's `net/url`, including
-  single-label names, IPv4 literals, and bracketed IPv6 literals;
+- accept non-empty ASCII hostnames, including single-label names, IPv4 literals,
+  and bracketed IPv6 literals;
 - require conservative DNS or IP hostnames, reject underscores and trailing
   dots, and allow wildcard syntax only for DNS-name bases;
 - match HTTP and HTTPS on any port;
@@ -79,10 +77,8 @@ An Origin Selector contains:
 - optionally, the root path `/`.
 
 User information is accepted and discarded because it is not part of origin
-identity. An Origin Selector is parsed as an absolute request URI and is valid
-only when its request target is `/`. Both an omitted path and an explicit root
-path produce that target. A non-root path or query produces a different target,
-and a fragment fails request-URI parsing, so each makes the line invalid.
+identity. Both an omitted path and an explicit root path are accepted. A
+non-root path, query, or fragment makes the line invalid.
 
 Wildcard syntax is invalid in an Origin Selector and produces an Upstream List
 Warning requiring a Host Selector. Origin Selectors use the same conservative
@@ -102,11 +98,8 @@ default port produces both implicit-port and explicit-port Origin Routes so
 either equivalent PAC URL representation matches. A non-default-port selector
 produces one Origin Route. Equivalent derived Origin Routes are deduplicated.
 
-## Shared parsing and normalization
+## Shared validation and normalization
 
-- URL-shaped decoding uses Go's `net/url`: Host Selectors are parsed as
-  schemeless URL authorities, while Origin Selectors are parsed as absolute
-  request URIs.
 - Scheme and hostname letters are normalized to lowercase.
 - Hostnames must be ASCII; Unicode hostnames must be written as punycode.
 - User information is retained by neither selector type.
@@ -116,8 +109,8 @@ produces one Origin Route. Equivalent derived Origin Routes are deduplicated.
 
 Every invalid active line produces an Upstream List Warning in source order. Each
 warning contains the source line number, the active text after whitespace and
-comment removal, and a diagnostic. Invalid UTF-8 makes the entire source
-unusable instead of producing a line warning.
+comment removal, and the generic selector diagnostic. Invalid UTF-8 makes the
+entire source unusable instead of producing a line warning.
 
 Host Selectors and Origin Selectors are deduplicated independently by their
 normalized source-level values, preserving the first occurrence within each

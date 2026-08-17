@@ -685,8 +685,8 @@ A runtime interpretation owned by the PAC Routing module that decides whether no
 _Avoid_: Gateway diagnostic-state dependency, proxy admission policy, raw string matching, duplicated PAC matchers, downstream Upstream List validation
 
 **Line-Level Upstream Validation**:
-An Upstream List behavior where each line is validated independently so valid Upstream List Entries are applied while invalid lines are ignored and reported precisely as Upstream List Warnings. Host Selectors and Origin Selectors use the same conservative DNS/IP hostname validation; only Host Selectors support Single-Label Wildcard matching.
-_Avoid_: Line-Level Domain Validation, silent invalid entry, whole-list rejection, invalid line as active entry
+An Upstream List behavior where each line is validated independently so valid Upstream List Entries are applied while invalid lines are ignored and reported with their line, active text, and a stable generic syntax diagnostic as Upstream List Warnings. Host Selectors and Origin Selectors use the same conservative DNS/IP hostname validation; only Host Selectors support Single-Label Wildcard matching.
+_Avoid_: Line-Level Domain Validation, parser-reason diagnostic taxonomy, silent invalid entry, whole-list rejection, invalid line as active entry
 
 **Upstream List Deduplication**:
 An Upstream List module behavior where equivalent normalized source-level entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived Origin Routes.

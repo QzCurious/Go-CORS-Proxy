@@ -31,6 +31,18 @@ http://[::1]:3000
 	}
 }
 
+func TestParseHostSelectorReturnsErrorForRejectedCandidate(t *testing.T) {
+	if _, err := parseHostSelector("example.test:8080"); err == nil {
+		t.Fatal("parseHostSelector() error = nil")
+	}
+}
+
+func TestParseOriginSelectorReturnsErrorForRejectedCandidate(t *testing.T) {
+	if _, err := parseOriginSelector("ftp://example.test"); err == nil {
+		t.Fatal("parseOriginSelector() error = nil")
+	}
+}
+
 func TestProjectionExposesFields(t *testing.T) {
 	hosts := []HostSelector{{Hostname: "api.example.test"}}
 	origins := []OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}}
@@ -125,7 +137,7 @@ func TestDecodeRejectsExplicitPortsOutsideTCPRange(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(decoded.OriginSelectors) != 0 || len(decoded.Warnings) != 1 ||
-				decoded.Warnings[0].Diagnostic != "Origin Selector port must be between 1 and 65535" {
+				decoded.Warnings[0].Diagnostic != invalidSelectorDiagnostic {
 				t.Fatalf("decode result = %#v", decoded)
 			}
 		})
@@ -218,8 +230,28 @@ https:///missing-host
 	}
 	for idx, warning := range decoded.Warnings {
 		wantLine := idx + 2
-		if warning.Line != wantLine || warning.Text == "" || warning.Diagnostic == "" {
+		if warning.Line != wantLine || warning.Text == "" || warning.Diagnostic != invalidSelectorDiagnostic {
 			t.Fatalf("warning %d = %#v, want source line %d", idx, warning, wantLine)
+		}
+	}
+}
+
+func TestDecodeDoesNotClassifyUnexpectedSchemeSyntax(t *testing.T) {
+	decoded, err := decode([]byte(`
+ftp://example.test
+garbage://example.test
+example.test/://junk
+://example.test
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.HostSelectors)+len(decoded.OriginSelectors) != 0 || len(decoded.Warnings) != 4 {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+	for _, warning := range decoded.Warnings {
+		if warning.Diagnostic != invalidSelectorDiagnostic {
+			t.Fatalf("warning = %#v", warning)
 		}
 	}
 }
@@ -239,7 +271,7 @@ valid.example.test
 		t.Fatalf("decoded = %#v", decoded)
 	}
 	for _, warning := range decoded.Warnings {
-		if !strings.Contains(warning.Diagnostic, "port must not be empty") {
+		if warning.Diagnostic != invalidSelectorDiagnostic {
 			t.Fatalf("warning = %#v", warning)
 		}
 	}
@@ -270,7 +302,7 @@ func TestDecodeRemovesInlineCommentsAndRejectsNonHostnameText(t *testing.T) {
 	if len(decoded.Warnings) != 1 ||
 		decoded.Warnings[0].Line != 1 ||
 		decoded.Warnings[0].Text != "api#bad.example.test" ||
-		!strings.Contains(decoded.Warnings[0].Diagnostic, "only a hostname") {
+		decoded.Warnings[0].Diagnostic != invalidSelectorDiagnostic {
 		t.Fatalf("warnings = %#v", decoded.Warnings)
 	}
 }
@@ -281,7 +313,7 @@ func TestOriginSelectorRejectsWildcardSyntax(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(decoded.OriginSelectors) != 0 || len(decoded.HostSelectors) != 0 ||
-		len(decoded.Warnings) != 1 || decoded.Warnings[0].Diagnostic != "Origin Selector hostname is invalid" {
+		len(decoded.Warnings) != 1 || decoded.Warnings[0].Diagnostic != invalidSelectorDiagnostic {
 		t.Fatalf("decode result = %#v", decoded)
 	}
 }

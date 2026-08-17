@@ -1,7 +1,7 @@
 package upstreamlist
 
 import (
-	"fmt"
+	"errors"
 	"net/netip"
 	"net/url"
 	"strconv"
@@ -18,6 +18,8 @@ type parsedUpstreamList struct {
 }
 
 type InvalidEncodingError struct{}
+
+const invalidSelectorDiagnostic = "invalid selector: expected a hostname or HTTP(S) origin"
 
 func (*InvalidEncodingError) Error() string {
 	return "invalid Upstream List: content must be UTF-8"
@@ -46,31 +48,19 @@ func decode(data []byte) (parsedUpstreamList, error) {
 			continue
 		}
 
-		if strings.Contains(selectorText, "://") {
-			// Handle the line as an Origin Selector.
-			selector, err := decodeOriginSelector(selectorText)
-			if err != nil {
-				warnings = append(warnings, Warning{
-					Line:       lineNo,
-					Text:       selectorText,
-					Diagnostic: err.Error(),
-				})
-				continue
-			}
-			originSelectors = append(originSelectors, selector)
-		} else {
-			// Handle the line as a Host Selector.
-			selector, err := decodeHostSelector(selectorText)
-			if err != nil {
-				warnings = append(warnings, Warning{
-					Line:       lineNo,
-					Text:       selectorText,
-					Diagnostic: err.Error(),
-				})
-				continue
-			}
+		if selector, err := parseHostSelector(selectorText); err == nil {
 			hostSelectors = append(hostSelectors, selector)
+			continue
 		}
+		if selector, err := parseOriginSelector(selectorText); err == nil {
+			originSelectors = append(originSelectors, selector)
+			continue
+		}
+		warnings = append(warnings, Warning{
+			Line:       lineNo,
+			Text:       selectorText,
+			Diagnostic: invalidSelectorDiagnostic,
+		})
 	}
 
 	return parsedUpstreamList{
@@ -94,20 +84,20 @@ func stripComment(line string) string {
 	return strings.TrimSpace(line)
 }
 
-func decodeOriginSelector(selectorText string) (OriginSelector, error) {
+func parseOriginSelector(selectorText string) (OriginSelector, error) {
 	u, err := url.ParseRequestURI(selectorText)
 	if err != nil {
-		return OriginSelector{}, err
+		return OriginSelector{}, errors.New("origin selector syntax is invalid")
 	}
 	if u.RequestURI() != "/" {
-		return OriginSelector{}, fmt.Errorf("Origin Selector must contain only an HTTP(S) origin")
+		return OriginSelector{}, errors.New("origin selector must contain only an HTTP(S) origin")
 	}
 	if strings.HasSuffix(u.Host, ":") {
-		return OriginSelector{}, fmt.Errorf("Origin Selector port must not be empty")
+		return OriginSelector{}, errors.New("origin selector port must not be empty")
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
-		return OriginSelector{}, fmt.Errorf("Origin Selector scheme must be http or https")
+		return OriginSelector{}, errors.New("origin selector scheme must be http or https")
 	}
 	hostname, err := normalizedHostname(u)
 	if err != nil {
@@ -115,14 +105,14 @@ func decodeOriginSelector(selectorText string) (OriginSelector, error) {
 	}
 
 	if !isValidHostname(hostname, false) {
-		return OriginSelector{}, fmt.Errorf("Origin Selector hostname is invalid")
+		return OriginSelector{}, errors.New("origin selector hostname is invalid")
 	}
 
 	port := u.Port()
 	if port != "" {
 		portNumber, err := strconv.ParseUint(port, 10, 16)
 		if err != nil || portNumber == 0 {
-			return OriginSelector{}, fmt.Errorf("Origin Selector port must be between 1 and 65535")
+			return OriginSelector{}, errors.New("origin selector port must be between 1 and 65535")
 		}
 		port = strconv.FormatUint(portNumber, 10)
 	}
@@ -134,10 +124,10 @@ func decodeOriginSelector(selectorText string) (OriginSelector, error) {
 	}, nil
 }
 
-func decodeHostSelector(selectorText string) (HostSelector, error) {
+func parseHostSelector(selectorText string) (HostSelector, error) {
 	u, err := url.Parse("//" + selectorText)
 	if err != nil {
-		return HostSelector{}, err
+		return HostSelector{}, errors.New("host selector syntax is invalid")
 	}
 
 	parsedHostnameText := u.Hostname()
@@ -145,7 +135,7 @@ func decodeHostSelector(selectorText string) (HostSelector, error) {
 		parsedHostnameText = "[" + parsedHostnameText + "]"
 	}
 	if selectorText != parsedHostnameText {
-		return HostSelector{}, fmt.Errorf("Host Selector must contain only a hostname")
+		return HostSelector{}, errors.New("host selector must contain only a hostname")
 	}
 
 	hostname, err := normalizedHostname(u)
@@ -160,10 +150,10 @@ func decodeHostSelector(selectorText string) (HostSelector, error) {
 		hostname = strings.TrimPrefix(hostname, "*.")
 	}
 	if hostname == "" || strings.Contains(hostname, "*") {
-		return HostSelector{}, fmt.Errorf("wildcard must be * followed by a hostname")
+		return HostSelector{}, errors.New("wildcard must be * followed by a hostname")
 	}
 	if !isValidHostname(hostname, wildcard) {
-		return HostSelector{}, fmt.Errorf("hostname is invalid")
+		return HostSelector{}, errors.New("host selector hostname is invalid")
 	}
 	return HostSelector{
 		Hostname: hostname,
@@ -174,11 +164,11 @@ func decodeHostSelector(selectorText string) (HostSelector, error) {
 func normalizedHostname(u *url.URL) (string, error) {
 	hostname := strings.ToLower(u.Hostname())
 	if hostname == "" {
-		return "", fmt.Errorf("hostname is required")
+		return "", errors.New("hostname is required")
 	}
 	for _, char := range hostname {
 		if char > 127 {
-			return "", fmt.Errorf("hostname must use ASCII or punycode")
+			return "", errors.New("hostname must use ASCII or punycode")
 		}
 	}
 	return hostname, nil
