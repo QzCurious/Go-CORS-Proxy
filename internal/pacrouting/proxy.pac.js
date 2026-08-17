@@ -1,28 +1,32 @@
 /**
- * @typedef {Object} HostRoute
- * @property {'http' | 'https'} Scheme
- * @property {string} Hostname
- * @property {boolean} Wildcard
+ * @typedef {Object} PACRoute
+ * @property {'http' | 'https'} scheme
+ * @property {string} hostname
+ * @property {string | null} port
+ * @property {boolean} wildcard
+ */
+
+/**
+ * @typedef {Object} PACRequest
+ * @property {'http' | 'https'} scheme
+ * @property {string} hostname
+ * @property {string} port
  */
 
 /**
  * Configuration injected before this program in the Generated PAC.
  *
  * @type {{
- *   Proxy: string,
- *   HostRoutes: HostRoute[],
- *   OriginRoutes: string[],
+ *   proxy: string,
+ *   routes: PACRoute[],
  * }}
  */
 var VIEW_BAG;
 
-var proxy = 'PROXY ' + VIEW_BAG.Proxy;
+var proxy = 'PROXY ' + VIEW_BAG.proxy;
 
-/** @type {HostRoute[]} */
-var hostRoutes = VIEW_BAG.HostRoutes;
-
-/** @type {string[]} */
-var originRoutes = VIEW_BAG.OriginRoutes;
+/** @type {PACRoute[]} */
+var routes = VIEW_BAG.routes;
 
 /**
  * Determines how a request should be routed.
@@ -33,45 +37,107 @@ var originRoutes = VIEW_BAG.OriginRoutes;
  * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Proxy_servers_and_tunneling/Proxy_Auto-Configuration_PAC_file
  */
 function FindProxyForURL(url, host) {
-  url = url.toLowerCase();
-  host = host.toLowerCase();
+  var request = normalizeRequest(url, host);
+  if (request == null) return 'DIRECT';
 
-  for (var i = 0; i < originRoutes.length; i++) {
-    if (matchesOriginRoute(url, originRoutes[i])) return proxy;
-  }
-
-  var scheme = url.substring(0, url.indexOf(':'));
-  for (var j = 0; j < hostRoutes.length; j++) {
-    if (matchesHostRoute(hostRoutes[j], scheme, host)) return proxy;
+  for (var i = 0; i < routes.length; i++) {
+    if (matchesRoute(routes[i], request)) return proxy;
   }
   return 'DIRECT';
 }
 
 /**
  * @param {string} url
- * @param {string} originRoute
- * @returns {boolean}
+ * @param {string} host
+ * @returns {PACRequest | null}
  */
-function matchesOriginRoute(url, originRoute) {
-  return url == originRoute || url.indexOf(originRoute + '/') == 0;
+function normalizeRequest(url, host) {
+  url = url.toLowerCase();
+  host = host.toLowerCase();
+
+  var schemeEnd = url.indexOf(':');
+  if (schemeEnd <= 0 || url.substring(schemeEnd, schemeEnd + 3) != '://') return null;
+
+  var scheme = url.substring(0, schemeEnd);
+  if (scheme != 'http' && scheme != 'https') return null;
+  if (host == '') return null;
+
+  var authorityStart = schemeEnd + 3;
+  var authorityEnd = url.length;
+  for (var i = authorityStart; i < url.length; i++) {
+    var character = url.charAt(i);
+    if (character == '/' || character == '?' || character == '#') {
+      authorityEnd = i;
+      break;
+    }
+  }
+  var authority = url.substring(authorityStart, authorityEnd);
+  var identityEnd = authority.lastIndexOf('@');
+  if (identityEnd != -1) authority = authority.substring(identityEnd + 1);
+  if (authority == '') return null;
+
+  var portText = null;
+  if (authority.charAt(0) == '[') {
+    var bracketEnd = authority.indexOf(']');
+    if (bracketEnd <= 1) return null;
+    var ipv6Remainder = authority.substring(bracketEnd + 1);
+    if (ipv6Remainder != '') {
+      if (ipv6Remainder.charAt(0) != ':') return null;
+      portText = ipv6Remainder.substring(1);
+    }
+  } else {
+    var portSeparator = authority.lastIndexOf(':');
+    if (portSeparator != -1) portText = authority.substring(portSeparator + 1);
+  }
+
+  var port = defaultPort(scheme);
+  if (portText != null) {
+    port = normalizeExplicitPort(portText);
+    if (port == null) return null;
+  }
+  return {scheme: scheme, hostname: host, port: port};
 }
 
 /**
- * @param {HostRoute} route
  * @param {string} scheme
- * @param {string} host
+ * @returns {string}
+ */
+function defaultPort(scheme) {
+  return scheme == 'https' ? '443' : '80';
+}
+
+/**
+ * @param {string} portText
+ * @returns {string | null}
+ */
+function normalizeExplicitPort(portText) {
+  if (portText == '') return null;
+  for (var i = 0; i < portText.length; i++) {
+    var character = portText.charAt(i);
+    if (character < '0' || character > '9') return null;
+  }
+  var port = parseInt(portText, 10);
+  if (port < 1 || port > 65535) return null;
+  return String(port);
+}
+
+/**
+ * @param {PACRoute} route
+ * @param {PACRequest} request
  * @returns {boolean}
  */
-function matchesHostRoute(route, scheme, host) {
-  if (scheme != route.Scheme) return false;
+function matchesRoute(route, request) {
+  if (request.scheme != route.scheme) return false;
+  if (route.port != null && request.port != route.port) return false;
 
   // Exact matches include only the configured hostname itself.
-  if (!route.Wildcard) return host == route.Hostname;
+  if (!route.wildcard) return request.hostname == route.hostname;
 
-  var suffix = '.' + route.Hostname;
-  if (!dnsDomainIs(host, suffix)) return false;
+  var suffix = '.' + route.hostname;
+  if (request.hostname.length <= suffix.length) return false;
+  if (request.hostname.substring(request.hostname.length - suffix.length) != suffix) return false;
 
   // Single-level matches include exactly one label before the configured hostname.
-  var prefix = host.substring(0, host.length - suffix.length);
+  var prefix = request.hostname.substring(0, request.hostname.length - suffix.length);
   return prefix.indexOf('.') == -1;
 }

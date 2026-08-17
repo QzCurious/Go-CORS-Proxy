@@ -93,10 +93,10 @@ no explicit port.
 
 PAC Routing owns effective-port interpretation. An HTTP Origin Selector always
 produces PAC routes. An HTTPS Origin Selector produces PAC routes only while
-Trusted HTTPS Interception is enabled. A selector with an omitted or explicit
-default port produces both implicit-port and explicit-port Origin Routes so
-either equivalent PAC URL representation matches. A non-default-port selector
-produces one Origin Route. Equivalent derived Origin Routes are deduplicated.
+Trusted HTTPS Interception is enabled. Each active Origin Selector produces one
+exact-port PAC Route using its explicit port or the scheme's default when the
+port is omitted. Selectors with omitted and explicit default ports therefore
+derive equivalent PAC Routes, which PAC Routing deduplicates.
 
 ## Shared validation and normalization
 

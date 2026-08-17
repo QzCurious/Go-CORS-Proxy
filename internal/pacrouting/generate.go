@@ -1,10 +1,11 @@
 package pacrouting
 
 import (
+	"cmp"
 	_ "embed"
 	"encoding/json"
 	"net/http"
-	"strings"
+	"slices"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
@@ -29,12 +30,12 @@ func Project(upstreams upstreamlist.Projection, trustedHTTPS bool, proxyListen, 
 	}
 }
 
-// Equal reports PAC Projection identity. Route ordering is not significant;
-// both runtime endpoints are part of identity.
+// Equal reports PAC Projection identity. Both runtime endpoints are part of
+// identity.
 func Equal(left, right Projection) bool {
 	return left.proxyListen == right.proxyListen &&
 		left.pacListen == right.pacListen &&
-		sameRouteSet(left.routes, right.routes)
+		slices.Equal(left.routes, right.routes)
 }
 
 func (p Projection) Body() string      { return p.body }
@@ -46,68 +47,43 @@ func (p Projection) Handler() http.Handler { return staticHandler{body: p.body} 
 //go:embed proxy.pac.js
 var pacProgram string
 
-type routeSet struct {
-	hostRoutes   []hostRoute
-	originRoutes []string
-}
+type routeSet []pacRoute
 
 func deriveRouteSet(hostSelectors []upstreamlist.HostSelector, originSelectors []upstreamlist.OriginSelector, trustedHTTPS bool) routeSet {
-	return routeSet{
-		hostRoutes:   deriveHostRoutes(hostSelectors, trustedHTTPS),
-		originRoutes: deriveOriginRoutes(originSelectors, trustedHTTPS),
-	}
-}
-
-func sameRouteSet(left, right routeSet) bool {
-	return sameHostRouteSet(left.hostRoutes, right.hostRoutes) &&
-		sameStringSet(left.originRoutes, right.originRoutes)
-}
-
-func sameHostRouteSet(left, right []hostRoute) bool {
-	leftSet := make(map[hostRoute]struct{}, len(left))
-	for _, route := range left {
-		leftSet[route] = struct{}{}
-	}
-	rightSet := make(map[hostRoute]struct{}, len(right))
-	for _, route := range right {
-		rightSet[route] = struct{}{}
-	}
-	return sameMapKeys(leftSet, rightSet)
-}
-
-func sameStringSet(left, right []string) bool {
-	leftSet := make(map[string]struct{}, len(left))
-	for _, route := range left {
-		leftSet[route] = struct{}{}
-	}
-	rightSet := make(map[string]struct{}, len(right))
-	for _, route := range right {
-		rightSet[route] = struct{}{}
-	}
-	return sameMapKeys(leftSet, rightSet)
-}
-
-func sameMapKeys[K comparable](left, right map[K]struct{}) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for key := range left {
-		if _, ok := right[key]; !ok {
-			return false
+	routes := make(routeSet, 0, len(hostSelectors)*2+len(originSelectors))
+	for _, selector := range hostSelectors {
+		routes = append(routes, pacRouteFromHostSelector(selector, "http"))
+		if trustedHTTPS {
+			routes = append(routes, pacRouteFromHostSelector(selector, "https"))
 		}
 	}
-	return true
+	for _, selector := range originSelectors {
+		if selector.Scheme == "https" && !trustedHTTPS {
+			continue
+		}
+		routes = append(routes, pacRouteFromOriginSelector(selector))
+	}
+
+	seen := make(map[pacRoute]struct{}, len(routes))
+	unique := routes[:0]
+	for _, route := range routes {
+		if _, ok := seen[route]; ok {
+			continue
+		}
+		seen[route] = struct{}{}
+		unique = append(unique, route)
+	}
+	slices.SortFunc(unique, comparePACRoutes)
+	return unique
 }
 
 func render(proxyListen string, routes routeSet) string {
 	config := struct {
-		Proxy        string      `json:"Proxy"`
-		HostRoutes   []hostRoute `json:"HostRoutes"`
-		OriginRoutes []string    `json:"OriginRoutes"`
+		Proxy  string   `json:"proxy"`
+		Routes routeSet `json:"routes"`
 	}{
-		Proxy:        proxyListen,
-		HostRoutes:   routes.hostRoutes,
-		OriginRoutes: routes.originRoutes,
+		Proxy:  proxyListen,
+		Routes: routes,
 	}
 
 	data, err := json.Marshal(config)
@@ -117,73 +93,75 @@ func render(proxyListen string, routes routeSet) string {
 	return "var VIEW_BAG = " + string(data) + ";\n\n" + pacProgram
 }
 
-type hostRoute struct {
-	Scheme   string `json:"Scheme"`
-	Hostname string `json:"Hostname"`
-	Wildcard bool   `json:"Wildcard"`
+type pacRoute struct {
+	Scheme   string
+	Hostname string
+	// Port is empty for an any-port route and otherwise contains one normalized
+	// effective port.
+	Port     string
+	Wildcard bool
 }
 
-// deriveHostRoutes expands every Host Selector into its active HTTP(S)
-// routes. HTTP is always active; HTTPS requires trusted interception.
-func deriveHostRoutes(selectors []upstreamlist.HostSelector, caTrusted bool) []hostRoute {
-	routes := make([]hostRoute, 0, len(selectors)*2)
-	for _, selector := range selectors {
-		routes = append(routes, hostRouteFromSelector(selector, "http"))
-		if caTrusted {
-			routes = append(routes, hostRouteFromSelector(selector, "https"))
-		}
+func (r pacRoute) MarshalJSON() ([]byte, error) {
+	var port *string
+	if r.Port != "" {
+		port = &r.Port
 	}
-	return routes
+	return json.Marshal(struct {
+		Scheme   string  `json:"scheme"`
+		Hostname string  `json:"hostname"`
+		Port     *string `json:"port"`
+		Wildcard bool    `json:"wildcard"`
+	}{
+		Scheme:   r.Scheme,
+		Hostname: r.Hostname,
+		Port:     port,
+		Wildcard: r.Wildcard,
+	})
 }
 
-func hostRouteFromSelector(selector upstreamlist.HostSelector, scheme string) hostRoute {
-	return hostRoute{
+func pacRouteFromHostSelector(selector upstreamlist.HostSelector, scheme string) pacRoute {
+	return pacRoute{
 		Scheme:   scheme,
 		Hostname: selector.Hostname,
 		Wildcard: selector.Wildcard,
 	}
 }
 
-// deriveOriginRoutes expands each active Origin Selector into exact PAC URL
-// representations. An omitted or default port gets both implicit and explicit
-// forms.
-func deriveOriginRoutes(selectors []upstreamlist.OriginSelector, caTrusted bool) []string {
-	routes := make([]string, 0, len(selectors)*2)
-	seen := make(map[string]struct{}, len(selectors)*2)
-	appendRoute := func(route string) {
-		if _, ok := seen[route]; ok {
-			return
-		}
-		seen[route] = struct{}{}
-		routes = append(routes, route)
+func pacRouteFromOriginSelector(selector upstreamlist.OriginSelector) pacRoute {
+	port := selector.Port
+	if port == "" {
+		port = defaultPort(selector.Scheme)
 	}
-	for _, selector := range selectors {
-		if selector.Scheme == "https" && !caTrusted {
-			continue
-		}
-
-		origin := selector.Scheme + "://" + originHostname(selector.Hostname)
-		defaultPort := originDefaultPort(selector.Scheme)
-		if selector.Port == "" || selector.Port == defaultPort {
-			appendRoute(origin)
-			appendRoute(origin + ":" + defaultPort)
-			continue
-		}
-		appendRoute(origin + ":" + selector.Port)
+	return pacRoute{
+		Scheme:   selector.Scheme,
+		Hostname: selector.Hostname,
+		Port:     port,
 	}
-	return routes
 }
 
-func originDefaultPort(scheme string) string {
+func defaultPort(scheme string) string {
 	if scheme == "https" {
 		return "443"
 	}
 	return "80"
 }
 
-func originHostname(hostname string) string {
-	if strings.Contains(hostname, ":") {
-		return "[" + hostname + "]"
+func comparePACRoutes(left, right pacRoute) int {
+	if result := cmp.Compare(left.Scheme, right.Scheme); result != 0 {
+		return result
 	}
-	return hostname
+	if result := cmp.Compare(left.Hostname, right.Hostname); result != 0 {
+		return result
+	}
+	if result := cmp.Compare(left.Port, right.Port); result != 0 {
+		return result
+	}
+	if left.Wildcard == right.Wildcard {
+		return 0
+	}
+	if left.Wildcard {
+		return 1
+	}
+	return -1
 }

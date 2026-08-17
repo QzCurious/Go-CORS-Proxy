@@ -9,22 +9,22 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-func TestProjectInjectsFlatPascalCaseViewBag(t *testing.T) {
+func TestProjectInjectsCanonicalRouteViewBag(t *testing.T) {
 	projection := Project(upstreamlist.Projection{
 		HostSelectors:   []upstreamlist.HostSelector{{Hostname: "qa.example.test", Wildcard: true}},
 		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "api.example.test"}},
 	}, true, "127.0.0.1:8080", "127.0.0.1:8081")
 
 	want := `var VIEW_BAG = {` +
-		`"Proxy":"127.0.0.1:8080",` +
-		`"HostRoutes":[` +
-		`{"Scheme":"http","Hostname":"qa.example.test","Wildcard":true},` +
-		`{"Scheme":"https","Hostname":"qa.example.test","Wildcard":true}],` +
-		`"OriginRoutes":["https://api.example.test","https://api.example.test:443"]};`
+		`"proxy":"127.0.0.1:8080",` +
+		`"routes":[` +
+		`{"scheme":"http","hostname":"qa.example.test","port":null,"wildcard":true},` +
+		`{"scheme":"https","hostname":"api.example.test","port":"443","wildcard":false},` +
+		`{"scheme":"https","hostname":"qa.example.test","port":null,"wildcard":true}]};`
 	if !strings.Contains(projection.Body(), want) {
-		t.Fatalf("Generated PAC missing flat view bag, got:\n%s", projection.Body())
+		t.Fatalf("Generated PAC missing canonical route view bag, got:\n%s", projection.Body())
 	}
-	if !strings.Contains(projection.Body(), `'PROXY ' + VIEW_BAG.Proxy`) {
+	if !strings.Contains(projection.Body(), `'PROXY ' + VIEW_BAG.proxy`) {
 		t.Fatalf("Generated PAC missing proxy directive:\n%s", projection.Body())
 	}
 	if projection.PACListen() != "127.0.0.1:8081" {
@@ -49,6 +49,9 @@ func TestProjectionIdentityUsesRoutesAndRuntimeEndpoints(t *testing.T) {
 	if !Equal(left, right) {
 		t.Fatal("route order or Upstream List warnings changed PAC identity")
 	}
+	if left.Body() != right.Body() {
+		t.Fatal("equivalent PAC Projections produced different canonical bodies")
+	}
 	if Equal(left, Project(upstreamlist.Projection{}, false, "127.0.0.1:8080", "127.0.0.1:8081")) {
 		t.Fatal("route removal preserved PAC identity")
 	}
@@ -72,11 +75,11 @@ func TestProjectionAddsHTTPSRoutesOnlyWhenTrusted(t *testing.T) {
 		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}},
 	}
 	withoutTrust := Project(upstreams, false, "127.0.0.1:8080", "127.0.0.1:8081")
-	if strings.Contains(withoutTrust.Body(), `"Scheme":"https"`) || strings.Contains(withoutTrust.Body(), "secure.example.test") {
+	if strings.Contains(withoutTrust.Body(), `"scheme":"https"`) || strings.Contains(withoutTrust.Body(), "secure.example.test") {
 		t.Fatalf("untrusted PAC includes HTTPS routes:\n%s", withoutTrust.Body())
 	}
 	withTrust := Project(upstreams, true, "127.0.0.1:8080", "127.0.0.1:8081")
-	if !strings.Contains(withTrust.Body(), `"Scheme":"https"`) || !strings.Contains(withTrust.Body(), "secure.example.test") {
+	if !strings.Contains(withTrust.Body(), `"scheme":"https"`) || !strings.Contains(withTrust.Body(), "secure.example.test") {
 		t.Fatalf("trusted PAC omitted HTTPS routes:\n%s", withTrust.Body())
 	}
 }
@@ -97,14 +100,16 @@ func TestLiveHandlerServesAdoptedProjection(t *testing.T) {
 	}
 }
 
-func TestGeneratedPACDoesNotParseOrInferPorts(t *testing.T) {
+func TestGeneratedPACUsesCanonicalRouteMatcher(t *testing.T) {
 	js := Project(upstreamlist.Projection{}, false, "127.0.0.1:8080", "127.0.0.1:8081").Body()
-	for _, unwanted := range []string{"explicitPortForURL", "defaultPortForScheme", "parsedPort"} {
+	for _, unwanted := range []string{"HostRoutes", "OriginRoutes", "HTTPSRoutingEnabled", "dnsDomainIs"} {
 		if strings.Contains(js, unwanted) {
-			t.Fatalf("Generated PAC contains obsolete port logic %q", unwanted)
+			t.Fatalf("Generated PAC contains obsolete routing logic %q", unwanted)
 		}
 	}
-	if !strings.Contains(js, `url == originRoute || url.indexOf(originRoute + '/') == 0`) {
-		t.Fatalf("Generated PAC missing boundary-safe Origin Route match:\n%s", js)
+	for _, wanted := range []string{"VIEW_BAG.routes", "normalizeRequest", "normalizeExplicitPort", "matchesRoute", "parseInt(portText, 10)"} {
+		if !strings.Contains(js, wanted) {
+			t.Fatalf("Generated PAC missing canonical route logic %q:\n%s", wanted, js)
+		}
 	}
 }

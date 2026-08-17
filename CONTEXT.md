@@ -113,7 +113,7 @@ The complete PAC Routing interpretation derived from the current Upstream List P
 _Avoid_: Managed PAC desired Upstream List, Gateway-derived routes, duplicated PAC derivation, user-authored PAC
 
 **PAC Route Set**:
-The Host Routes and Origin Routes within a PAC Projection, derived inside the PAC Routing module from normalized Upstream List Entries and the current Trusted HTTPS Interception state. Its identity is independent from Upstream List Projection Identity, so upstream projection changes that preserve effective routes do not imply a PAC Projection change.
+The PAC Routes within a PAC Projection, derived inside the PAC Routing module from normalized Upstream List Entries and the current Trusted HTTPS Interception state. Its identity is independent from Upstream List Projection Identity, so upstream projection changes that preserve effective routes do not imply a PAC Projection change.
 _Avoid_: hand-built JavaScript rules, duplicated Upstream List parsing, PAC-owned Upstream List syntax
 
 **PAC Endpoint**:
@@ -668,17 +668,13 @@ _Avoid_: source-text-bearing entry, rule, matcher expression
 An Upstream List Entry variant containing a lowercase ASCII hostname without a scheme or port, selecting that exact hostname across HTTP and HTTPS on any port unless its source uses `*.` to select a Single-Label Wildcard. Host Selector wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
 _Avoid_: Domain Selector, Hostname Selector, Hostname Shorthand, scheme-less origin, port-qualified domain
 
-**Host Route**:
-A scheme-qualified hostname match derived from a Host Selector for the PAC Route Set. A Host Selector derives an HTTP Host Route and, when Trusted HTTPS Interception is enabled, an HTTPS Host Route; each route matches its hostname pattern on any port.
-_Avoid_: Domain Route, Origin Route, port-qualified domain, PAC-owned selector
+**PAC Route**:
+A scheme-qualified effective match containing an exact or Single-Label Wildcard hostname and either any port or one normalized numeric port. Host Selectors derive any-port routes for active HTTP(S) schemes, while Origin Selectors derive exact-port routes after default-port interpretation.
+_Avoid_: Host Route, Origin Route, Domain Route, PAC-owned selector
 
 **Origin Selector**:
 An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname without wildcard syntax, and optional normalized explicit port from 1 through 65535, matched exactly. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
 _Avoid_: Full Origin, URL selector, scheme-qualified domain, wildcard-bearing origin
-
-**Origin Route**:
-An exact origin representation derived from an Origin Selector for the PAC Route Set. PAC Routing owns default-port interpretation: an HTTP selector always derives Origin Routes, while an HTTPS selector derives them only when Trusted HTTPS Interception is enabled; a selector with an omitted or explicit default port derives both implicit-port and explicit-port Origin Routes, while any other port derives one Origin Route. Equivalent derived routes are deduplicated.
-_Avoid_: duplicate Origin Selector, URL rule, inferred PAC port
 
 **Upstream List Routing Policy**:
 A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries from the current effective Upstream List Projection rather than a source representation or diagnostic state.
@@ -689,7 +685,7 @@ An Upstream List behavior where each line is validated independently so valid Up
 _Avoid_: Line-Level Domain Validation, parser-reason diagnostic taxonomy, silent invalid entry, whole-list rejection, invalid line as active entry
 
 **Upstream List Deduplication**:
-An Upstream List module behavior where equivalent normalized source-level entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived Origin Routes.
+An Upstream List module behavior where equivalent normalized source-level entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived PAC Routes.
 _Avoid_: duplicate source selectors, line-count domains, PAC-owned source deduplication
 
 **Exact Host Match**:

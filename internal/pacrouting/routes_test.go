@@ -7,68 +7,49 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-func TestDeriveHostRoutesExpandsSchemesWithoutPorts(t *testing.T) {
-	selectors := []upstreamlist.HostSelector{
-		{Hostname: "api.example.test"},
-		{Hostname: "qa.example.test", Wildcard: true},
-	}
-
-	got := deriveHostRoutes(selectors, true)
-	want := []hostRoute{
+func TestDeriveRouteSetNormalizesDeduplicatesAndSorts(t *testing.T) {
+	got := deriveRouteSet(
+		[]upstreamlist.HostSelector{
+			{Hostname: "qa.example.test", Wildcard: true},
+			{Hostname: "api.example.test"},
+			{Hostname: "api.example.test"},
+		},
+		[]upstreamlist.OriginSelector{
+			{Scheme: "https", Hostname: "api.example.test"},
+			{Scheme: "https", Hostname: "api.example.test", Port: "443"},
+			{Scheme: "http", Hostname: "api.example.test", Port: "8080"},
+			{Scheme: "http", Hostname: "::1", Port: "80"},
+		},
+		true,
+	)
+	want := routeSet{
+		{Scheme: "http", Hostname: "::1", Port: "80"},
 		{Scheme: "http", Hostname: "api.example.test"},
-		{Scheme: "https", Hostname: "api.example.test"},
+		{Scheme: "http", Hostname: "api.example.test", Port: "8080"},
 		{Scheme: "http", Hostname: "qa.example.test", Wildcard: true},
+		{Scheme: "https", Hostname: "api.example.test"},
+		{Scheme: "https", Hostname: "api.example.test", Port: "443"},
 		{Scheme: "https", Hostname: "qa.example.test", Wildcard: true},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Host Routes = %#v, want %#v", got, want)
+		t.Fatalf("PAC Routes = %#v, want %#v", got, want)
 	}
 }
 
-func TestDeriveHostRoutesExcludesUntrustedHTTPS(t *testing.T) {
-	selectors := []upstreamlist.HostSelector{
-		{Hostname: "api.example.test"},
-	}
-	got := deriveHostRoutes(selectors, false)
-	want := []hostRoute{
+func TestDeriveRouteSetExcludesUntrustedHTTPS(t *testing.T) {
+	got := deriveRouteSet(
+		[]upstreamlist.HostSelector{{Hostname: "api.example.test"}},
+		[]upstreamlist.OriginSelector{
+			{Scheme: "https", Hostname: "secure.example.test"},
+			{Scheme: "http", Hostname: "plain.example.test"},
+		},
+		false,
+	)
+	want := routeSet{
 		{Scheme: "http", Hostname: "api.example.test"},
+		{Scheme: "http", Hostname: "plain.example.test", Port: "80"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Host Routes = %#v, want %#v", got, want)
-	}
-}
-
-func TestDeriveOriginRoutesExpandsDefaultPorts(t *testing.T) {
-	selectors := []upstreamlist.OriginSelector{
-		{Scheme: "https", Hostname: "api.example.test"},
-		{Scheme: "https", Hostname: "api.example.test", Port: "443"},
-		{Scheme: "http", Hostname: "api.example.test", Port: "8080"},
-		{Scheme: "http", Hostname: "::1", Port: "80"},
-	}
-	got := deriveOriginRoutes(selectors, true)
-	want := []string{
-		"https://api.example.test",
-		"https://api.example.test:443",
-		"http://api.example.test:8080",
-		"http://[::1]",
-		"http://[::1]:80",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Origin Routes = %#v, want %#v", got, want)
-	}
-}
-
-func TestDeriveOriginRoutesExcludesUntrustedHTTPS(t *testing.T) {
-	selectors := []upstreamlist.OriginSelector{
-		{Scheme: "https", Hostname: "secure.example.test"},
-		{Scheme: "http", Hostname: "plain.example.test"},
-	}
-	got := deriveOriginRoutes(selectors, false)
-	want := []string{
-		"http://plain.example.test",
-		"http://plain.example.test:80",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Origin Routes = %#v, want %#v", got, want)
+		t.Fatalf("PAC Routes = %#v, want %#v", got, want)
 	}
 }
