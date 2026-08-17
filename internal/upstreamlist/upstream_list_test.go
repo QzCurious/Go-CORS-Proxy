@@ -9,8 +9,12 @@ import (
 )
 
 func TestDefaultContentsFormAValidProjection(t *testing.T) {
-	if _, err := upstreamlist.Project([]byte(upstreamlist.DefaultContents)); err != nil {
+	projection, err := upstreamlist.Project([]byte(upstreamlist.DefaultContents))
+	if err != nil {
 		t.Fatalf("Project(DefaultContents): %v", err)
+	}
+	if !upstreamlist.Equal(projection, upstreamlist.Projection{}) {
+		t.Fatalf("DefaultContents projection = %#v, want empty projection", projection)
 	}
 }
 

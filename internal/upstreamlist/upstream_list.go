@@ -2,7 +2,22 @@ package upstreamlist
 
 // DefaultContents is the exact initial contents disclosed and written by
 // Gateway-owned Upstream List Creation.
-const DefaultContents = "# One upstream host or origin per line.\n# api.dev.example.com\n"
+const DefaultContents = `# One upstream host or origin per line.
+#
+# Host selectors match HTTP and HTTPS on any port:
+# api.dev.example.com          # Exact hostname
+# *.test.example.com           # One-label wildcard
+# localhost                    # Local hostname
+# 127.0.0.1                    # IPv4 address
+# [::1]                        # IPv6 address
+#
+# Origin selectors match one HTTP(S) origin:
+# https://api.example.com      # HTTPS with default port
+# https://api.example.com:8443 # HTTPS with custom port
+# http://localhost:3000        # Local HTTP origin
+# http://127.0.0.1:3000        # IPv4 HTTP origin
+# http://[::1]:3000            # IPv6 HTTP origin
+`
 
 // HostSelector selects an HTTP or HTTPS hostname on any port. Hostname never
 // includes wildcard syntax. Wildcard selects exactly one leading label when
