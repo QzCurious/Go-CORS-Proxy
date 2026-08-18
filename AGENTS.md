@@ -16,6 +16,8 @@ This is a single-context repo using root-level `CONTEXT.md` and `docs/adr/`. See
 
 The project is still in development, we prefer a clean break over adding fallbacks or preserving backward compatibility.
 
+Preallocate when obvious; reuse when ownership makes it natural; optimize aggressively only when performance actually matters.
+
 ## Ownership conventions
 
 Do not defensively copy slices, maps, or pointers across internal boundaries

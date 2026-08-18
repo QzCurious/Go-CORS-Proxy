@@ -51,30 +51,52 @@ type routeSet []pacRoute
 
 func deriveRouteSet(hostSelectors []upstreamlist.HostSelector, originSelectors []upstreamlist.OriginSelector, trustedHTTPS bool) routeSet {
 	routes := make(routeSet, 0, len(hostSelectors)*2+len(originSelectors))
+
 	for _, selector := range hostSelectors {
-		routes = append(routes, pacRouteFromHostSelector(selector, "http"))
+		routes = append(routes, pacRoute{
+			Scheme:   "http",
+			Hostname: selector.Hostname,
+			Wildcard: selector.Wildcard,
+		})
 		if trustedHTTPS {
-			routes = append(routes, pacRouteFromHostSelector(selector, "https"))
+			routes = append(routes, pacRoute{
+				Scheme:   "https",
+				Hostname: selector.Hostname,
+				Wildcard: selector.Wildcard,
+			})
 		}
 	}
+
 	for _, selector := range originSelectors {
 		if selector.Scheme == "https" && !trustedHTTPS {
 			continue
 		}
-		routes = append(routes, pacRouteFromOriginSelector(selector))
+		port := selector.Port
+		if port == "" {
+			if selector.Scheme == "https" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		routes = append(routes, pacRoute{
+			Scheme:   selector.Scheme,
+			Hostname: selector.Hostname,
+			Port:     port,
+		})
 	}
 
 	seen := make(map[pacRoute]struct{}, len(routes))
-	unique := routes[:0]
 	for _, route := range routes {
-		if _, ok := seen[route]; ok {
-			continue
-		}
 		seen[route] = struct{}{}
-		unique = append(unique, route)
 	}
-	slices.SortFunc(unique, comparePACRoutes)
-	return unique
+
+	routes = routes[:0]
+	for route := range seen {
+		routes = append(routes, route)
+	}
+	slices.SortFunc(routes, comparePACRoutes)
+	return routes
 }
 
 func render(proxyListen string, routes routeSet) string {
@@ -118,33 +140,6 @@ func (r pacRoute) MarshalJSON() ([]byte, error) {
 		Port:     port,
 		Wildcard: r.Wildcard,
 	})
-}
-
-func pacRouteFromHostSelector(selector upstreamlist.HostSelector, scheme string) pacRoute {
-	return pacRoute{
-		Scheme:   scheme,
-		Hostname: selector.Hostname,
-		Wildcard: selector.Wildcard,
-	}
-}
-
-func pacRouteFromOriginSelector(selector upstreamlist.OriginSelector) pacRoute {
-	port := selector.Port
-	if port == "" {
-		port = defaultPort(selector.Scheme)
-	}
-	return pacRoute{
-		Scheme:   selector.Scheme,
-		Hostname: selector.Hostname,
-		Port:     port,
-	}
-}
-
-func defaultPort(scheme string) string {
-	if scheme == "https" {
-		return "443"
-	}
-	return "80"
 }
 
 func comparePACRoutes(left, right pacRoute) int {
