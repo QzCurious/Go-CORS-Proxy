@@ -30,26 +30,14 @@ func New(opts Options) *Handler {
 	if opts.Transport == nil {
 		panic("corsproxy: Transport is required")
 	}
-	return &Handler{proxy: newProxy(opts.Transport, opts.Certificate)}
-}
-
-func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	h.proxy.ServeHTTP(w, req)
-}
-
-func newProxy(transport *http.Transport, certificate *tls.Certificate) *goproxy.ProxyHttpServer {
 	proxy := goproxy.NewProxyHttpServer()
 	configureProxyLogging(proxy)
-	proxy.Tr = transport
-	if certificate == nil {
-		proxy.OnRequest().HandleConnectFunc(func(host string, _ *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
-			return goproxy.OkConnect, host
-		})
-	} else {
+	proxy.Tr = opts.Transport
+	if opts.Certificate != nil {
 		proxy.CertStore = newCertificateCache(certificateCacheCapacity)
 		action := &goproxy.ConnectAction{
 			Action:    goproxy.ConnectMitm,
-			TLSConfig: goproxy.TLSConfigFromCA(certificate),
+			TLSConfig: goproxy.TLSConfigFromCA(opts.Certificate),
 		}
 		proxy.OnRequest().HandleConnectFunc(func(host string, _ *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 			return action, host
@@ -75,7 +63,11 @@ func newProxy(transport *http.Transport, certificate *tls.Certificate) *goproxy.
 		}
 		return resp
 	})
-	return proxy
+	return &Handler{proxy: proxy}
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	h.proxy.ServeHTTP(w, req)
 }
 
 func configureProxyLogging(proxy *goproxy.ProxyHttpServer) {
