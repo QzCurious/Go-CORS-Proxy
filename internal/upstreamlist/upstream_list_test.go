@@ -13,7 +13,7 @@ func TestDefaultContentsFormAValidProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Project(DefaultContents): %v", err)
 	}
-	if !upstreamlist.Equal(projection, upstreamlist.Projection{}) {
+	if !reflect.DeepEqual(projection, upstreamlist.Projection{}) {
 		t.Fatalf("DefaultContents projection = %#v, want empty projection", projection)
 	}
 }
@@ -50,7 +50,7 @@ func TestProjectReturnsConcreteWholeDocumentError(t *testing.T) {
 	if !errors.As(err, &encodingErr) {
 		t.Fatalf("error = %T %v", err, err)
 	}
-	if !upstreamlist.Equal(projection, upstreamlist.Projection{}) {
+	if !reflect.DeepEqual(projection, upstreamlist.Projection{}) {
 		t.Fatalf("projection on error = %#v", projection)
 	}
 }
@@ -60,29 +60,7 @@ func TestProjectionZeroValueIsCanonicalEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !upstreamlist.Equal(projection, upstreamlist.Projection{}) {
+	if !reflect.DeepEqual(projection, upstreamlist.Projection{}) {
 		t.Fatalf("empty projection = %#v", projection)
-	}
-}
-
-func TestEqualUsesProjectionSemantics(t *testing.T) {
-	left, err := upstreamlist.Project([]byte("api.example.test\nhttps://secure.example.test\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	right, err := upstreamlist.Project([]byte("https://SECURE.EXAMPLE.TEST\nAPI.EXAMPLE.TEST\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !upstreamlist.Equal(left, right) {
-		t.Fatalf("projections differ: %#v %#v", left, right)
-	}
-
-	withWarning, err := upstreamlist.Project([]byte("api.example.test\nhttps://bad.example.test/path\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if upstreamlist.Equal(left, withWarning) {
-		t.Fatal("warning change preserved projection identity")
 	}
 }

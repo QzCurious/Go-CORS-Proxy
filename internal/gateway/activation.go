@@ -157,7 +157,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	// the latest-value desired-state channel retains the newest snapshot for
 	// reconciliation once activation has installed its fixed service set.
 	pacInstallBaseline := engine.currentPACProjection()
-	pacInstall, err := s.lifecycle.managedPAC.InstallProjection(ctx, acceptedServices, pacInstallBaseline)
+	pacInstall, err := s.lifecycle.managedPAC.InstallProjection(ctx, acceptedServices, engine.PACListen(), pacInstallBaseline)
 	if err != nil {
 		withdraw()
 		warnings := managedPACWarningDetails(pacInstall.Warnings())

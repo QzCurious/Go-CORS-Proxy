@@ -86,7 +86,7 @@ func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
 	}
 }
 
-func TestSuccessfulEqualProjectionClearsIssuesWithoutPACPublication(t *testing.T) {
+func TestSuccessfulProjectionClearsIssuesAndPublishesPAC(t *testing.T) {
 	readErr := fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("temporarily unavailable")}
 	runtime, err := newRuntime("/tmp/upstreams.txt", nil, readErr)
 	if err != nil {
@@ -106,8 +106,11 @@ func TestSuccessfulEqualProjectionClearsIssuesWithoutPACPublication(t *testing.T
 	}
 	select {
 	case projection := <-runtime.PACProjections():
-		t.Fatalf("equal empty projection published PAC projection: %#v", projection)
-	case <-time.After(100 * time.Millisecond):
+		if strings.Contains(projection, `"hostname"`) {
+			t.Fatalf("empty projection contains a route: %s", projection)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("successful projection did not publish PAC projection")
 	}
 }
 
@@ -137,7 +140,7 @@ func TestEquivalentFileSyncIssueDoesNotInvalidateStatusAgain(t *testing.T) {
 	}
 }
 
-func TestPACPublicationInputIgnoresRepresentationAndWarningOnlyChanges(t *testing.T) {
+func TestPACPublicationFollowsEverySuccessfulProjection(t *testing.T) {
 	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
 	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
@@ -157,22 +160,25 @@ func TestPACPublicationInputIgnoresRepresentationAndWarningOnlyChanges(t *testin
 	})
 	select {
 	case state := <-desired:
-		t.Fatalf("warning-only source state published desired PAC input: %#v", state)
-	case <-time.After(250 * time.Millisecond):
+		if !strings.Contains(state, "api.example.test") || strings.Contains(state, "bad.example.test") {
+			t.Fatalf("warning-bearing projection produced unexpected PAC: %s", state)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for warning-bearing PAC projection")
 	}
 
 	writeTrafficTestFile(t, upstreamPath, "changed.example.test\n")
 	select {
 	case state := <-desired:
-		if !strings.Contains(state.Body(), "changed.example.test") {
-			t.Fatalf("PAC projection does not contain changed host: %s", state.Body())
+		if !strings.Contains(state, "changed.example.test") {
+			t.Fatalf("PAC projection does not contain changed host: %s", state)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for desired Upstream List input")
 	}
 }
 
-func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
+func TestPACPublicationExcludesInactiveHTTPSRoutes(t *testing.T) {
 	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
 	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
@@ -197,8 +203,11 @@ func TestPACPublicationInputIgnoresInactiveHTTPSRouteChanges(t *testing.T) {
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSIntent })
 	select {
 	case state := <-desired:
-		t.Fatalf("inactive HTTPS selector published PAC input: %#v", state)
-	case <-time.After(250 * time.Millisecond):
+		if strings.Contains(state, "secure.example.test") {
+			t.Fatalf("inactive HTTPS selector entered PAC input: %s", state)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PAC projection")
 	}
 }
 
@@ -247,8 +256,8 @@ func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
 	}
 	select {
 	case desired := <-runtime.PACProjections():
-		if !strings.Contains(desired.Body(), "secure.example.test") {
-			t.Fatalf("PAC projection did not enable HTTPS route: %s", desired.Body())
+		if !strings.Contains(desired, "secure.example.test") {
+			t.Fatalf("PAC projection did not enable HTTPS route: %s", desired)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for desired PAC state")
@@ -281,8 +290,8 @@ func TestInitialCertificateProjectionFailureStartsHTTPSDegraded(t *testing.T) {
 		t.Fatalf("initial degraded state = %#v", state)
 	}
 	if !hasHTTPSWarning(state.HTTPSWarnings, HTTPSWarningInterceptionFailed) ||
-		strings.Contains(runtime.currentPACProjection().Body(), "secure.example.test") {
-		t.Fatalf("initial degraded projection = %#v PAC=%s", state, runtime.currentPACProjection().Body())
+		strings.Contains(runtime.currentPACProjection(), "secure.example.test") {
+		t.Fatalf("initial degraded projection = %#v PAC=%s", state, runtime.currentPACProjection())
 	}
 }
 
@@ -327,7 +336,7 @@ func TestSuccessfulSameListObservationRetriesFailedCertificateProjection(t *test
 	if recovered := runtime.snapshot(); recovered.HTTPSInterception != HTTPSInterceptionActive {
 		t.Fatalf("same-list retry state = %#v", recovered)
 	}
-	if body := runtime.currentPACProjection().Body(); !strings.Contains(body, "second.example.test") || strings.Contains(body, "first.example.test") {
+	if body := runtime.currentPACProjection(); !strings.Contains(body, "second.example.test") || strings.Contains(body, "first.example.test") {
 		t.Fatalf("recovered PAC = %s", body)
 	}
 }

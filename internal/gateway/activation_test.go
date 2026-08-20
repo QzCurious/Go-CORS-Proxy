@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
@@ -286,8 +285,8 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 	}
 	select {
 	case desired := <-engine.PACProjections():
-		if strings.Contains(desired.Body(), "api.example.test") {
-			t.Fatalf("deadline retained HTTPS PAC route: %s", desired.Body())
+		if strings.Contains(desired, "api.example.test") {
+			t.Fatalf("deadline retained HTTPS PAC route: %s", desired)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("deadline did not publish PAC withdrawal")
@@ -359,8 +358,8 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 	}
 	select {
 	case desired := <-engine.PACProjections():
-		if strings.Contains(desired.Body(), "api.example.test") {
-			t.Fatalf("assessment failure retained HTTPS PAC route: %s", desired.Body())
+		if strings.Contains(desired, "api.example.test") {
+			t.Fatalf("assessment failure retained HTTPS PAC route: %s", desired)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("assessment failure did not publish PAC withdrawal")
@@ -688,19 +687,19 @@ func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snaps
 	return managedpac.NewSnapshot(f.services), nil
 }
 
-func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, services []string, projection pacrouting.Projection) (managedpac.InstallResult, error) {
+func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, services []string, pacListen, _ string) (managedpac.InstallResult, error) {
 	f.applied++
 	if f.installResult != nil {
 		return *f.installResult, f.installErr
 	}
 	return managedpac.NewInstallResult(
-		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), managedpac.PACURL(projection.PACListen(), 1)),
+		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), managedpac.PACURL(pacListen, 1)),
 		sortedUniqueServiceNames(services),
 		nil,
 	), f.installErr
 }
 
-func (*lifecycleTestSystemSettings) PublishProjection(pacrouting.Projection) {}
+func (*lifecycleTestSystemSettings) PublishProjection(string) {}
 
 func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
 	f.cleared++

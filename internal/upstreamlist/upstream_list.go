@@ -60,22 +60,6 @@ func Project(contents []byte) (Projection, error) {
 	return deduplicate(parsed), nil
 }
 
-// Equal reports Upstream List Projection identity. Selector order is not
-// significant; warning order and contents are significant.
-func Equal(left, right Projection) bool {
-	if !sameHostSelectors(left.HostSelectors, right.HostSelectors) ||
-		!sameOriginSelectors(left.OriginSelectors, right.OriginSelectors) ||
-		len(left.Warnings) != len(right.Warnings) {
-		return false
-	}
-	for i := range left.Warnings {
-		if left.Warnings[i] != right.Warnings[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func deduplicate(parsed parsedUpstreamList) Projection {
 	var hosts []HostSelector
 	seenHosts := make(map[HostSelector]struct{}, len(parsed.HostSelectors))
@@ -94,38 +78,6 @@ func deduplicate(parsed parsedUpstreamList) Projection {
 		}
 	}
 	return Projection{HostSelectors: hosts, OriginSelectors: origins, Warnings: parsed.Warnings}
-}
-
-func sameHostSelectors(left, right []HostSelector) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	set := make(map[HostSelector]struct{}, len(left))
-	for _, v := range left {
-		set[v] = struct{}{}
-	}
-	for _, v := range right {
-		if _, ok := set[v]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func sameOriginSelectors(left, right []OriginSelector) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	set := make(map[OriginSelector]struct{}, len(left))
-	for _, v := range left {
-		set[v] = struct{}{}
-	}
-	for _, v := range right {
-		if _, ok := set[v]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // HTTPSIntent reports whether the projection contains at least one HTTPS Origin

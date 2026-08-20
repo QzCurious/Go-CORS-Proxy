@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
-	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 )
 
 type Ownership string
@@ -132,11 +131,12 @@ type ManagedPAC struct {
 	admissionGeneration uint64
 	activeCancel        context.CancelFunc
 
-	projectionPublisher   conflatedstream.Publisher[pacrouting.Projection]
-	projectionStream      conflatedstream.Stream[pacrouting.Projection]
+	projectionPublisher   conflatedstream.Publisher[string]
+	projectionStream      conflatedstream.Stream[string]
 	projectionWorkerDone  chan struct{}
 	projectionWorkerStop  chan struct{}
-	latestProjection      *pacrouting.Projection
+	latestProjection      *string
+	pacListen             string
 	publicationGeneration uint64
 	serviceNames          []string
 }
@@ -148,7 +148,7 @@ func Open() *ManagedPAC {
 }
 
 func openWithSettings(settings systemSettings) *ManagedPAC {
-	projectionPublisher, projectionStream := conflatedstream.New[pacrouting.Projection]()
+	projectionPublisher, projectionStream := conflatedstream.New[string]()
 	return &ManagedPAC{
 		settings:            settings,
 		projectionPublisher: projectionPublisher,
@@ -186,7 +186,7 @@ func ownershipForURL(raw string) Ownership {
 
 // InstallProjection performs the initial publication for a PAC Projection.
 // Its generated URL is owned by Managed PAC's publication generation.
-func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []string, projection pacrouting.Projection) (InstallResult, error) {
+func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []string, pacListen, projection string) (InstallResult, error) {
 	selected := sortedUniqueStrings(serviceNames)
 	if len(selected) == 0 {
 		return InstallResult{}, fmt.Errorf("managed PAC service set is empty")
@@ -203,7 +203,7 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	m.publicationGeneration++
 	generation := m.publicationGeneration
 	m.mu.Unlock()
-	pacURL := PACURL(projection.PACListen(), generation)
+	pacURL := PACURL(pacListen, generation)
 
 	installed, warnings, publicationErr := m.attemptPublication(ctx, selected, pacURL)
 	state := NewRuntimeState(selected, pacURL)
@@ -211,6 +211,7 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 
 	m.mu.Lock()
 	m.latestProjection = &projection
+	m.pacListen = pacListen
 	m.serviceNames = append([]string(nil), selected...)
 	if publicationErr != nil {
 		m.projectionPublisher.Publish(projection)
@@ -238,7 +239,7 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 
 // PublishProjection records the newest changed PAC Projection and returns
 // immediately. Managed PAC serializes and retries publication in its own worker.
-func (m *ManagedPAC) PublishProjection(projection pacrouting.Projection) {
+func (m *ManagedPAC) PublishProjection(projection string) {
 	m.mu.Lock()
 	if !m.accepting {
 		m.mu.Unlock()
@@ -336,7 +337,7 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 		m.mu.Unlock()
 		return true
 	}
-	projection := *m.latestProjection
+	pacListen := m.pacListen
 	serviceNames := append([]string(nil), m.serviceNames...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -344,7 +345,7 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 	generation := m.publicationGeneration
 	m.activeCancel = cancel
 	m.mu.Unlock()
-	pacURL := PACURL(projection.PACListen(), generation)
+	pacURL := PACURL(pacListen, generation)
 	_, _, err := m.attemptPublication(ctx, serviceNames, pacURL)
 	cancel()
 

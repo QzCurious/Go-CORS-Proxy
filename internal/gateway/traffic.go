@@ -37,13 +37,13 @@ type trafficRuntime struct {
 	proxyConfigured         bool
 	httpsWarnings           []HTTPSWarningDetail
 	proxy                   *http.Server
-	pacProjection           pacrouting.Projection
-	pacHandler              *pacrouting.LiveHandler
+	pacContent              string
+	pacHandler              *livePACHandler
 	pac                     *http.Server
 	listeners               []net.Listener
 	publishMu               sync.Mutex
-	pacProjectionPublisher  conflatedstream.Publisher[pacrouting.Projection]
-	pacProjectionStream     conflatedstream.Stream[pacrouting.Projection]
+	pacProjectionPublisher  conflatedstream.Publisher[string]
+	pacProjectionStream     conflatedstream.Stream[string]
 	runtimeChangePublisher  conflatedstream.Publisher[RuntimeChangeKind]
 	runtimeChangeStream     conflatedstream.Stream[RuntimeChangeKind]
 	httpsWarningsRevision   uint64
@@ -128,10 +128,10 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 			projectionIssue = &UpstreamListProjectionIssue{Cause: err.Error()}
 		}
 	}
-	pacProjection := pacrouting.Project(initialList, false, proxyListen, pacListener.Addr().String())
-	pacHandler := pacrouting.NewLiveHandler(pacProjection)
+	pacContent := pacrouting.Project(initialList, false, proxyListen)
+	pacHandler := newLivePACHandler(pacContent)
 	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
-	pacProjectionPublisher, pacProjectionStream := conflatedstream.New[pacrouting.Projection]()
+	pacProjectionPublisher, pacProjectionStream := conflatedstream.New[string]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
 	return &trafficRuntime{
 		upstreamListPath:        upstreamListPath,
@@ -140,7 +140,7 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 		fileSyncIssue:           fileIssue,
 		projectionIssue:         projectionIssue,
 		proxyHandler:            proxyHandler,
-		pacProjection:           pacProjection,
+		pacContent:              pacContent,
 		pacHandler:              pacHandler,
 		proxy:                   &http.Server{Handler: proxyHandler},
 		pac:                     &http.Server{Handler: pacHandler},
@@ -375,7 +375,7 @@ func (r *trafficRuntime) RuntimeChanges() <-chan RuntimeChangeKind {
 	return r.runtimeChangeStream.Updates()
 }
 
-func (r *trafficRuntime) PACProjections() <-chan pacrouting.Projection {
+func (r *trafficRuntime) PACProjections() <-chan string {
 	return r.pacProjectionStream.Updates()
 }
 
@@ -466,14 +466,12 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(ctx context.Context, ou
 	r.providerMu.Lock()
 	defer r.providerMu.Unlock()
 	r.mu.Lock()
-	changed := !upstreamlist.Equal(r.currentUpstreamList, candidate)
 	source := r.providerSource
-	retryFailed := r.interceptionState == HTTPSInterceptionFailed
 	r.mu.Unlock()
 
 	var provider userca.CertificateProvider
 	var providerErr error
-	if source != nil && (changed || retryFailed) {
+	if source != nil {
 		provider, providerErr = source.Project(ctx, candidate)
 		if providerErr != nil && ctx.Err() != nil {
 			return ctx.Err()
@@ -491,11 +489,9 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(ctx context.Context, ou
 		r.projectionIssue = nextProjectionIssue
 		statusChanged = true
 	}
-	if changed {
-		r.currentUpstreamList = candidate
-		statusChanged = true
-	}
-	if source != nil && (changed || retryFailed) {
+	r.currentUpstreamList = candidate
+	statusChanged = true
+	if source != nil {
 		if providerErr != nil {
 			if r.proxyCore != nil {
 				r.proxyCore.DeactivateHTTPS()
@@ -556,18 +552,15 @@ func (r *trafficRuntime) publishPACProjection(changed bool) {
 	r.pacProjectionPublisher.Publish(projection)
 }
 
-func (r *trafficRuntime) currentPACProjection() pacrouting.Projection {
+func (r *trafficRuntime) currentPACProjection() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.pacProjection
+	return r.pacContent
 }
 
 func (r *trafficRuntime) updatePACProjectionLocked() bool {
-	next := pacrouting.Project(r.currentUpstreamList, r.interceptionState == HTTPSInterceptionActive, r.listeners[0].Addr().String(), r.listeners[1].Addr().String())
-	if pacrouting.Equal(r.pacProjection, next) {
-		return false
-	}
-	r.pacProjection = next
+	next := pacrouting.Project(r.currentUpstreamList, r.interceptionState == HTTPSInterceptionActive, r.listeners[0].Addr().String())
+	r.pacContent = next
 	r.pacHandler.Set(next)
 	return true
 }

@@ -127,8 +127,8 @@ func TestProjectionInstallsCompletePAC(t *testing.T) {
 	list := mustDesiredList(t, "api.example.test\n")
 	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	projection := pacrouting.Project(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
-	_, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, projection)
+	projection := pacrouting.Project(list, false, "127.0.0.1:8080")
+	_, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projection)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,10 +147,10 @@ func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	second := mustDesiredList(t, "other.example.test\n")
 	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, pacrouting.Project(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
 		t.Fatal(err)
 	}
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
 	waitForWrite(t, settings, "v=2")
 	if got := module.PublicationGeneration(); got != 2 {
 		t.Fatalf("publication generation = %d, want 2", got)
@@ -164,8 +164,8 @@ func TestInitialProjectionPublicationFailureIsRetriedWithoutReturningGatewayErro
 		applyErrors: map[string]error{"Wi-Fi": errors.New("write denied")},
 	}
 	module := openWithSettings(settings)
-	desired := pacrouting.Project(list, false, "127.0.0.1:8080", "127.0.0.1:8081")
-	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, desired)
+	desired := pacrouting.Project(list, false, "127.0.0.1:8080")
+	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", desired)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,14 +188,14 @@ func TestPartialProjectionPublicationFailureIsRetried(t *testing.T) {
 		{ServiceName: "Wi-Fi"},
 	}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Ethernet", "Wi-Fi"}, pacrouting.Project(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Ethernet", "Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
 		t.Fatal(err)
 	}
 
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Ethernet": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
@@ -210,19 +210,19 @@ func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *t
 	third := mustDesiredList(t, "third.example.test\n")
 	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, pacrouting.Project(first, false, "127.0.0.1:8080", "127.0.0.1:8081")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
 		t.Fatal(err)
 	}
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
 	settings.applyErrors = nil
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(third, false, "127.0.0.1:8080", "127.0.0.1:8081"))
+	module.PublishProjection(pacrouting.Project(third, false, "127.0.0.1:8080"))
 	waitForGeneration(t, module, 3)
 	waitForWrite(t, settings, "v=3")
 	settings.mu.Lock()
