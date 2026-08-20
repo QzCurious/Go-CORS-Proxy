@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -161,21 +162,13 @@ func (c *Core) failProvider(state *providerState, failure HTTPSFailure) {
 }
 
 func configureProxyLogging(proxy *goproxy.ProxyHttpServer) {
-	if proxyDebugEnabled() {
+	debug, err := strconv.ParseBool(os.Getenv("SEAMLESS_CORS_DEBUG_PROXY"))
+	if err == nil && debug {
 		proxy.Verbose = true
 		return
 	}
 	proxy.Verbose = false
 	proxy.Logger = log.New(io.Discard, "", 0)
-}
-
-func proxyDebugEnabled() bool {
-	switch strings.ToLower(os.Getenv("SEAMLESS_CORS_DEBUG_PROXY")) {
-	case "1", "true", "yes":
-		return true
-	default:
-		return false
-	}
 }
 
 func defaultTransport() *http.Transport {
