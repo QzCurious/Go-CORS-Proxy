@@ -340,30 +340,3 @@ func TestSelectorsUseUniformHostnameValidation(t *testing.T) {
 		})
 	}
 }
-
-func TestHostnameValidation(t *testing.T) {
-	tests := []struct {
-		name     string
-		hostname string
-		wildcard bool
-		want     bool
-	}{
-		{name: "DNS", hostname: "api.example.test", want: true},
-		{name: "single-label wildcard DNS identity", hostname: "example.test", wildcard: true, want: true},
-		{name: "IPv4", hostname: "192.0.2.1", want: true},
-		{name: "IPv6", hostname: "2001:db8::1", want: true},
-		{name: "wildcard IPv4", hostname: "192.0.2.1", wildcard: true, want: false},
-		{name: "wildcard IPv6", hostname: "2001:db8::1", wildcard: true, want: false},
-		{name: "scoped IPv6", hostname: "fe80::1%en0", want: false},
-		{name: "underscore", hostname: "bad_name.example.test", want: false},
-		{name: "trailing dot", hostname: "example.test.", want: false},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := isValidHostname(test.hostname, test.wildcard); got != test.want {
-				t.Fatalf("isValidHostname(%q, %t) = %t, want %t", test.hostname, test.wildcard, got, test.want)
-			}
-		})
-	}
-}

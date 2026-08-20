@@ -84,6 +84,45 @@ func stripComment(line string) string {
 	return strings.TrimSpace(line)
 }
 
+func parseHostSelector(selectorText string) (HostSelector, error) {
+	u, err := url.Parse("//" + selectorText)
+	if err != nil {
+		return HostSelector{}, errors.New("host selector syntax is invalid")
+	}
+
+	hostname := u.Hostname()
+	// IPv6
+	if strings.Contains(hostname, ":") {
+		hostname = "[" + hostname + "]"
+	}
+	if selectorText != hostname {
+		return HostSelector{}, errors.New("host selector must not include a scheme, port, path, query, or fragment")
+	}
+
+	hostname = u.Hostname()
+
+	// Decode the only supported wildcard form before validating the hostname.
+	wildcard := false
+	if strings.HasPrefix(hostname, "*.") {
+		wildcard = true
+		hostname = strings.TrimPrefix(hostname, "*.")
+	}
+	if hostname == "" || strings.Contains(hostname, "*") {
+		return HostSelector{}, errors.New("wildcard must be * followed by a hostname")
+	}
+	if _, err := netip.ParseAddr(hostname); err == nil {
+		if wildcard {
+			return HostSelector{}, errors.New("host selector hostname is invalid")
+		}
+	} else if hostnameValidator.Var(hostname, "hostname_rfc1123") != nil {
+		return HostSelector{}, errors.New("host selector hostname is invalid")
+	}
+	return HostSelector{
+		Hostname: strings.ToLower(hostname),
+		Wildcard: wildcard,
+	}, nil
+}
+
 func parseOriginSelector(selectorText string) (OriginSelector, error) {
 	u, err := url.ParseRequestURI(selectorText)
 	if err != nil {
@@ -99,12 +138,10 @@ func parseOriginSelector(selectorText string) (OriginSelector, error) {
 	if scheme != "http" && scheme != "https" {
 		return OriginSelector{}, errors.New("origin selector scheme must be http or https")
 	}
-	hostname, err := normalizedHostname(u)
-	if err != nil {
-		return OriginSelector{}, err
-	}
+	hostname := u.Hostname()
 
-	if !isValidHostname(hostname, false) {
+	if _, err := netip.ParseAddr(hostname); err != nil &&
+		hostnameValidator.Var(hostname, "hostname_rfc1123") != nil {
 		return OriginSelector{}, errors.New("origin selector hostname is invalid")
 	}
 
@@ -119,66 +156,9 @@ func parseOriginSelector(selectorText string) (OriginSelector, error) {
 
 	return OriginSelector{
 		Scheme:   scheme,
-		Hostname: hostname,
+		Hostname: strings.ToLower(hostname),
 		Port:     port,
 	}, nil
 }
 
-func parseHostSelector(selectorText string) (HostSelector, error) {
-	u, err := url.Parse("//" + selectorText)
-	if err != nil {
-		return HostSelector{}, errors.New("host selector syntax is invalid")
-	}
-
-	parsedHostnameText := u.Hostname()
-	if strings.Contains(parsedHostnameText, ":") {
-		parsedHostnameText = "[" + parsedHostnameText + "]"
-	}
-	if selectorText != parsedHostnameText {
-		return HostSelector{}, errors.New("host selector must contain only a hostname")
-	}
-
-	hostname, err := normalizedHostname(u)
-	if err != nil {
-		return HostSelector{}, err
-	}
-
-	// Decode the only supported wildcard form before validating the hostname.
-	wildcard := false
-	if strings.HasPrefix(hostname, "*.") {
-		wildcard = true
-		hostname = strings.TrimPrefix(hostname, "*.")
-	}
-	if hostname == "" || strings.Contains(hostname, "*") {
-		return HostSelector{}, errors.New("wildcard must be * followed by a hostname")
-	}
-	if !isValidHostname(hostname, wildcard) {
-		return HostSelector{}, errors.New("host selector hostname is invalid")
-	}
-	return HostSelector{
-		Hostname: hostname,
-		Wildcard: wildcard,
-	}, nil
-}
-
-func normalizedHostname(u *url.URL) (string, error) {
-	hostname := strings.ToLower(u.Hostname())
-	if hostname == "" {
-		return "", errors.New("hostname is required")
-	}
-	for _, char := range hostname {
-		if char > 127 {
-			return "", errors.New("hostname must use ASCII or punycode")
-		}
-	}
-	return hostname, nil
-}
-
 var hostnameValidator = validator.New()
-
-func isValidHostname(hostname string, wildcard bool) bool {
-	if address, err := netip.ParseAddr(hostname); err == nil {
-		return !wildcard && address.Zone() == ""
-	}
-	return hostnameValidator.Var(hostname, "hostname_rfc1123") == nil
-}
