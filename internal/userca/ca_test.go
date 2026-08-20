@@ -23,8 +23,8 @@ func TestInspectMissingIsNotUsable(t *testing.T) {
 	if snapshot.Snapshot().Usable() {
 		t.Fatal("missing UserCA reported usable")
 	}
-	if _, ok := snapshot.Source(); ok {
-		t.Fatal("not-usable assessment exposed a provider source")
+	if _, ok := snapshot.Certificate(); ok {
+		t.Fatal("not-usable assessment exposed signing material")
 	}
 }
 
@@ -43,9 +43,9 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstSource, ok := first.Current().Source()
+	firstSource, ok := first.Current().Certificate()
 	if !ok {
-		t.Fatal("first install omitted provider source")
+		t.Fatal("first install omitted signing material")
 	}
 
 	second, err := ca.Install(context.Background())
@@ -59,12 +59,12 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if err != nil || secondFingerprint != firstFingerprint {
 		t.Fatal("idempotent install replaced the authority")
 	}
-	secondSource, ok := second.Current().Source()
+	secondSource, ok := second.Current().Certificate()
 	if !ok {
-		t.Fatal("second install omitted provider source")
+		t.Fatal("second install omitted signing material")
 	}
 	if firstSource == secondSource {
-		t.Fatal("idempotent install reused the previous provider source")
+		t.Fatal("idempotent install reused the previous certificate value")
 	}
 }
 
@@ -344,14 +344,14 @@ func TestInstallReturnsErrorWhenFreshPostconditionCannotBeAssessed(t *testing.T)
 	}
 }
 
-func TestAssessmentCarriesProviderOnlyWhenUsable(t *testing.T) {
+func TestAssessmentCarriesSigningMaterialOnlyWhenUsable(t *testing.T) {
 	ca := openAt(t.TempDir(), &fakeTrustStore{}, time.Now)
 	result, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := result.Current().Source(); !ok {
-		t.Fatal("usable assessment omitted its provider source")
+	if _, ok := result.Current().Certificate(); !ok {
+		t.Fatal("usable assessment omitted signing material")
 	}
 }
 

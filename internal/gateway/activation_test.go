@@ -249,7 +249,7 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != InstallResultInstalled || engine.snapshot().HTTPSInterception != HTTPSInterceptionActive {
+	if result.Kind != InstallResultInstalled || engine.snapshot().HTTPSReadiness != HTTPSReadinessReady {
 		t.Fatalf("install result = %#v runtime = %#v", result, engine.snapshot())
 	}
 }
@@ -280,7 +280,7 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 	lifecycle.handleHTTPSDeadline(active)
 
 	state := engine.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessNotReady || state.HTTPSInterception != HTTPSInterceptionInactive {
+	if state.HTTPSReadiness != HTTPSReadinessNotReady {
 		t.Fatalf("deadline state = %#v", state)
 	}
 	select {
@@ -319,7 +319,7 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 	lifecycle.handleHTTPSDeadline(active)
 
 	state := engine.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessReady || state.HTTPSInterception != HTTPSInterceptionActive {
+	if state.HTTPSReadiness != HTTPSReadinessReady {
 		t.Fatalf("stale deadline changed usable HTTPS: %#v", state)
 	}
 }
@@ -350,7 +350,7 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 	lifecycle.handleHTTPSDeadline(active)
 
 	state := engine.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessNotReady || state.HTTPSInterception != HTTPSInterceptionInactive {
+	if state.HTTPSReadiness != HTTPSReadinessNotReady {
 		t.Fatalf("assessment failure state = %#v", state)
 	}
 	if !strings.Contains(httpsWarningDiagnostics(state.HTTPSWarnings), "could not be assessed") {
@@ -402,7 +402,7 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 	defer deadline.Stop()
 	for {
 		state := engine.snapshot()
-		if state.HTTPSInterception == HTTPSInterceptionInactive && inspectCalls.Load() >= 2 {
+		if state.HTTPSReadiness == HTTPSReadinessNotReady && inspectCalls.Load() >= 2 {
 			break
 		}
 		select {
@@ -517,7 +517,7 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 	ca := &fakeUserCA{
 		assessment: installed,
 		uninstall: func(context.Context) (userca.UninstallResult, error) {
-			inactiveDuringUninstall = engine.snapshot().HTTPSInterception == HTTPSInterceptionInactive
+			inactiveDuringUninstall = engine.snapshot().HTTPSReadiness == HTTPSReadinessNotReady
 			return userca.NewUninstallResult(userca.Assessment{}, true), nil
 		},
 	}

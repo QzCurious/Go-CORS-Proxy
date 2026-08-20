@@ -2,61 +2,79 @@ package corsproxy
 
 import (
 	"crypto/tls"
-	"errors"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync/atomic"
 
 	"github.com/elazarl/goproxy"
 )
 
-// CertificateProvider is the minimal consumer-owned seam used by CORS Proxy.
-// The provider owns bounded certificate lookup and expiry; CORS Proxy only
-// requests a certificate for the CONNECT hostname.
-type CertificateProvider interface {
-	CertificateFor(string) (*tls.Certificate, error)
-}
+const certificateCacheCapacity = 1024
 
-type HTTPSFailureDisposition string
-
-const (
-	HTTPSFailureExpired    HTTPSFailureDisposition = "expired"
-	HTTPSFailureProvider   HTTPSFailureDisposition = "provider-failure"
-	providerInvalidRequest                         = "invalid-request"
-	providerNotCovered                             = "not-covered"
-)
-
-type HTTPSFailure struct {
-	Disposition HTTPSFailureDisposition
-	Err         error
-}
-
+// Core serves one stable proxy endpoint while atomically replacing immutable
+// goproxy handler generations as UserCA signing material changes.
 type Core struct {
-	proxy          *goproxy.ProxyHttpServer
-	provider       atomic.Pointer[providerState]
-	onHTTPSFailure func(HTTPSFailure)
+	current   atomic.Pointer[goproxy.ProxyHttpServer]
+	transport *http.Transport
 }
 
-type providerState struct {
-	provider CertificateProvider
+type Options struct {
+	Certificate *tls.Certificate
+	Transport   *http.Transport
 }
+
+type localPreflight struct{}
 
 func New(opts Options) *Core {
+	transport := opts.Transport
+	if transport == nil {
+		transport = defaultTransport()
+	}
+	core := &Core{transport: transport}
+	core.current.Store(core.newGeneration(opts.Certificate))
+	return core
+}
+
+func (c *Core) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	c.current.Load().ServeHTTP(w, req)
+}
+
+// ReplaceCertificate publishes a fresh MITM generation. The certificate and
+// its backing slices and signer are immutable after publication by contract.
+func (c *Core) ReplaceCertificate(certificate *tls.Certificate) {
+	if certificate == nil {
+		c.DeactivateHTTPS()
+		return
+	}
+	c.current.Store(c.newGeneration(certificate))
+}
+
+// DeactivateHTTPS publishes a direct-tunnel generation. Requests already
+// admitted by the previous generation are not drained.
+func (c *Core) DeactivateHTTPS() {
+	c.current.Store(c.newGeneration(nil))
+}
+
+func (c *Core) newGeneration(certificate *tls.Certificate) *goproxy.ProxyHttpServer {
 	proxy := goproxy.NewProxyHttpServer()
 	configureProxyLogging(proxy)
-	proxy.Tr = opts.Transport
-	if proxy.Tr == nil {
-		proxy.Tr = defaultTransport()
-	}
-	core := &Core{proxy: proxy, onHTTPSFailure: opts.OnHTTPSFailure}
-	proxy.OnRequest().HandleConnectFunc(core.handleConnect)
-	if opts.Provider != nil {
-		core.ReplaceProvider(opts.Provider)
+	proxy.Tr = c.transport
+	if certificate == nil {
+		proxy.OnRequest().HandleConnectFunc(func(host string, _ *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+			return goproxy.OkConnect, host
+		})
+	} else {
+		proxy.CertStore = newCertificateCache(certificateCacheCapacity)
+		action := &goproxy.ConnectAction{
+			Action:    goproxy.ConnectMitm,
+			TLSConfig: goproxy.TLSConfigFromCA(certificate),
+		}
+		proxy.OnRequest().HandleConnectFunc(func(host string, _ *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+			return action, host
+		})
 	}
 
 	proxy.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
@@ -78,87 +96,7 @@ func New(opts Options) *Core {
 		}
 		return resp
 	})
-
-	return core
-}
-
-type Options struct {
-	Provider       CertificateProvider
-	Transport      *http.Transport
-	OnHTTPSFailure func(HTTPSFailure)
-}
-
-func (c *Core) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	c.proxy.ServeHTTP(w, req)
-}
-
-// ReplaceProvider atomically installs a prevalidated provider. UserCA makes
-// provider construction and self-testing a precondition, so this operation
-// cannot fail.
-func (c *Core) ReplaceProvider(provider CertificateProvider) {
-	if provider == nil {
-		c.DeactivateHTTPS()
-		return
-	}
-	c.provider.Store(&providerState{provider: provider})
-}
-
-func (c *Core) DeactivateHTTPS() {
-	c.provider.Store(nil)
-}
-
-func (c *Core) handleConnect(host string, _ *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
-	state := c.provider.Load()
-	if state == nil {
-		return goproxy.OkConnect, host
-	}
-	hostname := stripConnectPort(host)
-	certificate, err := state.provider.CertificateFor(hostname)
-	if err == nil && certificate == nil {
-		err = errors.New("certificate provider returned no certificate")
-	}
-	if err != nil {
-		disposition := classifyProviderError(err)
-		if disposition == providerInvalidRequest || disposition == providerNotCovered {
-			return goproxy.OkConnect, host
-		}
-		failureDisposition := HTTPSFailureProvider
-		if disposition == string(HTTPSFailureExpired) {
-			failureDisposition = HTTPSFailureExpired
-		}
-		c.failProvider(state, HTTPSFailure{
-			Disposition: failureDisposition,
-			Err:         err,
-		})
-		return goproxy.OkConnect, host
-	}
-	config := &tls.Config{
-		InsecureSkipVerify: true,
-		Certificates:       []tls.Certificate{*certificate},
-	}
-	return &goproxy.ConnectAction{
-		Action: goproxy.ConnectMitm,
-		TLSConfig: func(string, *goproxy.ProxyCtx) (*tls.Config, error) {
-			return config, nil
-		},
-	}, host
-}
-
-func classifyProviderError(err error) string {
-	var classified interface{ Disposition() string }
-	if !errors.As(err, &classified) {
-		return string(HTTPSFailureProvider)
-	}
-	return classified.Disposition()
-}
-
-func (c *Core) failProvider(state *providerState, failure HTTPSFailure) {
-	if !c.provider.CompareAndSwap(state, nil) {
-		return
-	}
-	if c.onHTTPSFailure != nil {
-		c.onHTTPSFailure(failure)
-	}
+	return proxy
 }
 
 func configureProxyLogging(proxy *goproxy.ProxyHttpServer) {
@@ -176,14 +114,4 @@ func defaultTransport() *http.Transport {
 		return transport.Clone()
 	}
 	return &http.Transport{}
-}
-
-type localPreflight struct{}
-
-func stripConnectPort(host string) string {
-	hostname, _, err := net.SplitHostPort(host)
-	if err == nil {
-		return hostname
-	}
-	return strings.Trim(host, "[]")
 }

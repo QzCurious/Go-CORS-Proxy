@@ -337,7 +337,7 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 			guidance := started.Guidance
 			fmt.Fprintln(stdout, "seamless-cors running")
 			fmt.Fprintf(stdout, "upstream-list: %s\n", homeRelativePath(guidance.UpstreamListPath))
-			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(guidance.HTTPSInterception))
+			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(guidance.HTTPSReadiness))
 			if includeHTTPSWarnings {
 				renderHTTPSWarnings(stdout, guidance.HTTPSWarnings)
 			}
@@ -488,7 +488,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
 		}
 		renderManagedPACWarnings(stdout, result.Runtime.ManagedPACWarnings)
-		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSInterception))
+		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSReadiness))
 		renderHTTPSWarnings(stdout, result.Runtime.HTTPSWarnings)
 	}
 	fmt.Fprintf(stdout, "installed-ca: %s\n", result.InstalledCA.Health)
@@ -507,8 +507,8 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 	}
 }
 
-func humanHTTPSState(state gateway.HTTPSInterceptionState) string {
-	if state == gateway.HTTPSInterceptionActive {
+func humanHTTPSState(state gateway.HTTPSReadinessStatus) string {
+	if state == gateway.HTTPSReadinessReady {
 		return "active"
 	}
 	return "inactive"

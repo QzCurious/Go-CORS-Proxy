@@ -101,7 +101,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		s.lifecycle.userCASnapshot = assessment.Snapshot()
 		s.lifecycle.userCAAssessmentErr = readinessErr
 		s.lifecycle.runtime = active
-		if _, ok := assessment.Source(); ok && readinessErr == nil {
+		if _, ok := assessment.Certificate(); ok && readinessErr == nil {
 			s.lifecycle.scheduleHTTPSDeadlineLocked(active, assessment)
 		}
 		return nil
@@ -197,7 +197,6 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		ManagedPACServices:          pacInstall.State().ServiceNames(),
 		ManagedPACWarnings:          managedPACWarningDetails(pacInstall.Warnings()),
 		HTTPSReadiness:              state.HTTPSReadiness,
-		HTTPSInterception:           state.HTTPSInterception,
 		HTTPSIntent:                 state.HTTPSIntent,
 		HTTPSWarnings:               state.HTTPSWarnings,
 		UpstreamListWarnings:        state.UpstreamListWarnings,

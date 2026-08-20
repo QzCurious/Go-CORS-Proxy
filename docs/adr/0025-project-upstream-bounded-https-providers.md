@@ -1,6 +1,6 @@
 # Project upstream-bounded HTTPS providers
 
-**Status:** accepted
+**Status:** superseded by ADR-0026
 
 UserCA exposes an immutable HTTPS Provider Source for the valid Active UserCA, and Gateway supplies the normalized effective Upstream List Projection when asking it to build an immutable HTTPS Certificate Provider. The provider eagerly creates one in-memory Selector Certificate per deduplicated exact hostname or Single-Label Wildcard, uses one provider-scoped RSA-2048 leaf key, gives exact lookup precedence over wildcard lookup, remains valid until the Active UserCA expires, and reports valid CONNECT hosts outside its scope as `not-covered` for direct tunneling by CORS Proxy; no certificates or leaf keys are persisted, no periodic leaf refresh exists, and no arbitrary certificate-count limit is imposed.
 

@@ -281,7 +281,6 @@ type StartGuidance struct {
 	ManagedPACActive            bool                         `json:"managedPacActive"`
 	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
 	HTTPSReadiness              HTTPSReadinessStatus         `json:"httpsReadiness"`
-	HTTPSInterception           HTTPSInterceptionState       `json:"httpsInterception"`
 	HTTPSIntent                 bool                         `json:"httpsIntent"`
 	HTTPSWarnings               []HTTPSWarningDetail         `json:"httpsWarnings,omitempty"`
 	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
@@ -469,7 +468,6 @@ type RuntimeStatusDetail struct {
 	UpstreamListFileSyncIssue   *FileSyncIssue               `json:"upstreamListFileSyncIssue,omitempty"`
 	UpstreamListProjectionIssue *UpstreamListProjectionIssue `json:"upstreamListProjectionIssue,omitempty"`
 	HTTPSReadiness              HTTPSReadinessStatus         `json:"httpsReadiness"`
-	HTTPSInterception           HTTPSInterceptionState       `json:"httpsInterception"`
 	HTTPSIntent                 bool                         `json:"httpsIntent"`
 	HTTPSWarnings               []HTTPSWarningDetail         `json:"httpsWarnings,omitempty"`
 	ManagedPACActive            bool                         `json:"managedPacActive"`
@@ -484,21 +482,12 @@ const (
 	HTTPSReadinessNotReady HTTPSReadinessStatus = "not-ready"
 )
 
-type HTTPSInterceptionState string
-
-const (
-	HTTPSInterceptionInactive HTTPSInterceptionState = "inactive"
-	HTTPSInterceptionActive   HTTPSInterceptionState = "active"
-	HTTPSInterceptionFailed   HTTPSInterceptionState = "failed"
-)
-
 type HTTPSWarningKind string
 
 const (
 	HTTPSWarningUnmetIntent          HTTPSWarningKind = "unmet-https-intent"
 	HTTPSWarningReadinessUnavailable HTTPSWarningKind = "https-readiness-unavailable"
 	HTTPSWarningRenewalRecommended   HTTPSWarningKind = "userca-renewal-recommended"
-	HTTPSWarningInterceptionFailed   HTTPSWarningKind = "https-interception-failed"
 	HTTPSWarningUninstallIncomplete  HTTPSWarningKind = "userca-uninstall-incomplete"
 )
 
@@ -700,8 +689,7 @@ func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, assessment user
 }
 
 func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessment userca.Assessment) {
-	source, ok := assessment.Source()
-	if !ok {
+	if !assessment.Usable() {
 		return
 	}
 	if active.deadlineTimer != nil {
@@ -711,7 +699,7 @@ func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessmen
 	if active.engine != nil && active.engine.now != nil {
 		now = active.engine.now()
 	}
-	delay := source.ValidUntil().Sub(now)
+	delay := assessment.ExpiresAt().Sub(now)
 	if delay < 0 {
 		delay = 0
 	}
@@ -954,7 +942,6 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			UpstreamListFileSyncIssue:   state.UpstreamListFileSyncIssue,
 			UpstreamListProjectionIssue: state.UpstreamListProjectionIssue,
 			HTTPSReadiness:              state.HTTPSReadiness,
-			HTTPSInterception:           state.HTTPSInterception,
 			HTTPSIntent:                 state.HTTPSIntent,
 			HTTPSWarnings:               state.HTTPSWarnings,
 			ManagedPACActive:            managedPACActive,
@@ -1073,7 +1060,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 		return UninstallResult{Kind: UninstallResultAlreadyMutating}, nil
 	}
 	active := f.runtime
-	if active != nil && active.engine.snapshot().HTTPSInterception == HTTPSInterceptionActive {
+	if active != nil && active.engine.snapshot().HTTPSReadiness == HTTPSReadinessReady {
 		expected := f.uninstallConsentFingerprint(active)
 		if consentFingerprint != expected {
 			f.mu.Unlock()
@@ -1156,7 +1143,7 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 			switch kind {
 			case HTTPSWarningsChanged:
 				consumeWarnings()
-				if state.HTTPSInterception != HTTPSInterceptionActive {
+				if state.HTTPSReadiness != HTTPSReadinessReady {
 					f.cancelHTTPSDeadline(active)
 				}
 			case RuntimeStatusChanged:
@@ -1165,7 +1152,7 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 				// warning check also preserves an HTTPS warning invalidation
 				// that was coalesced by this generic status notification.
 				consumeWarnings()
-				if state.HTTPSInterception != HTTPSInterceptionActive {
+				if state.HTTPSReadiness != HTTPSReadinessReady {
 					f.cancelHTTPSDeadline(active)
 				}
 			case HTTPSDeadlineReached:

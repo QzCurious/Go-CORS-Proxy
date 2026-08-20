@@ -19,7 +19,7 @@ import (
 )
 
 type trafficRuntime struct {
-	providerMu              sync.Mutex
+	httpsMu                 sync.Mutex
 	mu                      sync.RWMutex
 	upstreamListPath        string
 	upstreamListObservation *fileobservation.Observation
@@ -27,10 +27,7 @@ type trafficRuntime struct {
 	fileSyncIssue           *FileSyncIssue
 	projectionIssue         *UpstreamListProjectionIssue
 	userCA                  userca.Snapshot
-	providerSource          userca.ProviderSource
 	readinessError          error
-	interceptionState       HTTPSInterceptionState
-	interceptionError       error
 	userCAOperationWarning  *HTTPSWarningDetail
 	proxyCore               *corsproxy.Core
 	proxyHandler            *dynamicHTTPHandler
@@ -153,41 +150,25 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 	}, nil
 }
 
-func (r *trafficRuntime) SetInitialHTTPSReadiness(ctx context.Context, assessment userca.Assessment, assessmentErr error) error {
-	r.providerMu.Lock()
-	defer r.providerMu.Unlock()
+func (r *trafficRuntime) SetInitialHTTPSReadiness(_ context.Context, assessment userca.Assessment, assessmentErr error) error {
+	r.httpsMu.Lock()
+	defer r.httpsMu.Unlock()
 	snapshot := assessment.Snapshot()
-	source, sourceOK := assessment.Source()
+	certificate, certificateOK := assessment.Certificate()
 	if assessmentErr != nil {
-		source = nil
-		sourceOK = false
-	}
-	var provider userca.CertificateProvider
-	var projectionErr error
-	if sourceOK {
-		provider, projectionErr = source.Project(ctx, r.currentUpstreamList)
-		if projectionErr != nil {
-			projectionErr = fmt.Errorf("certificate projection failed: %w", projectionErr)
-		}
+		certificate = nil
+		certificateOK = false
+	} else if snapshot.Usable() && !certificateOK {
+		assessmentErr = fmt.Errorf("usable UserCA assessment omitted signing material")
 	}
 	proxyHandler := corsproxy.New(corsproxy.Options{
-		Provider:       provider,
-		OnHTTPSFailure: r.handleHTTPSFailure,
+		Certificate: certificate,
 	})
 	r.proxyHandler.Set(proxyHandler)
 	r.mu.Lock()
 	r.userCA = snapshot
-	r.providerSource = source
 	r.readinessError = assessmentErr
 	r.proxyCore = proxyHandler
-	r.interceptionState = HTTPSInterceptionInactive
-	if provider != nil && projectionErr == nil && assessmentErr == nil {
-		r.interceptionState = HTTPSInterceptionActive
-	}
-	r.interceptionError = projectionErr
-	if projectionErr != nil {
-		r.interceptionState = HTTPSInterceptionFailed
-	}
 	r.proxyConfigured = true
 	nextWarnings := r.currentHTTPSWarningsLocked()
 	if !slices.Equal(nextWarnings, r.httpsWarnings) {
@@ -199,69 +180,47 @@ func (r *trafficRuntime) SetInitialHTTPSReadiness(ctx context.Context, assessmen
 	return nil
 }
 
-// RecoverHTTPS atomically adopts a fresh UserCA provider into a live runtime
-// and publishes the complete Managed PAC desired state when interception is
-// active.
-func (r *trafficRuntime) RecoverHTTPS(ctx context.Context, assessment userca.Assessment) error {
-	r.providerMu.Lock()
-	defer r.providerMu.Unlock()
+// RecoverHTTPS atomically adopts fresh UserCA signing material into a live
+// runtime before publishing the complete Managed PAC desired state.
+func (r *trafficRuntime) RecoverHTTPS(_ context.Context, assessment userca.Assessment) error {
+	r.httpsMu.Lock()
+	defer r.httpsMu.Unlock()
 	snapshot := assessment.Snapshot()
-	source, ok := assessment.Source()
+	certificate, ok := assessment.Certificate()
 	if !ok {
 		return fmt.Errorf("HTTPS Readiness Recovery requires a usable UserCA assessment")
 	}
 	r.mu.Lock()
 	core := r.proxyCore
-	upstreams := r.currentUpstreamList
 	r.mu.Unlock()
 	if core == nil {
 		return fmt.Errorf("HTTPS proxy is not configured")
 	}
-	provider, projectionErr := source.Project(ctx, upstreams)
-	if projectionErr != nil && ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if projectionErr != nil {
-		projectionErr = fmt.Errorf("certificate projection failed: %w", projectionErr)
-	}
-	if projectionErr != nil {
-		core.DeactivateHTTPS()
-	} else {
-		core.ReplaceProvider(provider)
-	}
+	core.ReplaceCertificate(certificate)
 	r.mu.Lock()
 	r.userCA = snapshot
-	r.providerSource = source
 	r.readinessError = nil
-	r.interceptionState = HTTPSInterceptionActive
-	r.interceptionError = projectionErr
-	if projectionErr != nil {
-		r.interceptionState = HTTPSInterceptionFailed
-	}
 	r.proxyConfigured = true
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishHTTPSWarningUpdate(warningsChanged)
 	r.publishPACProjection(projectionChanged)
-	return projectionErr
+	return nil
 }
 
 // DeactivateHTTPS is the live-uninstall linearization companion: new CONNECT
 // requests tunnel directly and HTTPS PAC routes are withdrawn immediately.
 func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr error) {
-	r.providerMu.Lock()
-	defer r.providerMu.Unlock()
+	r.httpsMu.Lock()
+	defer r.httpsMu.Unlock()
 	r.mu.Lock()
-	desiredChanged := r.interceptionState == HTTPSInterceptionActive
+	desiredChanged := r.httpsReadyLocked()
 	if r.proxyCore != nil {
 		r.proxyCore.DeactivateHTTPS()
 	}
 	r.userCA = snapshot
-	r.providerSource = nil
 	r.readinessError = assessmentErr
-	r.interceptionState = HTTPSInterceptionInactive
-	r.interceptionError = nil
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
@@ -269,27 +228,6 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr
 	if desiredChanged {
 		r.publishPACProjection(projectionChanged)
 	}
-}
-
-func (r *trafficRuntime) handleHTTPSFailure(failure corsproxy.HTTPSFailure) {
-	if failure.Disposition == corsproxy.HTTPSFailureExpired {
-		// Expiry is a signal only. Gateway lifecycle re-assesses UserCA and
-		// decides whether the current capability is truly unusable.
-		r.publishRuntimeChange(HTTPSDeadlineReached)
-		return
-	}
-	r.mu.Lock()
-	if r.interceptionState != HTTPSInterceptionActive {
-		r.mu.Unlock()
-		return
-	}
-	r.interceptionState = HTTPSInterceptionFailed
-	r.interceptionError = failure.Err
-	warningsChanged := r.updateHTTPSWarningsLocked()
-	projectionChanged := r.updatePACProjectionLocked()
-	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warningsChanged)
-	r.publishPACProjection(projectionChanged)
 }
 
 func (r *trafficRuntime) Serve(ctx context.Context) error {
@@ -388,7 +326,7 @@ func (r *trafficRuntime) snapshot() runtimeState {
 func (r *trafficRuntime) interceptionActive() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.interceptionState == HTTPSInterceptionActive
+	return r.httpsReadyLocked()
 }
 
 func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
@@ -419,7 +357,7 @@ func (r *trafficRuntime) applyUpstreamListOutcome(outcome fileobservation.Outcom
 	return r.applyUpstreamListOutcomeContext(context.Background(), outcome)
 }
 
-func (r *trafficRuntime) applyUpstreamListOutcomeContext(ctx context.Context, outcome fileobservation.Outcome) error {
+func (r *trafficRuntime) applyUpstreamListOutcomeContext(_ context.Context, outcome fileobservation.Outcome) error {
 	var contents fileobservation.Contents
 	var observationError error
 	switch outcome := outcome.(type) {
@@ -463,21 +401,6 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(ctx context.Context, ou
 		candidate = upstreamlist.Projection{}
 	}
 
-	r.providerMu.Lock()
-	defer r.providerMu.Unlock()
-	r.mu.Lock()
-	source := r.providerSource
-	r.mu.Unlock()
-
-	var provider userca.CertificateProvider
-	var providerErr error
-	if source != nil {
-		provider, providerErr = source.Project(ctx, candidate)
-		if providerErr != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-	}
-
 	r.mu.Lock()
 	projectionChanged := false
 	statusChanged := false
@@ -491,21 +414,6 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(ctx context.Context, ou
 	}
 	r.currentUpstreamList = candidate
 	statusChanged = true
-	if source != nil {
-		if providerErr != nil {
-			if r.proxyCore != nil {
-				r.proxyCore.DeactivateHTTPS()
-			}
-			r.interceptionState = HTTPSInterceptionFailed
-			r.interceptionError = fmt.Errorf("certificate projection failed: %w", providerErr)
-		} else {
-			if r.proxyCore != nil {
-				r.proxyCore.ReplaceProvider(provider)
-			}
-			r.interceptionState = HTTPSInterceptionActive
-			r.interceptionError = nil
-		}
-	}
 	projectionChanged = r.updatePACProjectionLocked()
 	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
@@ -559,7 +467,7 @@ func (r *trafficRuntime) currentPACProjection() string {
 }
 
 func (r *trafficRuntime) updatePACProjectionLocked() bool {
-	next := pacrouting.Project(r.currentUpstreamList, r.interceptionState == HTTPSInterceptionActive, r.listeners[0].Addr().String())
+	next := pacrouting.Project(r.currentUpstreamList, r.httpsReadyLocked(), r.listeners[0].Addr().String())
 	r.pacContent = next
 	r.pacHandler.Set(next)
 	return true
@@ -619,12 +527,10 @@ func (r *trafficRuntime) publishHTTPSWarningUpdate(changed bool) {
 func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
 	var warnings []HTTPSWarningDetail
 	upstreamList := r.currentUpstreamList
-	warnings = append(warnings, httpsRuntimeWarnings(
+	warnings = append(warnings, httpsReadinessWarnings(
 		upstreamList.HTTPSIntent(),
 		r.userCA,
 		r.readinessError,
-		r.interceptionState,
-		r.interceptionError,
 	)...)
 	if r.userCAOperationWarning != nil && !hasHTTPSWarning(warnings, r.userCAOperationWarning.Kind) {
 		warnings = append(warnings, *r.userCAOperationWarning)
@@ -638,7 +544,6 @@ type runtimeState struct {
 	PACListen                   string
 	UpstreamList                string
 	HTTPSReadiness              HTTPSReadinessStatus
-	HTTPSInterception           HTTPSInterceptionState
 	HTTPSIntent                 bool
 	HTTPSWarnings               []HTTPSWarningDetail
 	UpstreamCount               int
@@ -649,12 +554,13 @@ type runtimeState struct {
 
 func (r *trafficRuntime) stateLocked() runtimeState {
 	upstreamList := r.currentUpstreamList
-	readiness := httpsReadinessStatus(r.userCA)
-	interception := r.interceptionState
+	readiness := HTTPSReadinessNotReady
+	if r.httpsReadyLocked() {
+		readiness = HTTPSReadinessReady
+	}
 	warnings := append([]HTTPSWarningDetail(nil), r.httpsWarnings...)
 	if r.userCA.Usable() && !r.now().Before(r.userCA.ExpiresAt()) {
 		readiness = HTTPSReadinessNotReady
-		interception = HTTPSInterceptionInactive
 		warnings = []HTTPSWarningDetail{{
 			Kind:       HTTPSWarningReadinessUnavailable,
 			Diagnostic: "Installed User CA has expired.",
@@ -667,7 +573,6 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 		PACListen:                   r.listeners[1].Addr().String(),
 		UpstreamList:                r.upstreamListPath,
 		HTTPSReadiness:              readiness,
-		HTTPSInterception:           interception,
 		HTTPSIntent:                 upstreamList.HTTPSIntent(),
 		HTTPSWarnings:               warnings,
 		UpstreamCount:               len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
@@ -677,11 +582,8 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 	}
 }
 
-func httpsReadinessStatus(snapshot userca.Snapshot) HTTPSReadinessStatus {
-	if snapshot.Usable() {
-		return HTTPSReadinessReady
-	}
-	return HTTPSReadinessNotReady
+func (r *trafficRuntime) httpsReadyLocked() bool {
+	return r.readinessError == nil && r.userCA.Usable()
 }
 
 func httpsReadinessWarnings(httpsIntent bool, snapshot userca.Snapshot, assessmentErr error) []HTTPSWarningDetail {
@@ -711,23 +613,6 @@ func httpsReadinessWarnings(httpsIntent bool, snapshot userca.Snapshot, assessme
 		Diagnostic: "HTTPS was requested but the Installed User CA is not usable.",
 		Action:     "Run `seamless-cors install`.",
 	}}
-}
-
-func httpsRuntimeWarnings(
-	httpsIntent bool,
-	snapshot userca.Snapshot,
-	assessmentErr error,
-	state HTTPSInterceptionState,
-	interceptionErr error,
-) []HTTPSWarningDetail {
-	if state == HTTPSInterceptionFailed {
-		return []HTTPSWarningDetail{{
-			Kind:       HTTPSWarningInterceptionFailed,
-			Diagnostic: fmt.Sprintf("HTTPS interception failed: %v.", interceptionErr),
-			Action:     "Save the Upstream List to retry, or run `seamless-cors install`.",
-		}}
-	}
-	return httpsReadinessWarnings(httpsIntent, snapshot, assessmentErr)
 }
 
 func hasHTTPSWarning(warnings []HTTPSWarningDetail, kind HTTPSWarningKind) bool {
