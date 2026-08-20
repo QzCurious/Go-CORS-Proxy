@@ -7,18 +7,16 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"sync/atomic"
 
 	"github.com/elazarl/goproxy"
 )
 
 const certificateCacheCapacity = 1024
 
-// Core serves one stable proxy endpoint while atomically replacing immutable
-// goproxy handler generations as UserCA signing material changes.
-type Core struct {
-	current   atomic.Pointer[goproxy.ProxyHttpServer]
-	transport *http.Transport
+// Handler is one immutable proxy generation. Gateway owns publication and
+// lifecycle; Handler owns only request behavior.
+type Handler struct {
+	proxy *goproxy.ProxyHttpServer
 }
 
 type Options struct {
@@ -28,40 +26,21 @@ type Options struct {
 
 type localPreflight struct{}
 
-func New(opts Options) *Core {
-	transport := opts.Transport
-	if transport == nil {
-		transport = defaultTransport()
+func New(opts Options) *Handler {
+	if opts.Transport == nil {
+		panic("corsproxy: Transport is required")
 	}
-	core := &Core{transport: transport}
-	core.current.Store(core.newGeneration(opts.Certificate))
-	return core
+	return &Handler{proxy: newProxy(opts.Transport, opts.Certificate)}
 }
 
-func (c *Core) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	c.current.Load().ServeHTTP(w, req)
+func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	h.proxy.ServeHTTP(w, req)
 }
 
-// ReplaceCertificate publishes a fresh MITM generation. The certificate and
-// its backing slices and signer are immutable after publication by contract.
-func (c *Core) ReplaceCertificate(certificate *tls.Certificate) {
-	if certificate == nil {
-		c.DeactivateHTTPS()
-		return
-	}
-	c.current.Store(c.newGeneration(certificate))
-}
-
-// DeactivateHTTPS publishes a direct-tunnel generation. Requests already
-// admitted by the previous generation are not drained.
-func (c *Core) DeactivateHTTPS() {
-	c.current.Store(c.newGeneration(nil))
-}
-
-func (c *Core) newGeneration(certificate *tls.Certificate) *goproxy.ProxyHttpServer {
+func newProxy(transport *http.Transport, certificate *tls.Certificate) *goproxy.ProxyHttpServer {
 	proxy := goproxy.NewProxyHttpServer()
 	configureProxyLogging(proxy)
-	proxy.Tr = c.transport
+	proxy.Tr = transport
 	if certificate == nil {
 		proxy.OnRequest().HandleConnectFunc(func(host string, _ *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 			return goproxy.OkConnect, host
@@ -107,11 +86,4 @@ func configureProxyLogging(proxy *goproxy.ProxyHttpServer) {
 	}
 	proxy.Verbose = false
 	proxy.Logger = log.New(io.Discard, "", 0)
-}
-
-func defaultTransport() *http.Transport {
-	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
-		return transport.Clone()
-	}
-	return &http.Transport{}
 }

@@ -1,6 +1,6 @@
 # Route UserCA operations through Gateway Ownership
 
-**Status:** accepted; assessment provider and leaf-certificate portions superseded by ADR-0026
+**Status:** accepted; assessment-provider and leaf-certificate portions superseded by ADR-0026, and unconditional runtime adoption and readiness latching superseded by ADR-0027
 
 Gateway Ownership is the cross-process routing authority for UserCA work. Ownerless `serve` and `start` create long-running owners; serve fails when an owner exists, while CLI start calls the existing owner's `/start` route and exits after its result without transferring foreground ownership. Install and uninstall likewise address an existing owner. Ownerless CA lifecycle work publishes a discoverable Transient Gateway Owner before it begins, so callers never need a private platform lease or participate in lifecycle linearization.
 

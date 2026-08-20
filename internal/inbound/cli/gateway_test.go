@@ -303,13 +303,14 @@ func TestStatusRendersUnmetHTTPSIntent(t *testing.T) {
 		StatusReport: gateway.StatusReport{
 			State: gateway.GatewayStatusRunning,
 			Runtime: &gateway.RuntimeStatusDetail{
-				HTTPSReadiness: gateway.HTTPSReadinessNotReady,
-				HTTPSIntent:    true,
-				HTTPSWarnings: []gateway.HTTPSWarningDetail{{
-					Kind:       gateway.HTTPSWarningUnmetIntent,
-					Diagnostic: "HTTPS was requested but the Installed User CA is missing.",
-					Action:     "Run `seamless-cors install`.",
-				}},
+				HTTPSPipeline: &gateway.HTTPSPipelineDetail{
+					Phase:     gateway.HTTPSPipelineSettled,
+					Readiness: gateway.HTTPSReadinessNotReady,
+					UnmetIntent: &gateway.UnmetHTTPSIntentDetail{
+						Diagnostic: "HTTPS was requested but the Installed User CA is missing.",
+						Action:     "Run `seamless-cors install`.",
+					},
+				},
 			},
 		},
 	})
@@ -352,7 +353,7 @@ func TestInstallAndUninstallCommandsRenderResults(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "already usable") || !strings.Contains(out.String(), "https-readiness: ready") {
+	if !strings.Contains(out.String(), "already usable") || strings.Contains(out.String(), "https-readiness:") {
 		t.Fatalf("install output = %q", out.String())
 	}
 	out.Reset()
@@ -418,26 +419,34 @@ func TestStartRendersManagedPACWarningsSeparately(t *testing.T) {
 	}
 }
 
-func TestLiveHTTPSWarningRendererPrintsOnlyAddedOrChangedWarnings(t *testing.T) {
+func TestLiveHTTPSPipelineRendererPrintsOnlyChangedDetails(t *testing.T) {
 	var out bytes.Buffer
-	renderer := &liveHTTPSWarningRenderer{stdout: &out}
-	initial := gateway.HTTPSWarningDetail{
-		Kind:       gateway.HTTPSWarningRenewalRecommended,
-		Diagnostic: "UserCA expires soon.",
-		Action:     "Run install.",
+	renderer := &liveHTTPSPipelineRenderer{stdout: &out}
+	initial := &gateway.HTTPSPipelineDetail{
+		Phase:     gateway.HTTPSPipelineSettled,
+		Readiness: gateway.HTTPSReadinessNotReady,
+		UnmetIntent: &gateway.UnmetHTTPSIntentDetail{
+			Diagnostic: "UserCA is not usable.",
+			Action:     "Run install.",
+		},
 	}
-	renderer.RenderSnapshot([]gateway.HTTPSWarningDetail{initial})
-	renderer.RenderSnapshot([]gateway.HTTPSWarningDetail{initial})
-	changed := initial
-	changed.Diagnostic = "UserCA expires tomorrow."
-	renderer.RenderSnapshot([]gateway.HTTPSWarningDetail{changed})
-	renderer.RenderSnapshot(nil)
+	renderer.Render(initial)
+	renderer.Render(initial)
+	changed := &gateway.HTTPSPipelineDetail{
+		Phase:     gateway.HTTPSPipelineSettled,
+		Readiness: gateway.HTTPSReadinessNotReady,
+		UserCAAssessmentIssue: &gateway.UserCAAssessmentIssue{
+			Cause: "trust store unavailable",
+		},
+	}
+	renderer.Render(changed)
+	renderer.Render(nil)
 
 	if got := strings.Count(out.String(), "warning:"); got != 2 {
 		t.Fatalf("rendered warning count = %d, output %q", got, out.String())
 	}
-	if !strings.Contains(out.String(), initial.Diagnostic) ||
-		!strings.Contains(out.String(), changed.Diagnostic) {
+	if !strings.Contains(out.String(), initial.UnmetIntent.Diagnostic) ||
+		!strings.Contains(out.String(), changed.UserCAAssessmentIssue.Cause) {
 		t.Fatalf("renderer output = %q", out.String())
 	}
 }

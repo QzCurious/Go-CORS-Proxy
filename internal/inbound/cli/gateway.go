@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +29,7 @@ func start(stdin io.Reader, stdout, _ io.Writer) error {
 
 func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer, command startCommand) error {
 	stdout = writerOrDiscard(stdout)
-	liveWarnings := &liveHTTPSWarningRenderer{stdout: stdout}
+	liveHTTPS := &liveHTTPSPipelineRenderer{stdout: stdout}
 	hooks := gateway.StartHooks{
 		ConfirmUpstreamListCreation: func(ctx context.Context, detail gateway.UpstreamListCreationConsent) (bool, error) {
 			return confirmUpstreamListCreation(ctx, stdin, stdout, detail)
@@ -37,12 +38,12 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 			return confirmManagedPACConsent(ctx, stdin, stdout, &detail)
 		},
 		Started: func(result gateway.StartResult) {
-			renderStartResultWithoutHTTPSWarnings(stdout, result)
+			renderStartResultWithoutHTTPSPipeline(stdout, result)
 			if started, ok := result.(gateway.Started); ok {
-				liveWarnings.RenderSnapshot(started.Guidance.HTTPSWarnings)
+				liveHTTPS.Seed(started.Guidance.HTTPSPipeline)
 			}
 		},
-		HTTPSWarningsChanged: liveWarnings.RenderSnapshot,
+		HTTPSPipelineChanged: liveHTTPS.Render,
 	}
 	result, err := command(ctx, hooks)
 	if err != nil {
@@ -319,14 +320,14 @@ func readYes(ctx context.Context, stdin io.Reader) (bool, error) {
 }
 
 func renderStartResult(stdout io.Writer, result gateway.StartResult) {
-	renderStartResultWithHTTPSWarnings(stdout, result, true)
+	renderStartResultWithHTTPSPipeline(stdout, result, true)
 }
 
-func renderStartResultWithoutHTTPSWarnings(stdout io.Writer, result gateway.StartResult) {
-	renderStartResultWithHTTPSWarnings(stdout, result, false)
+func renderStartResultWithoutHTTPSPipeline(stdout io.Writer, result gateway.StartResult) {
+	renderStartResultWithHTTPSPipeline(stdout, result, false)
 }
 
-func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartResult, includeHTTPSWarnings bool) {
+func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartResult, includeHTTPSPipeline bool) {
 	if result == nil {
 		return
 	}
@@ -337,9 +338,13 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 			guidance := started.Guidance
 			fmt.Fprintln(stdout, "seamless-cors running")
 			fmt.Fprintf(stdout, "upstream-list: %s\n", homeRelativePath(guidance.UpstreamListPath))
-			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(guidance.HTTPSReadiness))
-			if includeHTTPSWarnings {
-				renderHTTPSWarnings(stdout, guidance.HTTPSWarnings)
+			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(guidance.HTTPSPipeline))
+			if includeHTTPSPipeline {
+				renderHTTPSPipelineIssue(stdout, guidance.HTTPSPipeline)
+			}
+			if guidance.InstalledCA != nil && guidance.InstalledCA.RenewalDue {
+				fmt.Fprintln(stdout, "installed-ca-renewal: due")
+				fmt.Fprintln(stdout, "action: Run `seamless-cors install` to renew it.")
 			}
 			if guidance.ManagedPACActive {
 				fmt.Fprintln(stdout, "managed-pac: active")
@@ -374,23 +379,34 @@ func renderStartResultWithHTTPSWarnings(stdout io.Writer, result gateway.StartRe
 	}
 }
 
-type liveHTTPSWarningRenderer struct {
-	mu      sync.Mutex
-	stdout  io.Writer
-	current map[gateway.HTTPSWarningKind]gateway.HTTPSWarningDetail
+type liveHTTPSPipelineRenderer struct {
+	mu          sync.Mutex
+	stdout      io.Writer
+	initialized bool
+	current     string
 }
 
-func (r *liveHTTPSWarningRenderer) RenderSnapshot(warnings []gateway.HTTPSWarningDetail) {
+func (r *liveHTTPSPipelineRenderer) Seed(detail *gateway.HTTPSPipelineDetail) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	next := make(map[gateway.HTTPSWarningKind]gateway.HTTPSWarningDetail, len(warnings))
-	for _, warning := range warnings {
-		next[warning.Kind] = warning
-		if previous, ok := r.current[warning.Kind]; !ok || previous != warning {
-			renderHTTPSWarnings(r.stdout, []gateway.HTTPSWarningDetail{warning})
-		}
+	encoded, _ := json.Marshal(detail)
+	r.initialized = true
+	r.current = string(encoded)
+	renderHTTPSPipelineIssue(r.stdout, detail)
+}
+
+func (r *liveHTTPSPipelineRenderer) Render(detail *gateway.HTTPSPipelineDetail) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	encoded, _ := json.Marshal(detail)
+	next := string(encoded)
+	if r.initialized && next == r.current {
+		return
 	}
+	r.initialized = true
 	r.current = next
+	fmt.Fprintf(r.stdout, "https: %s\n", humanHTTPSState(detail))
+	renderHTTPSPipelineIssue(r.stdout, detail)
 }
 
 func homeRelativePath(path string) string {
@@ -428,10 +444,12 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	switch result.Kind {
 	case gateway.InstallResultInstalled:
 		fmt.Fprintln(stdout, "Installed User CA installed.")
-		fmt.Fprintln(stdout, "https-readiness: ready")
 	case gateway.InstallResultAlreadyUsable:
 		fmt.Fprintln(stdout, "Installed User CA is already usable.")
-		fmt.Fprintln(stdout, "https-readiness: ready")
+	}
+	if result.HTTPSPipeline != nil {
+		fmt.Fprintf(stdout, "https-readiness: %s\n", result.HTTPSPipeline.Readiness)
+		renderHTTPSPipelineIssue(stdout, result.HTTPSPipeline)
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
@@ -448,7 +466,12 @@ func renderUninstallResult(stdout io.Writer, result gateway.UninstallResult) {
 		fmt.Fprintln(stdout, "Installed User CA uninstall requires confirmation.")
 	case gateway.UninstallResultIncomplete:
 		fmt.Fprintln(stdout, "Installed User CA uninstall is incomplete.")
-		renderHTTPSWarnings(stdout, result.Warnings)
+		if result.CleanupIssue != nil {
+			fmt.Fprintf(stdout, "installed-ca-cleanup-issue: %s\n", result.CleanupIssue.Cause)
+			if result.CleanupIssue.Action != "" {
+				fmt.Fprintf(stdout, "action: %s\n", result.CleanupIssue.Action)
+			}
+		}
 	}
 }
 
@@ -488,12 +511,21 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
 		}
 		renderManagedPACWarnings(stdout, result.Runtime.ManagedPACWarnings)
-		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSReadiness))
-		renderHTTPSWarnings(stdout, result.Runtime.HTTPSWarnings)
+		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSPipeline))
+		renderHTTPSPipelineIssue(stdout, result.Runtime.HTTPSPipeline)
 	}
 	fmt.Fprintf(stdout, "installed-ca: %s\n", result.InstalledCA.Health)
 	if !result.InstalledCA.Expires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCA.Expires.Format("2006-01-02"))
+	}
+	if result.InstalledCA.RenewalDue {
+		fmt.Fprintln(stdout, "installed-ca-renewal: due")
+	}
+	if result.InstalledCA.CleanupIssue != nil {
+		fmt.Fprintf(stdout, "installed-ca-cleanup-issue: %s\n", result.InstalledCA.CleanupIssue.Cause)
+		if result.InstalledCA.CleanupIssue.Action != "" {
+			fmt.Fprintf(stdout, "action: %s\n", result.InstalledCA.CleanupIssue.Action)
+		}
 	}
 	if result.Cleanup.State == gateway.CleanupStatusNeeded {
 		fmt.Fprintln(stdout, "cleanup-needed: run `seamless-cors stop` to clean seamless-cors-owned gateway footprint")
@@ -507,19 +539,34 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 	}
 }
 
-func humanHTTPSState(state gateway.HTTPSReadinessStatus) string {
-	if state == gateway.HTTPSReadinessReady {
+func humanHTTPSState(pipeline *gateway.HTTPSPipelineDetail) string {
+	if pipeline != nil && pipeline.Readiness == gateway.HTTPSReadinessReady {
 		return "active"
 	}
 	return "inactive"
 }
 
-func renderHTTPSWarnings(stdout io.Writer, warnings []gateway.HTTPSWarningDetail) {
-	for _, warning := range warnings {
-		fmt.Fprintf(stdout, "warning: %s\n", warning.Diagnostic)
-		if warning.Action != "" {
-			fmt.Fprintf(stdout, "action: %s\n", warning.Action)
-		}
+func renderHTTPSPipelineIssue(stdout io.Writer, pipeline *gateway.HTTPSPipelineDetail) {
+	if pipeline == nil {
+		return
+	}
+	var diagnostic, action string
+	switch {
+	case pipeline.UnmetIntent != nil:
+		diagnostic = pipeline.UnmetIntent.Diagnostic
+		action = pipeline.UnmetIntent.Action
+	case pipeline.UserCAAssessmentIssue != nil:
+		diagnostic = "Installed User CA assessment failed: " + pipeline.UserCAAssessmentIssue.Cause
+		action = pipeline.UserCAAssessmentIssue.Action
+	case pipeline.SigningMaterialIssue != nil:
+		diagnostic = pipeline.SigningMaterialIssue.Diagnostic
+		action = pipeline.SigningMaterialIssue.Action
+	}
+	if diagnostic != "" {
+		fmt.Fprintf(stdout, "warning: %s\n", diagnostic)
+	}
+	if action != "" {
+		fmt.Fprintf(stdout, "action: %s\n", action)
 	}
 }
 

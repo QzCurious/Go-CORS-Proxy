@@ -180,7 +180,7 @@ func TestProxyLoggingIsQuietByDefault(t *testing.T) {
 	t.Setenv("SEAMLESS_CORS_DEBUG_PROXY", "")
 	core := newTestCore(t, Options{})
 
-	if core.current.Load().Verbose {
+	if core.proxy.Verbose {
 		t.Fatal("proxy should not be verbose by default")
 	}
 }
@@ -189,22 +189,23 @@ func TestProxyLoggingDebugEnvEnablesVerboseLogs(t *testing.T) {
 	t.Setenv("SEAMLESS_CORS_DEBUG_PROXY", "1")
 	core := newTestCore(t, Options{})
 
-	if !core.current.Load().Verbose {
+	if !core.proxy.Verbose {
 		t.Fatal("proxy should be verbose with debug env")
 	}
 }
 
-func TestCertificateReplacementPublishesFreshProxyAndCacheGeneration(t *testing.T) {
+func TestEachHandlerHasAnImmutableFreshProxyAndCacheGeneration(t *testing.T) {
 	firstCertificate, _ := testHTTPSCertificate(t)
-	core := newTestCore(t, Options{Certificate: firstCertificate})
-	first := core.current.Load()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	firstHandler := newTestCore(t, Options{Certificate: firstCertificate, Transport: transport})
+	first := firstHandler.proxy
 	if first.CertStore == nil {
 		t.Fatal("active generation omitted certificate cache")
 	}
 
 	secondCertificate, _ := testHTTPSCertificate(t)
-	core.ReplaceCertificate(secondCertificate)
-	second := core.current.Load()
+	secondHandler := newTestCore(t, Options{Certificate: secondCertificate, Transport: transport})
+	second := secondHandler.proxy
 	if second == first {
 		t.Fatal("certificate replacement mutated the active proxy in place")
 	}
@@ -212,8 +213,8 @@ func TestCertificateReplacementPublishesFreshProxyAndCacheGeneration(t *testing.
 		t.Fatal("certificate replacement reused the previous cache generation")
 	}
 
-	core.DeactivateHTTPS()
-	inactive := core.current.Load()
+	inactiveHandler := newTestCore(t, Options{Transport: transport})
+	inactive := inactiveHandler.proxy
 	if inactive == second {
 		t.Fatal("deactivation mutated the active proxy in place")
 	}
@@ -276,8 +277,11 @@ func testHTTPSCertificate(t *testing.T) (*tls.Certificate, []byte) {
 	return &certificate, certificatePEM
 }
 
-func newTestCore(t *testing.T, opts Options) *Core {
+func newTestCore(t *testing.T, opts Options) *Handler {
 	t.Helper()
+	if opts.Transport == nil {
+		opts.Transport = http.DefaultTransport.(*http.Transport).Clone()
+	}
 	return New(opts)
 }
 

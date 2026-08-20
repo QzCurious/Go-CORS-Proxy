@@ -8,4 +8,4 @@ Managed PAC privately serializes publication. A newer desired state replaces old
 
 Reconciliation evaluates each visible fixed-set member independently. It applies the latest URL to marker-owned or empty state, preserves foreign state with a nonfatal drift warning, ignores absence without warning, and reports eligible platform write failure as a nonfatal update-failed warning. Foreign and absent services remain members of the fixed set. Services outside the set are never inspected for adoption.
 
-Managed PAC Warnings remain independent from HTTPS Warnings. Managed PAC publication errors are internal for now; Gateway status does not receive a Managed PAC diagnostic stream.
+Managed PAC Warnings remain independent from source-specific HTTPS Pipeline details. Managed PAC publication errors are internal for now; Gateway status does not receive a Managed PAC diagnostic stream.

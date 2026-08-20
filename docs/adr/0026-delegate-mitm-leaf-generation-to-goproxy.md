@@ -1,6 +1,6 @@
 # Delegate MITM leaf generation to goproxy
 
-**Status:** accepted
+**Status:** accepted; intent-independent readiness and proxy-generation lifecycle placement superseded by ADR-0027
 
 CORS Proxy treats every CONNECT reaching its loopback listener alike: when HTTPS Readiness is ready it returns a goproxy MITM action built with `TLSConfigFromCA`, and when readiness is not-ready it returns a direct-tunnel action. The Upstream List controls only PAC Routing and never proxy admission or certificate scope. UserCA returns the validated Active UserCA `tls.Certificate` with its coherent assessment, without projecting list-bounded providers or self-testing leaf generation; goproxy owns per-host leaf generation and connection-local signing or handshake failures.
 

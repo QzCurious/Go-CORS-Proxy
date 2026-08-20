@@ -26,7 +26,15 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if request.ManagedPACConsent == nil || request.ManagedPACConsent.Fingerprint != "services-v1" || len(request.ManagedPACConsent.ServiceNames) != 1 || request.ManagedPACConsent.ServiceNames[0] != "Wi-Fi" {
 			t.Fatalf("request = %#v", request)
 		}
-		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true, Guidance: &StartGuidanceDetail{}})
+		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true, Guidance: &StartGuidanceDetail{
+			HTTPSPipeline: &HTTPSPipelineDetail{
+				Phase:     HTTPSPipelineSettled,
+				Readiness: HTTPSReadinessNotReady,
+				UserCAAssessmentIssue: &UserCAAssessmentIssue{
+					Cause: "trust store unavailable",
+				},
+			},
+		}})
 	}))
 	defer server.Close()
 
@@ -40,7 +48,10 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind() != StartResultStarted {
+	started, ok := result.(Started)
+	if !ok || started.Guidance.HTTPSPipeline == nil ||
+		started.Guidance.HTTPSPipeline.UserCAAssessmentIssue == nil ||
+		started.Guidance.HTTPSPipeline.UserCAAssessmentIssue.Cause != "trust store unavailable" {
 		t.Fatalf("result = %s", result.Kind())
 	}
 }

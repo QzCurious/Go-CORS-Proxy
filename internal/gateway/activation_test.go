@@ -215,8 +215,12 @@ func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := lifecycle.Install(context.Background()); err != nil {
+	result, err := lifecycle.Install(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.HTTPSPipeline != nil {
+		t.Fatalf("install without HTTPS Intent returned pipeline detail: %#v", result.HTTPSPipeline)
 	}
 	if ca.installCalls != 1 {
 		t.Fatalf("UserCA install calls = %d", ca.installCalls)
@@ -233,9 +237,7 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	if err := engine.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
-		t.Fatal(err)
-	}
+	engine.SetInitialHTTPSAssessment(userca.Assessment{}, nil)
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
 	ca := &fakeUserCA{installResult: userca.NewInstallResult(installed, true)}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -249,7 +251,7 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != InstallResultInstalled || engine.snapshot().HTTPSReadiness != HTTPSReadinessReady {
+	if result.Kind != InstallResultInstalled || pipelineReadiness(engine.snapshot().HTTPSPipeline) != HTTPSReadinessReady {
 		t.Fatalf("install result = %#v runtime = %#v", result, engine.snapshot())
 	}
 }
@@ -262,9 +264,7 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
-		t.Fatal(err)
-	}
+	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
 	default:
@@ -277,10 +277,10 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
 	lifecycle.runtime = active
 
-	lifecycle.handleHTTPSDeadline(active)
+	lifecycle.handleHTTPSDeadline(active, engine.snapshot().HTTPSGeneration)
 
 	state := engine.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessNotReady {
+	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessNotReady {
 		t.Fatalf("deadline state = %#v", state)
 	}
 	select {
@@ -301,9 +301,7 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
-		t.Fatal(err)
-	}
+	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
 	default:
@@ -316,10 +314,10 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
 	lifecycle.runtime = active
 
-	lifecycle.handleHTTPSDeadline(active)
+	lifecycle.handleHTTPSDeadline(active, engine.snapshot().HTTPSGeneration)
 
 	state := engine.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessReady {
+	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessReady {
 		t.Fatalf("stale deadline changed usable HTTPS: %#v", state)
 	}
 }
@@ -332,9 +330,7 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
-		t.Fatal(err)
-	}
+	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
 	default:
@@ -347,14 +343,14 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
 	lifecycle.runtime = active
 
-	lifecycle.handleHTTPSDeadline(active)
+	lifecycle.handleHTTPSDeadline(active, engine.snapshot().HTTPSGeneration)
 
 	state := engine.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessNotReady {
+	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessNotReady {
 		t.Fatalf("assessment failure state = %#v", state)
 	}
-	if !strings.Contains(httpsWarningDiagnostics(state.HTTPSWarnings), "could not be assessed") {
-		t.Fatalf("assessment failure warnings = %#v", state.HTTPSWarnings)
+	if state.HTTPSPipeline.UserCAAssessmentIssue == nil || !strings.Contains(state.HTTPSPipeline.UserCAAssessmentIssue.Cause, "trust store unavailable") {
+		t.Fatalf("assessment failure detail = %#v", state.HTTPSPipeline)
 	}
 	select {
 	case desired := <-engine.PACProjections():
@@ -374,9 +370,7 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(engine)
 	assessment := testUserCASnapshot(t, time.Now().Add(75*time.Millisecond), false)
-	if err := engine.SetInitialHTTPSReadiness(context.Background(), assessment, nil); err != nil {
-		t.Fatal(err)
-	}
+	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
 	default:
@@ -402,7 +396,7 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 	defer deadline.Stop()
 	for {
 		state := engine.snapshot()
-		if state.HTTPSReadiness == HTTPSReadinessNotReady && inspectCalls.Load() >= 2 {
+		if pipelineReadiness(state.HTTPSPipeline) == HTTPSReadinessNotReady && inspectCalls.Load() >= 2 {
 			break
 		}
 		select {
@@ -510,14 +504,12 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 	}
 	defer closeTrafficTestRuntime(engine)
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	if err := engine.SetInitialHTTPSReadiness(context.Background(), installed, nil); err != nil {
-		t.Fatal(err)
-	}
+	engine.SetInitialHTTPSAssessment(installed, nil)
 	var inactiveDuringUninstall bool
 	ca := &fakeUserCA{
 		assessment: installed,
 		uninstall: func(context.Context) (userca.UninstallResult, error) {
-			inactiveDuringUninstall = engine.snapshot().HTTPSReadiness == HTTPSReadinessNotReady
+			inactiveDuringUninstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
 			return userca.NewUninstallResult(userca.Assessment{}, true), nil
 		},
 	}
@@ -566,8 +558,8 @@ func TestStartReportsUnmetHTTPSIntentWithoutInstallingUserCA(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 	started, ok := result.(Started)
-	if !ok || started.Guidance.HTTPSReadiness != HTTPSReadinessNotReady ||
-		!hasHTTPSWarning(started.Guidance.HTTPSWarnings, HTTPSWarningUnmetIntent) {
+	if !ok || pipelineReadiness(started.Guidance.HTTPSPipeline) != HTTPSReadinessNotReady ||
+		started.Guidance.HTTPSPipeline.UnmetIntent == nil {
 		t.Fatalf("start result = %#v", result)
 	}
 	if ca.installCalls != 0 {
@@ -575,7 +567,40 @@ func TestStartReportsUnmetHTTPSIntentWithoutInstallingUserCA(t *testing.T) {
 	}
 }
 
-func TestStartUsesFreshInstalledUserCASnapshot(t *testing.T) {
+func TestStartDegradesWithSourceSpecificSigningMaterialIssue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".seamless-cors")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), []byte("https://api.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := userca.NewSnapshot(time.Now().Add(24*time.Hour), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &fakeUserCA{assessment: userca.NewAssessment(snapshot, nil)}
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
+	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := executeAcceptedStart(lifecycle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
+	started, ok := result.(Started)
+	if !ok || pipelineReadiness(started.Guidance.HTTPSPipeline) != HTTPSReadinessNotReady ||
+		started.Guidance.HTTPSPipeline.SigningMaterialIssue == nil {
+		t.Fatalf("start result = %#v", result)
+	}
+}
+
+func TestStartWithoutHTTPSIntentSkipsRuntimeUserCAInspection(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	configDir := filepath.Join(home, ".seamless-cors")
@@ -600,12 +625,19 @@ func TestStartUsesFreshInstalledUserCASnapshot(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 	started, ok := result.(Started)
-	if !ok || started.Guidance.HTTPSReadiness != HTTPSReadinessReady {
+	if !ok || started.Guidance.HTTPSPipeline != nil {
 		t.Fatalf("start result = %#v", result)
 	}
-	if ca.inspectCalls <= inspectionsAtConstruction {
-		t.Fatal("start reused construction-time UserCA inspection")
+	if ca.inspectCalls != inspectionsAtConstruction {
+		t.Fatalf("start UserCA inspections = %d, want construction-only %d", ca.inspectCalls, inspectionsAtConstruction)
 	}
+}
+
+func pipelineReadiness(pipeline *HTTPSPipelineDetail) HTTPSReadinessStatus {
+	if pipeline == nil {
+		return ""
+	}
+	return pipeline.Readiness
 }
 
 type fakeUserCA struct {

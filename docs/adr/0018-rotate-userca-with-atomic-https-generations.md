@@ -1,6 +1,6 @@
 # Rotate UserCA with atomic HTTPS provider replacement
 
-**Status:** superseded by ADR-0026 except for UserCA rotation and no-drain lifecycle decisions
+**Status:** superseded by ADR-0026 and ADR-0027 except for UserCA rotation and no-drain lifecycle decisions
 
 Live UserCA renewal uses immutable fingerprint-named authority generations and one atomic `active-fingerprint` pointer. UserCA constructs and self-tests an opaque HTTPS Certificate Provider before Candidate trust or marker commit; the provider owns the certificate, signer, leaf validity, and generation-scoped leaf cache. Candidate trust is installed beside Active before the marker commit, Gateway atomically replaces the runtime provider, each new TLS handshake loads one provider once, and established connections are untouched; install succeeds when Candidate is trusted and durably Active, while the previous authority becomes non-active cleanup residue.
 

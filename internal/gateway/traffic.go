@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"slices"
 	"sync"
-	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
 	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
@@ -26,13 +24,10 @@ type trafficRuntime struct {
 	currentUpstreamList     upstreamlist.Projection
 	fileSyncIssue           *FileSyncIssue
 	projectionIssue         *UpstreamListProjectionIssue
-	userCA                  userca.Snapshot
-	readinessError          error
-	userCAOperationWarning  *HTTPSWarningDetail
-	proxyCore               *corsproxy.Core
-	proxyHandler            *dynamicHTTPHandler
-	proxyConfigured         bool
-	httpsWarnings           []HTTPSWarningDetail
+	httpsPipeline           *HTTPSPipelineDetail
+	httpsGeneration         uint64
+	proxyHandler            *liveProxyHandler
+	proxyTransport          *http.Transport
 	proxy                   *http.Server
 	pacContent              string
 	pacHandler              *livePACHandler
@@ -43,8 +38,7 @@ type trafficRuntime struct {
 	pacProjectionStream     conflatedstream.Stream[string]
 	runtimeChangePublisher  conflatedstream.Publisher[RuntimeChangeKind]
 	runtimeChangeStream     conflatedstream.Stream[RuntimeChangeKind]
-	httpsWarningsRevision   uint64
-	now                     func() time.Time
+	httpsPipelineRevision   uint64
 }
 
 // RuntimeChangeKind identifies the current-state concern invalidated by a
@@ -55,22 +49,23 @@ type RuntimeChangeKind uint8
 
 const (
 	RuntimeStatusChanged RuntimeChangeKind = iota
-	HTTPSWarningsChanged
+	HTTPSPipelineChanged
+	HTTPSAssessmentRequested
 	HTTPSDeadlineReached
 )
 
-type dynamicHTTPHandler struct {
+type liveProxyHandler struct {
 	mu      sync.RWMutex
 	current http.Handler
 }
 
-func (h *dynamicHTTPHandler) Set(next http.Handler) {
+func (h *liveProxyHandler) Set(next http.Handler) {
 	h.mu.Lock()
 	h.current = next
 	h.mu.Unlock()
 }
 
-func (h *dynamicHTTPHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (h *liveProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.mu.RLock()
 	current := h.current
 	h.mu.RUnlock()
@@ -83,6 +78,18 @@ type serverError struct {
 }
 
 func newRuntime(upstreamListPath string, observation *fileobservation.Observation, initial fileobservation.Outcome) (*trafficRuntime, error) {
+	return newRuntimeWithTransport(upstreamListPath, observation, initial, defaultProxyTransport())
+}
+
+func newRuntimeWithTransport(
+	upstreamListPath string,
+	observation *fileobservation.Observation,
+	initial fileobservation.Outcome,
+	proxyTransport *http.Transport,
+) (*trafficRuntime, error) {
+	if proxyTransport == nil {
+		return nil, fmt.Errorf("proxy transport is required")
+	}
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("proxy listener unavailable: %w", err)
@@ -125,9 +132,16 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 			projectionIssue = &UpstreamListProjectionIssue{Cause: err.Error()}
 		}
 	}
+	directProxy := corsproxy.New(corsproxy.Options{Transport: proxyTransport})
 	pacContent := pacrouting.Project(initialList, false, proxyListen)
 	pacHandler := newLivePACHandler(pacContent)
-	proxyHandler := &dynamicHTTPHandler{current: http.NotFoundHandler()}
+	proxyHandler := &liveProxyHandler{current: directProxy}
+	var httpsPipeline *HTTPSPipelineDetail
+	var httpsGeneration uint64
+	if initialList.HTTPSIntent() {
+		httpsPipeline = &HTTPSPipelineDetail{Phase: HTTPSPipelineAssessing}
+		httpsGeneration = 1
+	}
 	pacProjectionPublisher, pacProjectionStream := conflatedstream.New[string]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
 	return &trafficRuntime{
@@ -136,7 +150,10 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 		currentUpstreamList:     initialList,
 		fileSyncIssue:           fileIssue,
 		projectionIssue:         projectionIssue,
+		httpsPipeline:           httpsPipeline,
+		httpsGeneration:         httpsGeneration,
 		proxyHandler:            proxyHandler,
+		proxyTransport:          proxyTransport,
 		pacContent:              pacContent,
 		pacHandler:              pacHandler,
 		proxy:                   &http.Server{Handler: proxyHandler},
@@ -146,88 +163,113 @@ func newRuntime(upstreamListPath string, observation *fileobservation.Observatio
 		pacProjectionStream:     pacProjectionStream,
 		runtimeChangePublisher:  runtimeChangePublisher,
 		runtimeChangeStream:     runtimeChangeStream,
-		now:                     time.Now,
 	}, nil
 }
 
-func (r *trafficRuntime) SetInitialHTTPSReadiness(_ context.Context, assessment userca.Assessment, assessmentErr error) error {
-	r.httpsMu.Lock()
-	defer r.httpsMu.Unlock()
-	snapshot := assessment.Snapshot()
-	certificate, certificateOK := assessment.Certificate()
-	if assessmentErr != nil {
-		certificate = nil
-		certificateOK = false
-	} else if snapshot.Usable() && !certificateOK {
-		assessmentErr = fmt.Errorf("usable UserCA assessment omitted signing material")
+func defaultProxyTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		return transport.Clone()
 	}
-	proxyHandler := corsproxy.New(corsproxy.Options{
-		Certificate: certificate,
-	})
-	r.proxyHandler.Set(proxyHandler)
-	r.mu.Lock()
-	r.userCA = snapshot
-	r.readinessError = assessmentErr
-	r.proxyCore = proxyHandler
-	r.proxyConfigured = true
-	nextWarnings := r.currentHTTPSWarningsLocked()
-	if !slices.Equal(nextWarnings, r.httpsWarnings) {
-		r.httpsWarnings = nextWarnings
-		r.httpsWarningsRevision++
-	}
-	r.updatePACProjectionLocked()
-	r.mu.Unlock()
-	return nil
+	return &http.Transport{}
 }
 
-// RecoverHTTPS atomically adopts fresh UserCA signing material into a live
-// runtime before publishing the complete Managed PAC desired state.
-func (r *trafficRuntime) RecoverHTTPS(_ context.Context, assessment userca.Assessment) error {
-	r.httpsMu.Lock()
-	defer r.httpsMu.Unlock()
-	snapshot := assessment.Snapshot()
-	certificate, ok := assessment.Certificate()
-	if !ok {
-		return fmt.Errorf("HTTPS Readiness Recovery requires a usable UserCA assessment")
-	}
-	r.mu.Lock()
-	core := r.proxyCore
-	r.mu.Unlock()
-	if core == nil {
-		return fmt.Errorf("HTTPS proxy is not configured")
-	}
-	core.ReplaceCertificate(certificate)
-	r.mu.Lock()
-	r.userCA = snapshot
-	r.readinessError = nil
-	r.proxyConfigured = true
-	warningsChanged := r.updateHTTPSWarningsLocked()
-	projectionChanged := r.updatePACProjectionLocked()
-	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warningsChanged)
-	r.publishPACProjection(projectionChanged)
-	return nil
+// SetInitialHTTPSAssessment settles the pipeline admitted by the initial
+// Upstream List. Start skips UserCA inspection entirely when no pipeline exists.
+func (r *trafficRuntime) SetInitialHTTPSAssessment(assessment userca.Assessment, assessmentErr error) bool {
+	r.mu.RLock()
+	generation := r.httpsGeneration
+	r.mu.RUnlock()
+	applied, _ := r.settleHTTPSAssessment(generation, assessment, assessmentErr)
+	return applied
 }
 
-// DeactivateHTTPS is the live-uninstall linearization companion: new CONNECT
-// requests tunnel directly and HTTPS PAC routes are withdrawn immediately.
+// AdoptInstalledUserCA invalidates any in-flight pipeline assessment and
+// settles the current pipeline from an explicit install result. Without HTTPS
+// Intent it has no runtime consequence.
+func (r *trafficRuntime) AdoptInstalledUserCA(assessment userca.Assessment) *HTTPSPipelineDetail {
+	r.httpsMu.Lock()
+	defer r.httpsMu.Unlock()
+	r.mu.Lock()
+	if r.httpsPipeline == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	r.httpsGeneration++
+	generation := r.httpsGeneration
+	r.mu.Unlock()
+	r.settleHTTPSAssessmentLocked(generation, assessment, nil)
+	return r.snapshot().HTTPSPipeline
+}
+
+// DeactivateHTTPS is the live-uninstall linearization companion. It removes
+// HTTPS routes before publishing a direct generation. Without an admitted
+// pipeline the UserCA operation has no runtime HTTPS consequence.
 func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr error) {
 	r.httpsMu.Lock()
 	defer r.httpsMu.Unlock()
 	r.mu.Lock()
-	desiredChanged := r.httpsReadyLocked()
-	if r.proxyCore != nil {
-		r.proxyCore.DeactivateHTTPS()
+	if r.httpsPipeline == nil {
+		r.mu.Unlock()
+		return
 	}
-	r.userCA = snapshot
-	r.readinessError = assessmentErr
-	warningsChanged := r.updateHTTPSWarningsLocked()
+	r.httpsGeneration++
+	next := settledHTTPSPipeline(snapshot, false, assessmentErr)
+	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
+	r.httpsPipeline = next
+	if pipelineChanged {
+		r.httpsPipelineRevision++
+	}
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warningsChanged)
-	if desiredChanged {
-		r.publishPACProjection(projectionChanged)
+	r.publishPACProjection(projectionChanged)
+	r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+	if pipelineChanged {
+		r.publishRuntimeChange(HTTPSPipelineChanged)
 	}
+}
+
+func (r *trafficRuntime) settleHTTPSAssessment(generation uint64, assessment userca.Assessment, assessmentErr error) (bool, bool) {
+	r.httpsMu.Lock()
+	defer r.httpsMu.Unlock()
+	return r.settleHTTPSAssessmentLocked(generation, assessment, assessmentErr)
+}
+
+func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, assessment userca.Assessment, assessmentErr error) (bool, bool) {
+	r.mu.Lock()
+	if r.httpsPipeline == nil || r.httpsGeneration != generation {
+		r.mu.Unlock()
+		return false, false
+	}
+	snapshot := assessment.Snapshot()
+	certificate, certificateOK := assessment.Certificate()
+	ready := assessmentErr == nil && snapshot.Usable() && certificateOK
+	next := settledHTTPSPipeline(snapshot, certificateOK, assessmentErr)
+	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
+	if ready {
+		// Recovery publishes MITM behavior before exposing HTTPS PAC routes.
+		r.proxyHandler.Set(corsproxy.New(corsproxy.Options{
+			Certificate: certificate,
+			Transport:   r.proxyTransport,
+		}))
+	}
+	r.httpsPipeline = next
+	if pipelineChanged {
+		r.httpsPipelineRevision++
+	}
+	projectionChanged := r.updatePACProjectionLocked()
+	r.mu.Unlock()
+	if ready {
+		r.publishPACProjection(projectionChanged)
+	} else {
+		// Degradation withdraws served and asynchronously published HTTPS
+		// routes before new CONNECT requests switch to direct tunneling.
+		r.publishPACProjection(projectionChanged)
+		r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+	}
+	if pipelineChanged {
+		r.publishRuntimeChange(HTTPSPipelineChanged)
+	}
+	return true, ready
 }
 
 func (r *trafficRuntime) Serve(ctx context.Context) error {
@@ -237,11 +279,6 @@ func (r *trafficRuntime) Serve(ctx context.Context) error {
 // ServeReady reports when both bound traffic listeners have entered their
 // serving goroutines. Callers may then safely publish the PAC URL.
 func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
-	if !r.proxyConfigured {
-		if err := r.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
-			return err
-		}
-	}
 	errs := make(chan serverError, 3)
 	go r.watchUpstreamList(ctx, errs)
 	go func() {
@@ -299,10 +336,14 @@ func (r *trafficRuntime) CloseTraffic() error {
 	if r.upstreamListObservation != nil {
 		r.upstreamListObservation.Close()
 	}
-	return errors.Join(
+	closeErr := errors.Join(
 		r.proxy.Close(),
 		r.pac.Close(),
 	)
+	if r.proxyTransport != nil {
+		r.proxyTransport.CloseIdleConnections()
+	}
+	return closeErr
 }
 
 func (r *trafficRuntime) PACListen() string {
@@ -327,6 +368,43 @@ func (r *trafficRuntime) interceptionActive() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.httpsReadyLocked()
+}
+
+func (r *trafficRuntime) pendingHTTPSAssessment() (uint64, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.httpsGeneration, r.httpsPipeline != nil && r.httpsPipeline.Phase == HTTPSPipelineAssessing
+}
+
+func (r *trafficRuntime) invalidateHTTPSAssessments() {
+	r.httpsMu.Lock()
+	r.mu.Lock()
+	r.httpsGeneration++
+	r.mu.Unlock()
+	r.httpsMu.Unlock()
+}
+
+// BeginHTTPSDeadlineAssessment withdraws managed HTTPS routing before
+// switching new CONNECT requests to direct tunneling. The expected generation
+// makes a callback from a replaced timer harmless.
+func (r *trafficRuntime) BeginHTTPSDeadlineAssessment(expectedGeneration uint64) (uint64, bool) {
+	r.httpsMu.Lock()
+	defer r.httpsMu.Unlock()
+	r.mu.Lock()
+	if r.httpsGeneration != expectedGeneration || !r.httpsReadyLocked() {
+		r.mu.Unlock()
+		return 0, false
+	}
+	r.httpsGeneration++
+	generation := r.httpsGeneration
+	r.httpsPipeline = &HTTPSPipelineDetail{Phase: HTTPSPipelineAssessing}
+	r.httpsPipelineRevision++
+	projectionChanged := r.updatePACProjectionLocked()
+	r.mu.Unlock()
+	r.publishPACProjection(projectionChanged)
+	r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+	r.publishRuntimeChange(HTTPSPipelineChanged)
+	return generation, true
 }
 
 func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
@@ -401,9 +479,15 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(_ context.Context, outc
 		candidate = upstreamlist.Projection{}
 	}
 
+	r.httpsMu.Lock()
+	defer r.httpsMu.Unlock()
 	r.mu.Lock()
 	projectionChanged := false
 	statusChanged := false
+	pipelineChanged := false
+	assessmentRequested := false
+	deactivateProxy := false
+	hadHTTPSIntent := r.httpsPipeline != nil
 	if r.fileSyncIssue != nil {
 		r.fileSyncIssue = nil
 		statusChanged = true
@@ -414,11 +498,35 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(_ context.Context, outc
 	}
 	r.currentUpstreamList = candidate
 	statusChanged = true
+	hasHTTPSIntent := candidate.HTTPSIntent()
+	switch {
+	case !hadHTTPSIntent && hasHTTPSIntent:
+		r.httpsGeneration++
+		r.httpsPipeline = &HTTPSPipelineDetail{Phase: HTTPSPipelineAssessing}
+		r.httpsPipelineRevision++
+		pipelineChanged = true
+		assessmentRequested = true
+	case hadHTTPSIntent && !hasHTTPSIntent:
+		r.httpsGeneration++
+		r.httpsPipeline = nil
+		r.httpsPipelineRevision++
+		pipelineChanged = true
+		deactivateProxy = true
+	}
 	projectionChanged = r.updatePACProjectionLocked()
-	warningsChanged := r.updateHTTPSWarningsLocked()
 	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(warningsChanged)
+	// On deactivation the served PAC and its async publication lose HTTPS
+	// routes before new CONNECT requests switch to direct tunneling.
 	r.publishPACProjection(projectionChanged)
+	if deactivateProxy {
+		r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+	}
+	if pipelineChanged {
+		r.publishRuntimeChange(HTTPSPipelineChanged)
+	}
+	if assessmentRequested {
+		r.publishRuntimeChange(HTTPSAssessmentRequested)
+	}
 	if statusChanged {
 		r.publishRuntimeChange(RuntimeStatusChanged)
 	}
@@ -476,14 +584,13 @@ func (r *trafficRuntime) updatePACProjectionLocked() bool {
 func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
 	r.publishMu.Lock()
 	defer r.publishMu.Unlock()
-	if kind != HTTPSDeadlineReached {
-		// Deadline is a lifecycle signal, not an ordinary status invalidation.
-		// Preserve it when a status or warning change races with the provider
-		// expiry callback; conflation must not erase the request
-		// for Gateway to reassess UserCA.
+	if kind != HTTPSDeadlineReached && kind != HTTPSAssessmentRequested {
+		// Assessment and deadline requests are lifecycle signals, not ordinary
+		// status invalidations. Preserve them when another invalidation races;
+		// conflation must not erase Gateway's request to reassess UserCA.
 		select {
 		case pending := <-r.runtimeChangeStream.Updates():
-			if pending == HTTPSDeadlineReached {
+			if pending == HTTPSDeadlineReached || pending == HTTPSAssessmentRequested {
 				r.runtimeChangePublisher.Publish(pending)
 				return
 			}
@@ -493,59 +600,13 @@ func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
 	r.runtimeChangePublisher.Publish(kind)
 }
 
-func (r *trafficRuntime) SetUninstallWarning(err error) {
-	r.mu.Lock()
-	r.userCAOperationWarning = &HTTPSWarningDetail{
-		Kind:       HTTPSWarningUninstallIncomplete,
-		Diagnostic: fmt.Sprintf("Installed User CA uninstall is incomplete: %v.", err),
-		Action:     "Run `seamless-cors uninstall` again.",
-	}
-	changed := r.updateHTTPSWarningsLocked()
-	r.mu.Unlock()
-	r.publishHTTPSWarningUpdate(changed)
-}
-
-func (r *trafficRuntime) updateHTTPSWarningsLocked() bool {
-	next := r.currentHTTPSWarningsLocked()
-	if slices.Equal(next, r.httpsWarnings) {
-		return false
-	}
-	r.httpsWarnings = next
-	r.httpsWarningsRevision++
-	return true
-}
-
-func (r *trafficRuntime) publishHTTPSWarningUpdate(changed bool) {
-	if !changed {
-		return
-	}
-	// Warning details remain in the immutable runtime snapshot. The
-	// notification only invalidates the current warning revision.
-	r.publishRuntimeChange(HTTPSWarningsChanged)
-}
-
-func (r *trafficRuntime) currentHTTPSWarningsLocked() []HTTPSWarningDetail {
-	var warnings []HTTPSWarningDetail
-	upstreamList := r.currentUpstreamList
-	warnings = append(warnings, httpsReadinessWarnings(
-		upstreamList.HTTPSIntent(),
-		r.userCA,
-		r.readinessError,
-	)...)
-	if r.userCAOperationWarning != nil && !hasHTTPSWarning(warnings, r.userCAOperationWarning.Kind) {
-		warnings = append(warnings, *r.userCAOperationWarning)
-	}
-	return warnings
-}
-
 type runtimeState struct {
-	HTTPSWarningsRevision       uint64
+	HTTPSPipelineRevision       uint64
+	HTTPSGeneration             uint64
 	ProxyListen                 string
 	PACListen                   string
 	UpstreamList                string
-	HTTPSReadiness              HTTPSReadinessStatus
-	HTTPSIntent                 bool
-	HTTPSWarnings               []HTTPSWarningDetail
+	HTTPSPipeline               *HTTPSPipelineDetail
 	UpstreamCount               int
 	UpstreamListWarnings        []UpstreamListWarningDetail
 	UpstreamListFileSyncIssue   *FileSyncIssue
@@ -554,27 +615,13 @@ type runtimeState struct {
 
 func (r *trafficRuntime) stateLocked() runtimeState {
 	upstreamList := r.currentUpstreamList
-	readiness := HTTPSReadinessNotReady
-	if r.httpsReadyLocked() {
-		readiness = HTTPSReadinessReady
-	}
-	warnings := append([]HTTPSWarningDetail(nil), r.httpsWarnings...)
-	if r.userCA.Usable() && !r.now().Before(r.userCA.ExpiresAt()) {
-		readiness = HTTPSReadinessNotReady
-		warnings = []HTTPSWarningDetail{{
-			Kind:       HTTPSWarningReadinessUnavailable,
-			Diagnostic: "Installed User CA has expired.",
-			Action:     "Run `seamless-cors install`.",
-		}}
-	}
 	return runtimeState{
-		HTTPSWarningsRevision:       r.httpsWarningsRevision,
+		HTTPSPipelineRevision:       r.httpsPipelineRevision,
+		HTTPSGeneration:             r.httpsGeneration,
 		ProxyListen:                 r.listeners[0].Addr().String(),
 		PACListen:                   r.listeners[1].Addr().String(),
 		UpstreamList:                r.upstreamListPath,
-		HTTPSReadiness:              readiness,
-		HTTPSIntent:                 upstreamList.HTTPSIntent(),
-		HTTPSWarnings:               warnings,
+		HTTPSPipeline:               r.httpsPipeline,
 		UpstreamCount:               len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
 		UpstreamListWarnings:        upstreamListWarningDetails(upstreamList.Warnings),
 		UpstreamListFileSyncIssue:   r.fileSyncIssue,
@@ -583,43 +630,69 @@ func (r *trafficRuntime) stateLocked() runtimeState {
 }
 
 func (r *trafficRuntime) httpsReadyLocked() bool {
-	return r.readinessError == nil && r.userCA.Usable()
+	return r.httpsPipeline != nil &&
+		r.httpsPipeline.Phase == HTTPSPipelineSettled &&
+		r.httpsPipeline.Readiness == HTTPSReadinessReady
 }
 
-func httpsReadinessWarnings(httpsIntent bool, snapshot userca.Snapshot, assessmentErr error) []HTTPSWarningDetail {
+func settledHTTPSPipeline(snapshot userca.Snapshot, certificateOK bool, assessmentErr error) *HTTPSPipelineDetail {
+	detail := &HTTPSPipelineDetail{
+		Phase:     HTTPSPipelineSettled,
+		Readiness: HTTPSReadinessNotReady,
+	}
 	if assessmentErr != nil {
-		return []HTTPSWarningDetail{{
-			Kind:       HTTPSWarningReadinessUnavailable,
-			Diagnostic: fmt.Sprintf("HTTPS Readiness could not be assessed: %v.", assessmentErr),
-			Action:     "Run `seamless-cors install`.",
-		}}
+		detail.UserCAAssessmentIssue = &UserCAAssessmentIssue{
+			Cause:  assessmentErr.Error(),
+			Action: "Run `seamless-cors install`; if assessment still fails, report the issue.",
+		}
+		return detail
 	}
 	if snapshot.Usable() {
-		var warnings []HTTPSWarningDetail
-		if snapshot.RenewalDue() {
-			warnings = append(warnings, HTTPSWarningDetail{
-				Kind:       HTTPSWarningRenewalRecommended,
-				Diagnostic: fmt.Sprintf("Installed User CA expires soon (%s).", snapshot.ExpiresAt().Format("2006-01-02")),
-				Action:     "Run `seamless-cors install` to renew it.",
-			})
+		if !certificateOK {
+			detail.SigningMaterialIssue = &SigningMaterialIssue{
+				Diagnostic: "Installed User CA is usable but its signing material is unavailable.",
+				Action:     "Restart the gateway; if the issue persists, report it.",
+			}
+			return detail
 		}
-		return warnings
+		detail.Readiness = HTTPSReadinessReady
+		return detail
 	}
-	if !httpsIntent {
-		return nil
-	}
-	return []HTTPSWarningDetail{{
-		Kind:       HTTPSWarningUnmetIntent,
+	detail.UnmetIntent = &UnmetHTTPSIntentDetail{
 		Diagnostic: "HTTPS was requested but the Installed User CA is not usable.",
 		Action:     "Run `seamless-cors install`.",
-	}}
+	}
+	return detail
 }
 
-func hasHTTPSWarning(warnings []HTTPSWarningDetail, kind HTTPSWarningKind) bool {
-	for _, warning := range warnings {
-		if warning.Kind == kind {
-			return true
-		}
+func sameHTTPSPipelineDetail(left, right *HTTPSPipelineDetail) bool {
+	if left == nil || right == nil {
+		return left == right
 	}
-	return false
+	return left.Phase == right.Phase &&
+		left.Readiness == right.Readiness &&
+		sameUnmetHTTPSIntent(left.UnmetIntent, right.UnmetIntent) &&
+		sameUserCAAssessmentIssue(left.UserCAAssessmentIssue, right.UserCAAssessmentIssue) &&
+		sameSigningMaterialIssue(left.SigningMaterialIssue, right.SigningMaterialIssue)
+}
+
+func sameUnmetHTTPSIntent(left, right *UnmetHTTPSIntentDetail) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func sameUserCAAssessmentIssue(left, right *UserCAAssessmentIssue) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func sameSigningMaterialIssue(left, right *SigningMaterialIssue) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }

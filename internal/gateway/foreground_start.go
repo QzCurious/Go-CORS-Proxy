@@ -12,7 +12,7 @@ type StartHooks struct {
 	ConfirmUpstreamListCreation func(context.Context, UpstreamListCreationConsent) (bool, error)
 	ConfirmManagedPAC           func(context.Context, ManagedPACConsentDetail) (bool, error)
 	Started                     func(StartResult)
-	HTTPSWarningsChanged        func([]HTTPSWarningDetail)
+	HTTPSPipelineChanged        func(*HTTPSPipelineDetail)
 }
 
 func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
@@ -82,7 +82,7 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 			}
 			return fmt.Errorf("%w: %s", errStartNotActivated, start.Kind())
 		}
-		owner.lifecycle.SetHTTPSWarningsChanged(hooks.HTTPSWarningsChanged)
+		owner.lifecycle.SetHTTPSPipelineChanged(hooks.HTTPSPipelineChanged)
 		return nil
 	})
 	if errors.Is(err, errStartNotActivated) {

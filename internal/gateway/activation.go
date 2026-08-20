@@ -2,11 +2,15 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
+	"github.com/QzCurious/seamless-cors/internal/userca"
 )
+
+var errStartCAMutating = errors.New("UserCA is mutating during HTTPS pipeline admission")
 
 type startSequence struct {
 	lifecycle *lifecycle
@@ -83,32 +87,40 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		phase:  runtimePhaseStarting,
 	}
 
-	// UserCA inspection and publication share the CA admission gate so runtime
-	// never admits a snapshot from the middle of a UserCA mutation.
-	if !s.lifecycle.caAdmissionMu.TryLock() {
-		return StartAlreadyMutating{}, nil
-	}
 	publishRuntime := func() error {
-		assessment, readinessErr := s.lifecycle.userCA.Inspect(ctx)
-		if err := engine.SetInitialHTTPSReadiness(ctx, assessment, readinessErr); err != nil {
-			return err
+		state := engine.snapshot()
+		var assessment userca.Assessment
+		var assessmentErr error
+		if state.HTTPSPipeline != nil {
+			// Only an intent-admitted pipeline inspects UserCA for runtime use.
+			// The CA admission gate prevents observing an in-progress mutation.
+			if !s.lifecycle.caAdmissionMu.TryLock() {
+				return errStartCAMutating
+			}
+			defer s.lifecycle.caAdmissionMu.Unlock()
+			assessment, assessmentErr = s.lifecycle.userCA.Inspect(ctx)
+			engine.SetInitialHTTPSAssessment(assessment, assessmentErr)
 		}
 		s.lifecycle.mu.Lock()
 		defer s.lifecycle.mu.Unlock()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		s.lifecycle.userCASnapshot = assessment.Snapshot()
-		s.lifecycle.userCAAssessmentErr = readinessErr
+		if state.HTTPSPipeline != nil {
+			s.lifecycle.userCASnapshot = assessment.Snapshot()
+			s.lifecycle.userCAAssessmentErr = assessmentErr
+		}
 		s.lifecycle.runtime = active
-		if _, ok := assessment.Certificate(); ok && readinessErr == nil {
+		if engine.interceptionActive() {
 			s.lifecycle.scheduleHTTPSDeadlineLocked(active, assessment)
 		}
 		return nil
 	}
 	publishErr := publishRuntime()
-	s.lifecycle.caAdmissionMu.Unlock()
 	if publishErr != nil {
+		if errors.Is(publishErr, errStartCAMutating) {
+			return StartAlreadyMutating{}, nil
+		}
 		if ctx.Err() != nil {
 			return StartStopCancelled{}, nil
 		}
@@ -191,14 +203,25 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	go s.lifecycle.watchRuntimeChanges(runCtx, active, engine.snapshot())
 
 	state := engine.snapshot()
+	var installedCA *InstalledCAStatusDetail
+	if state.HTTPSPipeline != nil {
+		s.lifecycle.mu.Lock()
+		status := installedCAStatus(
+			s.lifecycle.userCASnapshot,
+			s.lifecycle.userCAAssessmentErr,
+			false,
+			s.lifecycle.userCACleanupIssue,
+		)
+		s.lifecycle.mu.Unlock()
+		installedCA = &status
+	}
 	return Started{Guidance: StartGuidance{
 		UpstreamListPath:            upstreamListPath,
 		ManagedPACActive:            true,
 		ManagedPACServices:          pacInstall.State().ServiceNames(),
 		ManagedPACWarnings:          managedPACWarningDetails(pacInstall.Warnings()),
-		HTTPSReadiness:              state.HTTPSReadiness,
-		HTTPSIntent:                 state.HTTPSIntent,
-		HTTPSWarnings:               state.HTTPSWarnings,
+		HTTPSPipeline:               state.HTTPSPipeline,
+		InstalledCA:                 installedCA,
 		UpstreamListWarnings:        state.UpstreamListWarnings,
 		UpstreamListFileSyncIssue:   state.UpstreamListFileSyncIssue,
 		UpstreamListProjectionIssue: state.UpstreamListProjectionIssue,

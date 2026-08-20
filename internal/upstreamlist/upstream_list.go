@@ -4,7 +4,8 @@ package upstreamlist
 // Gateway-owned Upstream List Creation.
 const DefaultContents = `# One upstream host or origin per line.
 #
-# Host selectors match HTTP and HTTPS on any port:
+# Host selectors always match HTTP on any port. Their HTTPS routes become
+# active only when at least one valid HTTPS origin selector appears below:
 # api.dev.example.com          # Exact hostname
 # *.test.example.com           # One-label wildcard
 # localhost                    # Local hostname

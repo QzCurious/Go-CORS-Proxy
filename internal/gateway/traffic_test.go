@@ -4,14 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
-	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
@@ -184,9 +188,6 @@ func TestPACPublicationExcludesInactiveHTTPSRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
-		t.Fatal(err)
-	}
 	select {
 	case <-runtime.PACProjections():
 	default:
@@ -199,7 +200,7 @@ func TestPACPublicationExcludesInactiveHTTPSRoutes(t *testing.T) {
 	desired := runtime.PACProjections()
 
 	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
-	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSIntent })
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSPipeline != nil })
 	select {
 	case state := <-desired:
 		if strings.Contains(state, "secure.example.test") {
@@ -210,47 +211,48 @@ func TestPACPublicationExcludesInactiveHTTPSRoutes(t *testing.T) {
 	}
 }
 
-func TestHTTPSIntentDoesNotReassessLatchedUserCA(t *testing.T) {
+func TestHTTPSIntentAdmitsAssessingPipelineAndRequestsAssessment(t *testing.T) {
 	source, initial, upstreamPath := createTrafficConfig(t, "api.example.test\n")
 	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errs := make(chan serverError, 1)
 	go runtime.watchUpstreamList(ctx, errs)
 
 	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
-	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSIntent })
+	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
+		return state.HTTPSPipeline != nil && state.HTTPSPipeline.Phase == HTTPSPipelineAssessing
+	})
 
 	state := runtime.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessNotReady || !hasHTTPSWarning(state.HTTPSWarnings, HTTPSWarningUnmetIntent) {
-		t.Fatalf("latched UserCA state = %#v", state)
+	if state.HTTPSPipeline.Readiness != "" {
+		t.Fatalf("assessing pipeline has readiness = %q", state.HTTPSPipeline.Readiness)
+	}
+	select {
+	case kind := <-runtime.RuntimeChanges():
+		if kind != HTTPSAssessmentRequested {
+			t.Fatalf("runtime change = %v, want assessment request", kind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HTTPS Intent did not request assessment")
 	}
 }
 
-func TestRecoverHTTPSPublishesCompleteDesiredPACInput(t *testing.T) {
+func TestInstalledUserCASettlesActivePipelineAndPublishesHTTPSPACInput(t *testing.T) {
 	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
 	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.SetInitialHTTPSReadiness(context.Background(), userca.Assessment{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	err = runtime.RecoverHTTPS(context.Background(), testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
-
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime.SetInitialHTTPSAssessment(userca.Assessment{}, nil)
+	pipeline := runtime.AdoptInstalledUserCA(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
 	state := runtime.snapshot()
-	if state.HTTPSReadiness != HTTPSReadinessReady {
+	if pipeline == nil || pipeline.Readiness != HTTPSReadinessReady || !runtime.interceptionActive() {
 		t.Fatalf("recovered state = %#v", state)
 	}
 	select {
@@ -284,7 +286,7 @@ func TestHTTPSDeadlineSignalSurvivesStatusInvalidation(t *testing.T) {
 	}
 }
 
-func TestRuntimeStatusDerivesEffectiveExpiryFromLatchedSnapshot(t *testing.T) {
+func TestDeadlineMovesCurrentReadyPipelineBackToAssessing(t *testing.T) {
 	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
 	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
@@ -292,56 +294,170 @@ func TestRuntimeStatusDerivesEffectiveExpiryFromLatchedSnapshot(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(runtime)
 	expiresAt := time.Now().Add(time.Hour)
-	if err := runtime.SetInitialHTTPSReadiness(context.Background(), testUserCASnapshot(t, expiresAt, false), nil); err != nil {
-		t.Fatal(err)
+	runtime.SetInitialHTTPSAssessment(testUserCASnapshot(t, expiresAt, false), nil)
+	before := runtime.snapshot()
+	if _, ok := runtime.BeginHTTPSDeadlineAssessment(before.HTTPSGeneration); !ok {
+		t.Fatal("deadline did not admit a fresh assessment")
 	}
-	runtime.now = func() time.Time { return expiresAt.Add(time.Second) }
-
 	state := runtime.snapshot()
-
-	if state.HTTPSReadiness != HTTPSReadinessNotReady {
-		t.Fatalf("effective expiry state = %#v", state)
-	}
-	if !strings.Contains(httpsWarningDiagnostics(state.HTTPSWarnings), "install") {
-		t.Fatalf("effective expiry warnings = %#v", state.HTTPSWarnings)
+	if state.HTTPSPipeline == nil || state.HTTPSPipeline.Phase != HTTPSPipelineAssessing || state.HTTPSPipeline.Readiness != "" {
+		t.Fatalf("deadline state = %#v", state)
 	}
 }
 
-func TestHTTPSReadinessWarningsUseOnlySemanticUserCAState(t *testing.T) {
-	noIntent := upstreamListForTrafficTest(t, "api.example.test\n")
-	intent := upstreamListForTrafficTest(t, "https://api.example.test\n")
+func TestHTTPSPipelineDetailsPreserveTheirSource(t *testing.T) {
 	expiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
+	notUsable := settledHTTPSPipeline(userca.Snapshot{}, false, nil)
+	if notUsable.UnmetIntent == nil || notUsable.UserCAAssessmentIssue != nil || notUsable.SigningMaterialIssue != nil {
+		t.Fatalf("not-usable detail = %#v", notUsable)
+	}
+	assessmentIssue := settledHTTPSPipeline(userca.Snapshot{}, false, context.DeadlineExceeded)
+	if assessmentIssue.UserCAAssessmentIssue == nil || assessmentIssue.UnmetIntent != nil {
+		t.Fatalf("assessment issue = %#v", assessmentIssue)
+	}
+	usable := testUserCASnapshot(t, expiry, true).Snapshot()
+	materialIssue := settledHTTPSPipeline(usable, false, nil)
+	if materialIssue.SigningMaterialIssue == nil || materialIssue.Readiness != HTTPSReadinessNotReady {
+		t.Fatalf("signing-material issue = %#v", materialIssue)
+	}
+	ready := settledHTTPSPipeline(usable, true, nil)
+	if ready.Readiness != HTTPSReadinessReady || ready.UnmetIntent != nil || ready.UserCAAssessmentIssue != nil || ready.SigningMaterialIssue != nil {
+		t.Fatalf("ready detail = %#v", ready)
+	}
+}
 
-	tests := []struct {
-		name     string
-		list     upstreamlist.Projection
-		snapshot userca.Snapshot
-		err      error
-		want     string
-	}{
-		{name: "not usable without intent is silent", list: noIntent},
-		{name: "not usable with intent asks for install", list: intent, want: "not usable"},
-		{
-			name:     "renewal due stays ready",
-			list:     noIntent,
-			snapshot: testUserCASnapshot(t, expiry, true).Snapshot(),
-			want:     "expires soon",
-		},
-		{
-			name: "assessment failure is distinct from state",
-			list: noIntent,
-			err:  context.DeadlineExceeded,
-			want: "could not be assessed",
-		},
+func TestStaleHTTPSAssessmentCannotSettleReplacementPipeline(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents("https://first.example.test\n"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got := httpsWarningDiagnostics(httpsReadinessWarnings(test.list.HTTPSIntent(), test.snapshot, test.err))
-			if !strings.Contains(got, test.want) {
-				t.Fatalf("warning = %q, want substring %q", got, test.want)
-			}
-		})
+	defer closeTrafficTestRuntime(runtime)
+	staleGeneration := runtime.snapshot().HTTPSGeneration
+
+	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents("api.example.test\n")); err != nil {
+		t.Fatal(err)
 	}
+	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents("https://second.example.test\n")); err != nil {
+		t.Fatal(err)
+	}
+	applied, _ := runtime.settleHTTPSAssessment(
+		staleGeneration,
+		testUserCASnapshot(t, time.Now().Add(24*time.Hour), false),
+		nil,
+	)
+	if applied {
+		t.Fatal("stale assessment settled the replacement pipeline")
+	}
+	state := runtime.snapshot()
+	if state.HTTPSPipeline == nil || state.HTTPSPipeline.Phase != HTTPSPipelineAssessing || runtime.interceptionActive() {
+		t.Fatalf("replacement pipeline = %#v", state.HTTPSPipeline)
+	}
+}
+
+func TestLiveHTTPSIntentAssessmentSettlesCurrentPipeline(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents("api.example.test\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	assessment := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
+	ca := &fakeUserCA{assessment: assessment}
+	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	active := &activeRuntime{engine: runtime, ctx: ctx, phase: runtimePhaseRunning}
+	lifecycle.runtime = active
+	go lifecycle.watchRuntimeChanges(ctx, active, runtime.snapshot())
+
+	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents("https://secure.example.test\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for pipelineReadiness(runtime.snapshot().HTTPSPipeline) != HTTPSReadinessReady {
+		select {
+		case <-deadline.C:
+			t.Fatalf("pipeline did not settle ready: %#v", runtime.snapshot().HTTPSPipeline)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+func TestLiveProxyHandlerSwapDoesNotDrainAdmittedRequest(t *testing.T) {
+	admitted := make(chan struct{})
+	release := make(chan struct{})
+	old := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(admitted)
+		<-release
+		_, _ = io.WriteString(w, "old")
+	})
+	live := &liveProxyHandler{current: old}
+	oldResult := httptest.NewRecorder()
+	oldDone := make(chan struct{})
+	go func() {
+		live.ServeHTTP(oldResult, httptest.NewRequest(http.MethodGet, "http://old.example.test", nil))
+		close(oldDone)
+	}()
+	<-admitted
+
+	live.Set(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "new")
+	}))
+	newResult := httptest.NewRecorder()
+	live.ServeHTTP(newResult, httptest.NewRequest(http.MethodGet, "http://new.example.test", nil))
+	close(release)
+	<-oldDone
+
+	if oldResult.Body.String() != "old" || newResult.Body.String() != "new" {
+		t.Fatalf("old = %q, new = %q", oldResult.Body.String(), newResult.Body.String())
+	}
+}
+
+func TestRuntimeCloseClosesGatewayOwnedProxyIdleConnections(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+	closed := make(chan struct{})
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &closeTrackingConn{Conn: conn, closed: closed}, nil
+	}
+	runtime, err := newRuntimeWithTransport("/tmp/upstreams.txt", nil, fileobservation.Contents(nil), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+	recorder := httptest.NewRecorder()
+	runtime.proxyHandler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, upstream.URL, nil))
+	response := recorder.Result()
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+
+	_ = runtime.CloseTraffic()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("runtime close left the outbound proxy connection idle")
+	}
+}
+
+type closeTrackingConn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *closeTrackingConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
 }
 
 func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) userca.Assessment {
@@ -351,23 +467,6 @@ func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) user
 		t.Fatal(err)
 	}
 	return userca.NewAssessment(snapshot, &tls.Certificate{})
-}
-
-func httpsWarningDiagnostics(warnings []HTTPSWarningDetail) string {
-	var diagnostics []string
-	for _, warning := range warnings {
-		diagnostics = append(diagnostics, warning.Diagnostic+" "+warning.Action)
-	}
-	return strings.Join(diagnostics, "\n")
-}
-
-func upstreamListForTrafficTest(t *testing.T, contents string) upstreamlist.Projection {
-	t.Helper()
-	projection, err := upstreamlist.Project([]byte(contents))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return projection
 }
 
 func closeTrafficTestRuntime(runtime *trafficRuntime) {

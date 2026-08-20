@@ -86,22 +86,21 @@ type stopFailureDetails struct {
 type installSuccessBody struct {
 	Changed            bool                 `json:"changed"`
 	InstalledCAExpires time.Time            `json:"installedCAExpires"`
-	Warnings           []HTTPSWarningDetail `json:"warnings,omitempty"`
+	HTTPSPipeline      *HTTPSPipelineDetail `json:"httpsPipeline,omitempty"`
 }
 
 type installFailureDetails struct {
 	InstalledCAExpires time.Time            `json:"installedCAExpires,omitempty"`
-	Warnings           []HTTPSWarningDetail `json:"warnings,omitempty"`
+	HTTPSPipeline      *HTTPSPipelineDetail `json:"httpsPipeline,omitempty"`
 }
 
 type uninstallSuccessBody struct {
-	Changed  bool                 `json:"changed"`
-	Warnings []HTTPSWarningDetail `json:"warnings,omitempty"`
+	Changed bool `json:"changed"`
 }
 
 type uninstallFailureDetails struct {
-	ConsentFingerprint string               `json:"consentFingerprint,omitempty"`
-	Warnings           []HTTPSWarningDetail `json:"warnings,omitempty"`
+	ConsentFingerprint string              `json:"consentFingerprint,omitempty"`
+	CleanupIssue       *UserCACleanupIssue `json:"cleanupIssue,omitempty"`
 }
 
 func startSuccessBodyFrom(result StartResult) startSuccessBody {
@@ -204,7 +203,7 @@ func (dto stopFailureDetails) semantic(kind StopResultKind) StopResult {
 }
 
 func installSuccessBodyFrom(result InstallResult) installSuccessBody {
-	return installSuccessBody{Changed: result.Kind == InstallResultInstalled, InstalledCAExpires: result.InstalledCAExpires, Warnings: result.Warnings}
+	return installSuccessBody{Changed: result.Kind == InstallResultInstalled, InstalledCAExpires: result.InstalledCAExpires, HTTPSPipeline: result.HTTPSPipeline}
 }
 
 func (dto installSuccessBody) semantic() InstallResult {
@@ -212,19 +211,19 @@ func (dto installSuccessBody) semantic() InstallResult {
 	if dto.Changed {
 		kind = InstallResultInstalled
 	}
-	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires, Warnings: dto.Warnings}
+	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires, HTTPSPipeline: dto.HTTPSPipeline}
 }
 
 func installFailureDetailsFrom(result InstallResult) installFailureDetails {
-	return installFailureDetails{result.InstalledCAExpires, result.Warnings}
+	return installFailureDetails{result.InstalledCAExpires, result.HTTPSPipeline}
 }
 
 func (dto installFailureDetails) semantic(kind InstallResultKind) InstallResult {
-	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires, Warnings: dto.Warnings}
+	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires, HTTPSPipeline: dto.HTTPSPipeline}
 }
 
 func uninstallSuccessBodyFrom(result UninstallResult) uninstallSuccessBody {
-	return uninstallSuccessBody{Changed: result.Kind == UninstallResultUninstalled, Warnings: result.Warnings}
+	return uninstallSuccessBody{Changed: result.Kind == UninstallResultUninstalled}
 }
 
 func (dto uninstallSuccessBody) semantic() UninstallResult {
@@ -232,13 +231,13 @@ func (dto uninstallSuccessBody) semantic() UninstallResult {
 	if dto.Changed {
 		kind = UninstallResultUninstalled
 	}
-	return UninstallResult{Kind: kind, Warnings: dto.Warnings}
+	return UninstallResult{Kind: kind}
 }
 
 func uninstallFailureDetailsFrom(result UninstallResult) uninstallFailureDetails {
-	return uninstallFailureDetails{result.ConsentFingerprint, result.Warnings}
+	return uninstallFailureDetails{result.ConsentFingerprint, result.CleanupIssue}
 }
 
 func (dto uninstallFailureDetails) semantic(kind UninstallResultKind) UninstallResult {
-	return UninstallResult{Kind: kind, ConsentFingerprint: dto.ConsentFingerprint, Warnings: dto.Warnings}
+	return UninstallResult{Kind: kind, ConsentFingerprint: dto.ConsentFingerprint, CleanupIssue: dto.CleanupIssue}
 }
