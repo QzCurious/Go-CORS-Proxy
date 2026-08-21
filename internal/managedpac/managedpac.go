@@ -168,6 +168,21 @@ type InstallResult struct {
 	warnings          []Warning
 }
 
+// ReconciliationResult is the latest complete Managed PAC runtime snapshot
+// produced by one publication attempt. Warnings replace the preceding
+// snapshot; they are not an event history.
+type ReconciliationResult struct {
+	state    RuntimeState
+	warnings []Warning
+}
+
+func NewReconciliationResult(state RuntimeState, warnings []Warning) ReconciliationResult {
+	return ReconciliationResult{state: cloneRuntimeState(state), warnings: append([]Warning(nil), warnings...)}
+}
+
+func (r ReconciliationResult) State() RuntimeState { return cloneRuntimeState(r.state) }
+func (r ReconciliationResult) Warnings() []Warning { return append([]Warning(nil), r.warnings...) }
+
 // NewInstallResult returns an immutable Managed PAC installation result.
 func NewInstallResult(state RuntimeState, installedServices []string, warnings []Warning) InstallResult {
 	return InstallResult{
@@ -201,12 +216,15 @@ type ManagedPAC struct {
 
 	projectionPublisher   conflatedstream.Publisher[string]
 	projectionStream      conflatedstream.Stream[string]
+	resultPublisher       conflatedstream.Publisher[ReconciliationResult]
+	resultStream          conflatedstream.Stream[ReconciliationResult]
 	projectionWorkerDone  chan struct{}
 	projectionWorkerStop  chan struct{}
 	latestProjection      *string
 	pacListen             string
 	publicationGeneration uint64
 	serviceNames          []string
+	runtimeState          RuntimeState
 }
 
 const projectionPublicationRetry = 100 * time.Millisecond
@@ -217,10 +235,13 @@ func Open() *ManagedPAC {
 
 func openWithSettings(settings systemSettings) *ManagedPAC {
 	projectionPublisher, projectionStream := conflatedstream.New[string]()
+	resultPublisher, resultStream := conflatedstream.New[ReconciliationResult]()
 	return &ManagedPAC{
 		settings:            settings,
 		projectionPublisher: projectionPublisher,
 		projectionStream:    projectionStream,
+		resultPublisher:     resultPublisher,
+		resultStream:        resultStream,
 	}
 }
 
@@ -264,6 +285,12 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	if workerDone != nil {
 		<-workerDone
 	}
+	// A completed prior runtime must not leak a pending latest-value result
+	// into the next Gateway Runtime activation.
+	select {
+	case <-m.resultStream.Updates():
+	default:
+	}
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 
@@ -274,13 +301,17 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	pacURL := PACURL(pacListen, generation)
 
 	installed, warnings, publicationErr := m.attemptPublication(ctx, selected, pacURL)
-	state := NewRuntimeState(selected, pacURL)
+	state := NewRuntimeState(selected, "")
+	if publicationErr == nil {
+		state = NewRuntimeState(selected, pacURL)
+	}
 	result := NewInstallResult(state, installed, warnings)
 
 	m.mu.Lock()
 	m.latestProjection = &projection
 	m.pacListen = pacListen
 	m.serviceNames = append([]string(nil), selected...)
+	m.runtimeState = state
 	if publicationErr != nil {
 		m.projectionPublisher.Publish(projection)
 	}
@@ -303,6 +334,13 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	// Initial publication failures are retained inside Managed PAC and retried
 	// by its projection worker. Gateway can continue serving its runtime.
 	return result, nil
+}
+
+// ReconciliationResults delivers latest-value publication outcomes to the
+// Gateway Runtime. Managed PAC remains the sole owner of reconciliation and
+// publication generation.
+func (m *ManagedPAC) ReconciliationResults() <-chan ReconciliationResult {
+	return m.resultStream.Updates()
 }
 
 // PublishProjection records the newest changed PAC Projection and returns
@@ -414,19 +452,25 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 	m.activeCancel = cancel
 	m.mu.Unlock()
 	pacURL := PACURL(pacListen, generation)
-	_, _, err := m.attemptPublication(ctx, serviceNames, pacURL)
+	_, warnings, err := m.attemptPublication(ctx, serviceNames, pacURL)
 	cancel()
 
 	m.mu.Lock()
 	m.activeCancel = nil
+	state := cloneRuntimeState(m.runtimeState)
+	if err == nil {
+		state = NewRuntimeState(serviceNames, pacURL)
+		m.runtimeState = state
+	}
 	m.mu.Unlock()
+	m.resultPublisher.Publish(NewReconciliationResult(state, warnings))
 	return err == nil
 }
 
 func (m *ManagedPAC) attemptPublication(ctx context.Context, serviceNames []string, pacURL string) ([]string, []Warning, error) {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, []Warning{{Kind: WarningUpdateFailed, Diagnostic: err.Error()}}, err
 	}
 	installed, warnings := m.applyEligible(ctx, snapshot, serviceNames, pacURL)
 	for _, warning := range warnings {
@@ -495,7 +539,16 @@ func (m *ManagedPAC) Uninstall(ctx context.Context) error {
 	}
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	return m.cleanupActiveStateLocked(ctx)
+	err := m.cleanupActiveStateLocked(ctx)
+	if err == nil {
+		m.mu.Lock()
+		m.runtimeState = RuntimeState{}
+		m.serviceNames = nil
+		m.latestProjection = nil
+		m.pacListen = ""
+		m.mu.Unlock()
+	}
+	return err
 }
 
 func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {

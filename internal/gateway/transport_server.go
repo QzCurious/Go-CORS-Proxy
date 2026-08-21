@@ -136,15 +136,15 @@ func (s *routerServer) stop(ctx context.Context, _ *struct{}) (*stopOutput, erro
 	if err != nil {
 		return nil, newRouterError(http.StatusInternalServerError, "Gateway could not produce a Stop result.", err)
 	}
-	if result.Fulfillment() == CommandUnfulfilled {
-		return nil, newGatewayError(http.StatusInternalServerError, string(result.Kind), "Gateway cleanup did not complete.", stopFailureDetailsFrom(result))
-	}
-	if result.Kind == StopResultStopped {
+	if result.Kind == StopResultStopped || result.Kind == StopResultCleanupFailed {
+		s.requestShutdown()
 		go func() {
 			time.Sleep(25 * time.Millisecond)
-			s.requestShutdown()
 			_ = s.server.Close()
 		}()
+	}
+	if result.Fulfillment() == CommandUnfulfilled {
+		return nil, newGatewayError(http.StatusInternalServerError, string(result.Kind), "Gateway cleanup did not complete.", stopFailureDetailsFrom(result))
 	}
 	return &stopOutput{Body: stopSuccessBodyFrom(result)}, nil
 }

@@ -98,6 +98,50 @@ func TestSuperviseOwnerContinuesAfterActivationCompletes(t *testing.T) {
 	}
 }
 
+func TestUnexpectedRouterTerminationExecutesOwnerStop(t *testing.T) {
+	coord := newCoordinator(t.TempDir())
+	lease, acquired, err := coord.AcquireOwnershipLease()
+	if err != nil || !acquired {
+		t.Fatalf("acquire ownership lease = %t, %v", acquired, err)
+	}
+	settings := &lifecycleTestSystemSettings{}
+	owner, err := newOwnerWithCoordinator(settings, emptyTestUserCA{}, coord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.lease = lease
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- owner.Run(context.Background(), func(context.Context) error {
+			close(ready)
+			return nil
+		})
+	}()
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("owner did not publish")
+	}
+	if err := owner.router.server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatalf("owner run error = %v", runErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner did not end after Router termination")
+	}
+	if settings.uninstallCalls != 1 {
+		t.Fatalf("Managed PAC uninstall calls = %d, want 1", settings.uninstallCalls)
+	}
+	if coord.Exists() {
+		t.Fatal("unexpected Router termination preserved Gateway State Cache")
+	}
+}
+
 func receiveOwnerEvent(t *testing.T, events <-chan ownerEvent) ownerEvent {
 	t.Helper()
 	select {

@@ -42,6 +42,7 @@ func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
 }
 
 func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
+	coord := newCoordinator(t.TempDir())
 	settings := &lifecycleTestSystemSettings{
 		services: []managedpac.Service{{
 			Name:      "Wi-Fi",
@@ -51,10 +52,15 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 		}},
 		clearErr: errors.New("cleanup denied"),
 	}
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "127.0.0.1:1")
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, coord, "127.0.0.1:1")
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "token"}
+	if err := coord.Claim(cache); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.SetOwnerCache(cache)
 
 	stopped, err := lifecycle.Stop(context.Background())
 	if err != nil {
@@ -65,6 +71,9 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	}
 	if settings.cleanupCalls != 0 || settings.uninstallCalls != 1 {
 		t.Fatalf("cleanup calls = %d, uninstall calls = %d", settings.cleanupCalls, settings.uninstallCalls)
+	}
+	if coord.Exists() {
+		t.Fatal("cleanup failure preserved Gateway State Cache")
 	}
 
 	status, err := lifecycle.Status(context.Background(), false)
@@ -104,6 +113,10 @@ func (*blockingCleanupSettings) InstallProjection(context.Context, []string, str
 }
 
 func (*blockingCleanupSettings) PublishProjection(string) {}
+
+func (*blockingCleanupSettings) ReconciliationResults() <-chan managedpac.ReconciliationResult {
+	return make(chan managedpac.ReconciliationResult)
+}
 
 func (f *blockingCleanupSettings) CleanupActiveState(ctx context.Context) error {
 	return f.Uninstall(ctx)

@@ -788,7 +788,7 @@ QA engineer: "No, PAC Routing projects the current effective Upstream List, HTTP
 
 Developer: "How do Upstream List changes reach the operating system proxy?"
 
-QA engineer: "The PAC Endpoint serves the current Generated PAC, and Managed PAC advances its publication generation when clients need a new URL to observe an effective update."
+QA engineer: "The PAC Endpoint serves the current Generated PAC, and Managed PAC advances its publication generation for every adopted Upstream List Projection, including warning-only changes."
 
 Developer: "Can I avoid changing my system proxy settings?"
 
@@ -832,7 +832,7 @@ QA engineer: "No, Gateway continuously observes the file, adopts every successfu
 
 Developer: "What happens if I save an invalid config file while the gateway is running?"
 
-QA engineer: "Rejected Upstream List Contents produce an Upstream List Projection Issue while Gateway selects an Empty Upstream List, updates PAC only if its projection changes, and continues observing for a valid correction."
+QA engineer: "Rejected Upstream List Contents produce an Upstream List Projection Issue while Gateway selects an Empty Upstream List, publishes that adopted projection, and continues observing for a valid correction."
 
 Developer: "What if my config still has removed listener or managed-proxy settings?"
 

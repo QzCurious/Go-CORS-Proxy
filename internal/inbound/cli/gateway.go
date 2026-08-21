@@ -19,10 +19,39 @@ import (
 
 var errManagedPACConsentDeclined = errors.New("Managed PAC consent declined")
 
+var forceExit = os.Exit
+
+func foregroundSignalContext() (context.Context, func()) {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go superviseForegroundSignals(signals, done, cancel, forceExit)
+	return ctx, func() {
+		signal.Stop(signals)
+		close(done)
+		cancel()
+	}
+}
+
+func superviseForegroundSignals(signals <-chan os.Signal, done <-chan struct{}, cancel context.CancelFunc, force func(int)) {
+	select {
+	case <-signals:
+		cancel()
+	case <-done:
+		return
+	}
+	select {
+	case <-signals:
+		force(130)
+	case <-done:
+	}
+}
+
 type startCommand func(context.Context, gateway.StartHooks) (gateway.StartResult, error)
 
 func start(stdin io.Reader, stdout, _ io.Writer) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := foregroundSignalContext()
 	defer stop()
 	return startWithContextAndInput(ctx, stdin, stdout, gateway.Start)
 }
@@ -103,7 +132,7 @@ func confirmUpstreamListCreation(ctx context.Context, stdin io.Reader, stdout io
 type serveCommand func(context.Context, func()) error
 
 func serve(stdout, _ io.Writer) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := foregroundSignalContext()
 	defer stop()
 	return serveWithContext(ctx, stdout, gateway.Serve)
 }
@@ -351,6 +380,9 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 				if len(guidance.ManagedPACServices) > 0 {
 					fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(guidance.ManagedPACServices, ", "))
 				}
+				if guidance.ManagedPACPublicationURL != "" {
+					fmt.Fprintf(stdout, "managed-pac-publication-url: %s\n", guidance.ManagedPACPublicationURL)
+				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
 			renderFileSyncIssue(stdout, guidance.UpstreamListFileSyncIssue)
@@ -509,6 +541,9 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		}
 		if len(result.Runtime.ManagedPACServices) > 0 {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
+		}
+		if result.Runtime.ManagedPACPublicationURL != "" {
+			fmt.Fprintf(stdout, "managed-pac-publication-url: %s\n", result.Runtime.ManagedPACPublicationURL)
 		}
 		renderManagedPACWarnings(stdout, result.Runtime.ManagedPACWarnings)
 		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSPipeline))

@@ -69,7 +69,57 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	if len(started.Guidance.ManagedPACWarnings) != 1 || started.Guidance.ManagedPACWarnings[0].ServiceName != "Ethernet" {
 		t.Fatalf("managed PAC warnings = %#v", started.Guidance.ManagedPACWarnings)
 	}
+	if started.Guidance.ManagedPACPublicationURL != "ignored by assertion" {
+		t.Fatalf("Managed PAC publication URL = %q", started.Guidance.ManagedPACPublicationURL)
+	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
+}
+
+func TestStatusAdoptsLatestManagedPACReconciliationSnapshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".seamless-cors")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan managedpac.ReconciliationResult, 1)
+	settings := &lifecycleTestSystemSettings{
+		services:              []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		reconciliationResults: results,
+	}
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(filepath.Join(configDir, "runtime")), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeAcceptedStart(lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
+
+	results <- managedpac.NewReconciliationResult(
+		managedpac.NewRuntimeState([]string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=2"),
+		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Wi-Fi", Diagnostic: "foreign PAC state is active"}},
+	)
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, statusErr := lifecycle.Status(context.Background(), false)
+		if statusErr != nil {
+			t.Fatal(statusErr)
+		}
+		if status.Runtime != nil && status.Runtime.ManagedPACPublicationURL == "http://127.0.0.1/seamless-cors.pac?v=2" {
+			if len(status.Runtime.ManagedPACWarnings) != 1 || status.Runtime.ManagedPACWarnings[0].Kind != ManagedPACWarningDrift {
+				t.Fatalf("Managed PAC warnings = %#v", status.Runtime.ManagedPACWarnings)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("status did not adopt reconciliation: %#v", status.Runtime)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testing.T) {
@@ -706,15 +756,16 @@ func (emptyTestUserCA) Uninstall(context.Context) (userca.UninstallResult, error
 }
 
 type lifecycleTestSystemSettings struct {
-	services       []managedpac.Service
-	applied        int
-	installResult  *managedpac.InstallResult
-	installErr     error
-	stateErr       error
-	clearErr       error
-	cleared        int
-	cleanupCalls   int
-	uninstallCalls int
+	services              []managedpac.Service
+	applied               int
+	installResult         *managedpac.InstallResult
+	installErr            error
+	stateErr              error
+	clearErr              error
+	cleared               int
+	cleanupCalls          int
+	uninstallCalls        int
+	reconciliationResults <-chan managedpac.ReconciliationResult
 }
 
 func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
@@ -737,6 +788,10 @@ func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, servi
 }
 
 func (*lifecycleTestSystemSettings) PublishProjection(string) {}
+
+func (f *lifecycleTestSystemSettings) ReconciliationResults() <-chan managedpac.ReconciliationResult {
+	return f.reconciliationResults
+}
 
 func (f *lifecycleTestSystemSettings) CleanupActiveState(context.Context) error {
 	f.cleared++

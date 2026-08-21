@@ -6,7 +6,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+func TestCleanupFailedStopStillTerminatesRouter(t *testing.T) {
+	server := newRouter("token", &fakeCommandHandler{})
+	_, err := server.stop(context.Background(), nil)
+	if err == nil {
+		t.Fatal("cleanup-failed Stop should use the error response")
+	}
+	select {
+	case <-server.ShutdownRequested():
+	case <-time.After(time.Second):
+		t.Fatal("cleanup-failed Stop did not terminate the Router")
+	}
+}
 
 func TestDocsAndOpenAPIDoNotRequireToken(t *testing.T) {
 	server := newRouter("token", &fakeCommandHandler{})

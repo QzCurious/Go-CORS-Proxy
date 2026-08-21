@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -76,27 +77,38 @@ func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) erro
 	event := superviseOwner(ctx, afterPublish, o.router.ShutdownRequested(), o.lifecycle.FatalRuntimeErrors(), errs)
 	switch event.kind {
 	case ownerEventContextDone:
-		_, _ = o.lifecycle.Stop(context.Background())
-		_ = o.router.Close(context.Background())
-		return nil
+		return o.stopAndClose(event.err)
 	case ownerEventShutdownRequested:
 		_ = o.router.Close(context.Background())
 		return nil
 	case ownerEventFatalRuntime:
-		_, _ = o.lifecycle.Stop(context.Background())
-		_ = o.router.Close(context.Background())
-		return event.err
+		return o.stopAndClose(event.err)
 	case ownerEventRouterStopped:
-		if event.err == nil || event.err == http.ErrServerClosed {
-			return nil
+		// A Router that terminates without an explicit Stop still executes the
+		// same terminal Owner Stop path before ownership is released.
+		if event.err == http.ErrServerClosed {
+			event.err = nil
 		}
-		return event.err
+		return o.stopAndClose(event.err)
 	case ownerEventActivationFailed:
 		_ = o.closeOwnerOnly(context.Background())
 		return event.err
 	default:
 		return fmt.Errorf("unknown gateway owner event %d", event.kind)
 	}
+}
+
+type ownerStopCleanupError struct{ failures []CleanupFailureDetail }
+
+func (ownerStopCleanupError) Error() string { return "owner stop left gateway cleanup residue" }
+
+func (o *owner) stopAndClose(cause error) error {
+	result, stopErr := o.lifecycle.Stop(context.Background())
+	closeErr := o.router.Close(context.Background())
+	if result.Fulfillment() == CommandUnfulfilled {
+		stopErr = errors.Join(stopErr, ownerStopCleanupError{failures: append([]CleanupFailureDetail(nil), result.CleanupFailures...)})
+	}
+	return errors.Join(cause, stopErr, closeErr)
 }
 
 func (o *owner) Shutdown(ctx context.Context) error {

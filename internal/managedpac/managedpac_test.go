@@ -294,6 +294,63 @@ func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *t
 	}
 }
 
+func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testing.T) {
+	first := mustDesiredList(t, "api.example.test\n")
+	second := mustDesiredList(t, "second.example.test\n")
+	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	module := openWithSettings(settings)
+	install, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialURL := install.State().PACURL()
+
+	settings.mu.Lock()
+	settings.states[0].PACURL = "http://corp.example/proxy.pac"
+	settings.mu.Unlock()
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
+	drift := receiveReconciliation(t, module.ReconciliationResults())
+	if warnings := drift.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
+		t.Fatalf("drift warnings = %#v", warnings)
+	}
+	if drift.State().PACURL() == initialURL {
+		t.Fatalf("drift publication URL did not advance: %q", drift.State().PACURL())
+	}
+
+	settings.mu.Lock()
+	settings.states[0].PACURL = initialURL
+	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
+	settings.mu.Unlock()
+	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
+	failed := receiveReconciliation(t, module.ReconciliationResults())
+	if warnings := failed.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningUpdateFailed {
+		t.Fatalf("failure warnings = %#v", warnings)
+	}
+	failedURL := failed.State().PACURL()
+
+	settings.mu.Lock()
+	settings.applyErrors = nil
+	settings.mu.Unlock()
+	recovered := receiveReconciliation(t, module.ReconciliationResults())
+	if warnings := recovered.Warnings(); len(warnings) != 0 {
+		t.Fatalf("recovery warnings = %#v, want cleared", warnings)
+	}
+	if recovered.State().PACURL() == failedURL {
+		t.Fatalf("retry did not publish a new generation: %q", recovered.State().PACURL())
+	}
+}
+
+func receiveReconciliation(t *testing.T, results <-chan ReconciliationResult) ReconciliationResult {
+	t.Helper()
+	select {
+	case result := <-results:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Managed PAC reconciliation result")
+		return ReconciliationResult{}
+	}
+}
+
 func mustDesiredList(t *testing.T, contents string) upstreamlist.Projection {
 	t.Helper()
 	list, err := upstreamlist.Project([]byte(contents))

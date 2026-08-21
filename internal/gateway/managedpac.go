@@ -13,6 +13,7 @@ type managedPACModule interface {
 	Inspect(context.Context) (managedpac.Snapshot, error)
 	InstallProjection(context.Context, []string, string, string) (managedpac.InstallResult, error)
 	PublishProjection(string)
+	ReconciliationResults() <-chan managedpac.ReconciliationResult
 	CleanupActiveState(context.Context) error
 	Uninstall(context.Context) error
 }

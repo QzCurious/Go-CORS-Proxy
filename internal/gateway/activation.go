@@ -219,6 +219,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		UpstreamListPath:            upstreamListPath,
 		ManagedPACActive:            true,
 		ManagedPACServices:          pacInstall.State().ServiceNames(),
+		ManagedPACPublicationURL:    pacInstall.State().PACURL(),
 		ManagedPACWarnings:          managedPACWarningDetails(pacInstall.Warnings()),
 		HTTPSPipeline:               state.HTTPSPipeline,
 		InstalledCA:                 installedCA,

@@ -46,7 +46,7 @@ func stop(ctx context.Context, pac managedPACModule) (StopResult, error) {
 	if err != nil {
 		return StopResult{}, err
 	}
-	if result.Kind == StopResultStopped {
+	if result.Kind == StopResultStopped || result.Kind == StopResultCleanupFailed {
 		waitForStop(target.cache)
 	}
 	return result, nil

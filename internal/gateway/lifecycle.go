@@ -280,6 +280,7 @@ type StartGuidance struct {
 	UpstreamListPath            string                       `json:"upstreamListPath"`
 	ManagedPACActive            bool                         `json:"managedPacActive"`
 	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
+	ManagedPACPublicationURL    string                       `json:"managedPacPublicationUrl,omitempty"`
 	HTTPSPipeline               *HTTPSPipelineDetail         `json:"httpsPipeline,omitempty"`
 	InstalledCA                 *InstalledCAStatusDetail     `json:"installedCA,omitempty"`
 	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
@@ -469,6 +470,7 @@ type RuntimeStatusDetail struct {
 	HTTPSPipeline               *HTTPSPipelineDetail         `json:"httpsPipeline,omitempty"`
 	ManagedPACActive            bool                         `json:"managedPacActive"`
 	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
+	ManagedPACPublicationURL    string                       `json:"managedPacPublicationUrl,omitempty"`
 	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
 }
 
@@ -942,18 +944,19 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	if startDone != nil {
 		<-startDone
 	}
+	// Once traffic and any preempted Start have settled, wait for admitted
+	// owner-owned CA work before durable footprint cleanup.
+	f.caAdmissionMu.Lock()
+	f.caAdmissionMu.Unlock()
 	var cleanupFailures []CleanupFailureDetail
 	if failure := uninstallManagedPAC(ctx, f.managedPAC); failure != nil {
 		cleanupFailures = append(cleanupFailures, *failure)
 	}
-	// Stop closes traffic first, then waits for owner-owned CA work.
-	f.caAdmissionMu.Lock()
-	f.caAdmissionMu.Unlock()
 	var ownedCache *stateCache
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
 		ownedCache = &ownerCache
 	}
-	cleanupFailures = append(cleanupFailures, cleanGatewayStateCache(f.coord, ownedCache, len(cleanupFailures) > 0)...)
+	cleanupFailures = append(cleanupFailures, cleanGatewayStateCache(f.coord, ownedCache)...)
 	if len(cleanupFailures) > 0 {
 		return StopResult{
 			Kind:            StopResultCleanupFailed,
@@ -976,12 +979,14 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	var phase runtimePhase
 	var managedPACActive bool
 	var managedPACServiceNames []string
+	var managedPACPublicationURL string
 	var managedPACWarningSnapshot []ManagedPACWarningDetail
 	if active != nil {
 		phase = active.phase
 		if active.managedPAC != nil {
 			managedPACActive = true
 			managedPACServiceNames = active.managedPAC.state.ServiceNames()
+			managedPACPublicationURL = active.managedPAC.state.PACURL()
 			managedPACWarningSnapshot = append([]ManagedPACWarningDetail(nil), active.managedPAC.warnings...)
 		}
 	}
@@ -1021,6 +1026,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			HTTPSPipeline:               state.HTTPSPipeline,
 			ManagedPACActive:            managedPACActive,
 			ManagedPACServices:          managedPACServiceNames,
+			ManagedPACPublicationURL:    managedPACPublicationURL,
 			ManagedPACWarnings:          managedPACWarningSnapshot,
 		}
 		return result, nil
@@ -1197,6 +1203,13 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 			return
 		case projection := <-active.engine.PACProjections():
 			f.managedPAC.PublishProjection(projection)
+		case result := <-f.managedPAC.ReconciliationResults():
+			f.mu.Lock()
+			if f.runtime == active && active.managedPAC != nil {
+				active.managedPAC.state = result.State()
+				active.managedPAC.warnings = managedPACWarningDetails(result.Warnings())
+			}
+			f.mu.Unlock()
 		case kind := <-active.engine.RuntimeChanges():
 			state := active.engine.snapshot()
 			consumePipeline := func() {

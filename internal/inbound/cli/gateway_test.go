@@ -5,12 +5,38 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/gateway"
 )
+
+func TestSecondForegroundSignalForcesExit(t *testing.T) {
+	signals := make(chan os.Signal, 2)
+	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	forced := make(chan int, 1)
+	go superviseForegroundSignals(signals, done, cancel, func(code int) { forced <- code })
+
+	signals <- os.Interrupt
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("first signal did not request graceful stop")
+	}
+	signals <- os.Interrupt
+	select {
+	case code := <-forced:
+		if code != 130 {
+			t.Fatalf("forced exit code = %d, want 130", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second signal did not force exit")
+	}
+}
 
 func TestManagedPACConsentPromptShowsProposedAndExcludedServices(t *testing.T) {
 	var out bytes.Buffer

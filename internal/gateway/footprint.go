@@ -24,13 +24,10 @@ func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coo
 	if failure := cleanManagedPACActiveState(ctx, pac); failure != nil {
 		failures = append(failures, *failure)
 	}
-	return append(failures, cleanGatewayStateCache(coord, ownedCache, len(failures) > 0)...)
+	return append(failures, cleanGatewayStateCache(coord, ownedCache)...)
 }
 
-func cleanGatewayStateCache(coord *coordinator, ownedCache *stateCache, managedPACFailed bool) []CleanupFailureDetail {
-	if ownedCache != nil && managedPACFailed {
-		return nil
-	}
+func cleanGatewayStateCache(coord *coordinator, ownedCache *stateCache) []CleanupFailureDetail {
 	var err error
 	if ownedCache == nil {
 		err = coord.Remove()
