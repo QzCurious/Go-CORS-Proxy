@@ -1,3 +1,0 @@
-# Place independently composed inbound adapters under internal/inbound
-
-Independently composed Inbound Adapters live under `internal/inbound`, expose a deep interface to their composition root, and may depend inward on the modules they drive; production packages outside `cmd` must not import them. We chose this enforced dependency namespace over a decorative adapter taxonomy, a compatibility forwarding layer, or ceremonial Go port interfaces: the CLI therefore moves cleanly to `internal/inbound/cli` with `Run` as its sole external interface, while the private Gateway Router remains inside the Gateway Module until it is intentionally extracted as a module seam.
