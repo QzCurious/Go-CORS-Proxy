@@ -943,7 +943,7 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 		<-startDone
 	}
 	var cleanupFailures []CleanupFailureDetail
-	if failure := cleanManagedPAC(ctx, f.managedPAC); failure != nil {
+	if failure := uninstallManagedPAC(ctx, f.managedPAC); failure != nil {
 		cleanupFailures = append(cleanupFailures, *failure)
 	}
 	// Stop closes traffic first, then waits for owner-owned CA work.

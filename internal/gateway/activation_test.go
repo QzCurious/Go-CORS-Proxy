@@ -138,6 +138,9 @@ func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T)
 	if !ok || len(cleanup.Failures) != 1 {
 		t.Fatalf("start result = %#v", result)
 	}
+	if settings.cleanupCalls != 1 || settings.uninstallCalls != 0 {
+		t.Fatalf("cleanup calls = %d, uninstall calls = %d", settings.cleanupCalls, settings.uninstallCalls)
+	}
 }
 
 func TestExecuteStartStopsWhenNoManageablePACServiceExists(t *testing.T) {
@@ -703,13 +706,15 @@ func (emptyTestUserCA) Uninstall(context.Context) (userca.UninstallResult, error
 }
 
 type lifecycleTestSystemSettings struct {
-	services      []managedpac.Service
-	applied       int
-	installResult *managedpac.InstallResult
-	installErr    error
-	stateErr      error
-	clearErr      error
-	cleared       int
+	services       []managedpac.Service
+	applied        int
+	installResult  *managedpac.InstallResult
+	installErr     error
+	stateErr       error
+	clearErr       error
+	cleared        int
+	cleanupCalls   int
+	uninstallCalls int
 }
 
 func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
@@ -733,8 +738,18 @@ func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, servi
 
 func (*lifecycleTestSystemSettings) PublishProjection(string) {}
 
+func (f *lifecycleTestSystemSettings) CleanupActiveState(context.Context) error {
+	f.cleared++
+	f.cleanupCalls++
+	if f.clearErr != nil {
+		return f.clearErr
+	}
+	return nil
+}
+
 func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
 	f.cleared++
+	f.uninstallCalls++
 	if f.clearErr != nil {
 		return f.clearErr
 	}

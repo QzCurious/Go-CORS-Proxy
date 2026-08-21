@@ -81,7 +81,7 @@ if ($null -ne $prop -and $null -ne $prop.AutoConfigURL) {
 	return []serviceSnapshot{snapshot}, nil
 }
 
-func (s *windowsSystemSettings) ClearOwned(ctx context.Context, serviceNames []string) error {
+func (s *windowsSystemSettings) DisableOwned(ctx context.Context, serviceNames []string) error {
 	if !containsString(serviceNames, windowsPACServiceName) {
 		return nil
 	}

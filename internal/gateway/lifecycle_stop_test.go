@@ -63,6 +63,9 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	if stopped.Kind != StopResultCleanupFailed {
 		t.Fatalf("stop kind = %s, want %s", stopped.Kind, StopResultCleanupFailed)
 	}
+	if settings.cleanupCalls != 0 || settings.uninstallCalls != 1 {
+		t.Fatalf("cleanup calls = %d, uninstall calls = %d", settings.cleanupCalls, settings.uninstallCalls)
+	}
 
 	status, err := lifecycle.Status(context.Background(), false)
 	if err != nil {
@@ -101,6 +104,10 @@ func (*blockingCleanupSettings) InstallProjection(context.Context, []string, str
 }
 
 func (*blockingCleanupSettings) PublishProjection(string) {}
+
+func (f *blockingCleanupSettings) CleanupActiveState(ctx context.Context) error {
+	return f.Uninstall(ctx)
+}
 
 func (f *blockingCleanupSettings) Uninstall(context.Context) error {
 	close(f.cleanupEntered)

@@ -14,15 +14,16 @@ import (
 )
 
 type fakeSettings struct {
-	mu           sync.Mutex
-	states       []serviceSnapshot
-	snapshotErr  error
-	applyErrors  map[string]error
-	applyStarted chan string
-	applyRelease chan struct{}
-	ignoreCancel bool
-	writes       []string
-	clearErr     error
+	mu            sync.Mutex
+	states        []serviceSnapshot
+	snapshotErr   error
+	applyErrors   map[string]error
+	applyStarted  chan string
+	applyRelease  chan struct{}
+	ignoreCancel  bool
+	writes        []string
+	clearErr      error
+	disableErrors map[string]error
 }
 
 func (f *fakeSettings) Snapshot(context.Context) ([]serviceSnapshot, error) {
@@ -69,17 +70,19 @@ func (f *fakeSettings) Apply(ctx context.Context, pacURL string, serviceNames []
 	return applyResult{}, nil
 }
 
-func (f *fakeSettings) ClearOwned(_ context.Context, serviceNames []string) error {
+func (f *fakeSettings) DisableOwned(_ context.Context, serviceNames []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.clearErr != nil {
 		return f.clearErr
 	}
+	if err := f.disableErrors[serviceNames[0]]; err != nil {
+		return err
+	}
 	selected := stringSet(serviceNames)
 	for index := range f.states {
 		state := &f.states[index]
-		if _, ok := selected[state.ServiceName]; ok && IsOwnedURL(state.PACURL) {
-			state.PACURL = ""
+		if _, ok := selected[state.ServiceName]; ok && state.Enabled && IsOwnedURL(state.PACURL) {
 			state.Enabled = false
 		}
 	}
@@ -103,6 +106,61 @@ func TestInspectClassifiesOnlyEmptyAndOwnedServicesAsManageable(t *testing.T) {
 	services := snapshot.Services()
 	if services[2].Name != "Wi-Fi" || services[2].Ownership != OwnershipForeign {
 		t.Fatalf("services not sorted or classified: %#v", services)
+	}
+}
+
+func TestSnapshotDistinguishesOwnedURLFromActiveOwnedState(t *testing.T) {
+	snapshot := NewSnapshot([]Service{
+		{Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false, Ownership: OwnershipOwned},
+	})
+
+	if !snapshot.HasOwnedState() {
+		t.Fatal("disabled retained URL should remain classified as owned")
+	}
+	if snapshot.HasActiveOwnedState() {
+		t.Fatal("disabled retained URL must not require cleanup")
+	}
+}
+
+func TestCleanupActiveStateRejectsOpenReconciliation(t *testing.T) {
+	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	module := openWithSettings(settings)
+	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", "DIRECT"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := module.CleanupActiveState(context.Background())
+	var activeErr CleanupWhileReconciliationActiveError
+	if !errors.As(err, &activeErr) {
+		t.Fatalf("cleanup error = %v, want CleanupWhileReconciliationActiveError", err)
+	}
+}
+
+func TestCleanupActiveStateContinuesAndReportsPerServiceFailures(t *testing.T) {
+	settings := &fakeSettings{
+		states: []serviceSnapshot{
+			{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
+			{ServiceName: "USB", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
+		},
+		disableErrors: map[string]error{"Wi-Fi": errors.New("permission denied")},
+	}
+	module := openWithSettings(settings)
+
+	err := module.CleanupActiveState(context.Background())
+	var cleanupErr ActiveStateCleanupError
+	if !errors.As(err, &cleanupErr) {
+		t.Fatalf("cleanup error = %v, want ActiveStateCleanupError", err)
+	}
+	if len(cleanupErr.ServiceFailures) != 1 || cleanupErr.ServiceFailures[0].ServiceName != "Wi-Fi" {
+		t.Fatalf("service failures = %#v", cleanupErr.ServiceFailures)
+	}
+	if !slices.Equal(cleanupErr.RemainingServices, []string{"Wi-Fi"}) {
+		t.Fatalf("remaining services = %v, want Wi-Fi", cleanupErr.RemainingServices)
+	}
+	settings.mu.Lock()
+	defer settings.mu.Unlock()
+	if settings.states[1].Enabled {
+		t.Fatal("USB cleanup was not attempted after Wi-Fi failed")
 	}
 }
 

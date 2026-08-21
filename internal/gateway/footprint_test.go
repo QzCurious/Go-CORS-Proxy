@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 func TestCleanupStatusPreservesMixedNeededAndUnknownSubjectStates(t *testing.T) {
@@ -50,5 +52,18 @@ func TestCleanupStatusDoesNotInspectManagedPACWhileRuntimeIsActive(t *testing.T)
 	}
 	if status.Subjects[1].State != CleanupStatusNone || status.Subjects[1].Diagnostic != "" {
 		t.Fatalf("Managed PAC cleanup subject = %#v", status.Subjects[1])
+	}
+}
+
+func TestCleanupStatusIgnoresDisabledOwnedPACURL(t *testing.T) {
+	coord := newCoordinator(t.TempDir())
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
+		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false, Ownership: managedpac.OwnershipOwned,
+	}}}
+
+	status := inspectGatewayFootprint(context.Background(), settings, coord, false, false, stateCache{})
+
+	if status.State != CleanupStatusNone || status.Subjects[1].State != CleanupStatusNone {
+		t.Fatalf("cleanup status = %#v, want no cleanup needed", status)
 	}
 }

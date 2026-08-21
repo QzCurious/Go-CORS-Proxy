@@ -400,6 +400,10 @@ _Avoid_: heuristic ownership, name-only matching, user intent guess
 A cleanup behavior where the gateway scans current machine state and removes resources only when an Ownership Marker proves the resource belongs to seamless-cors.
 _Avoid_: footprint-based cleanup, previous-state restoration, guessed ownership
 
+**Managed PAC Active-State Cleanup**:
+An idempotent Managed PAC operation that disables every currently enabled marker-owned PAC setting and verifies that none remains active without opening, closing, or otherwise changing Managed PAC reconciliation admission. Gateway Footprint Cleanup uses it only while reconciliation admission is closed; disabled owned URLs are inert retained configuration, platforms may represent inactive state differently, and foreign PAC state is always preserved.
+_Avoid_: Managed PAC Uninstall, active-lifecycle cleanup, reconciliation shutdown, PAC URL erasure, disabled owned URL cleanup, exact-URL cleanup, previous-state restoration, partial cleanup success
+
 **Gateway Footprint Cleanup Status**:
 A subject-level three-state result describing whether owned gateway footprint is `none`, `needed`, or `unknown`; `unknown` means current machine state could not be inspected and must not be treated as clean. The overall state is derived as `needed` when any subject is needed, otherwise `unknown` when any subject is unknown, and otherwise `none`.
 _Avoid_: cleanup-needed boolean, assumed-clean inspection failure, suppressed cleanup inspection error
@@ -409,8 +413,8 @@ The stable loopback HTTP PAC URL shape whose path ends in `seamless-cors.pac`, p
 _Avoid_: managed PAC footprint, run-specific PAC identity, port-based ownership, full-URL ownership, non-loopback PAC ownership
 
 **Complete Managed PAC Uninstall**:
-An idempotent Managed PAC operation that closes reconciliation admission, ends pending work, removes every currently marker-owned PAC setting regardless of enabled status or publication generation, and reports success only after no marker-owned setting remains. Foreign PAC state is always preserved; late desired states are discarded until a later successful Managed PAC Installation reopens admission.
-_Avoid_: enabled-only cleanup, exact-URL cleanup, service-set cleanup, previous-state restoration, partial uninstall success
+An idempotent Managed PAC lifecycle teardown that closes reconciliation admission, ends pending work, and then performs Managed PAC Active-State Cleanup. Late desired states are discarded until a later successful Managed PAC Installation reopens admission; Gateway Footprint Cleanup does not invoke this lifecycle operation.
+_Avoid_: Gateway Footprint Cleanup, cleanup-only operation, caller-owned teardown sequence, partial uninstall success
 
 **Managed PAC Service Set**:
 The network services classified as manageable during Gateway Activation and collectively accepted by the user for PAC Routing installation and later Managed PAC Reconciliation. Initially foreign services remain outside the set, while membership becomes fixed after acceptance: selected services remain members through later absence or drift, and excluded or newly appearing services wait until another start.

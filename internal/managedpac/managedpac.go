@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,73 @@ func (s Snapshot) HasOwnedState() bool {
 		}
 	}
 	return false
+}
+
+func (s Snapshot) HasActiveOwnedState() bool {
+	for _, service := range s.services {
+		if service.Enabled && service.Ownership == OwnershipOwned {
+			return true
+		}
+	}
+	return false
+}
+
+type CleanupWhileReconciliationActiveError struct{}
+
+func (CleanupWhileReconciliationActiveError) Error() string {
+	return "managed PAC active-state cleanup rejected while reconciliation is active"
+}
+
+type ServiceCleanupFailure struct {
+	ServiceName string
+	Err         error
+}
+
+func (e ServiceCleanupFailure) Error() string {
+	return fmt.Sprintf("%s: %v", e.ServiceName, e.Err)
+}
+
+func (e ServiceCleanupFailure) Unwrap() error { return e.Err }
+
+type ActiveStateCleanupError struct {
+	InspectionErr     error
+	ServiceFailures   []ServiceCleanupFailure
+	VerificationErr   error
+	RemainingServices []string
+}
+
+func (e ActiveStateCleanupError) Error() string {
+	parts := make([]string, 0, 3)
+	if e.InspectionErr != nil {
+		parts = append(parts, "inspection failed: "+e.InspectionErr.Error())
+	}
+	if len(e.ServiceFailures) > 0 {
+		failures := make([]string, 0, len(e.ServiceFailures))
+		for _, failure := range e.ServiceFailures {
+			failures = append(failures, failure.Error())
+		}
+		parts = append(parts, "service mutations failed: "+strings.Join(failures, "; "))
+	}
+	if e.VerificationErr != nil {
+		parts = append(parts, "verification failed: "+e.VerificationErr.Error())
+	} else if len(e.RemainingServices) > 0 {
+		parts = append(parts, fmt.Sprintf("active state remains on services: %v", e.RemainingServices))
+	}
+	return "managed PAC active-state cleanup failed: " + strings.Join(parts, "; ")
+}
+
+func (e ActiveStateCleanupError) Unwrap() []error {
+	causes := make([]error, 0, len(e.ServiceFailures)+2)
+	if e.InspectionErr != nil {
+		causes = append(causes, e.InspectionErr)
+	}
+	for _, failure := range e.ServiceFailures {
+		causes = append(causes, failure)
+	}
+	if e.VerificationErr != nil {
+		causes = append(causes, e.VerificationErr)
+	}
+	return causes
 }
 
 type RuntimeState struct {
@@ -120,7 +188,7 @@ func (r InstallResult) Warnings() []Warning {
 }
 
 // ManagedPAC owns PAC Projection publication generation, latest-value
-// reconciliation, platform PAC mutation, and complete marker-based teardown.
+// reconciliation, platform PAC mutation, and complete active-state teardown.
 type ManagedPAC struct {
 	settings systemSettings
 
@@ -403,8 +471,23 @@ func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selec
 	return installed, warnings
 }
 
+// CleanupActiveState disables marker-owned PAC settings without changing
+// reconciliation admission. Active lifecycles must use Uninstall instead.
+func (m *ManagedPAC) CleanupActiveState(ctx context.Context) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+
+	m.mu.Lock()
+	accepting := m.accepting
+	m.mu.Unlock()
+	if accepting {
+		return CleanupWhileReconciliationActiveError{}
+	}
+	return m.cleanupActiveStateLocked(ctx)
+}
+
 // Uninstall closes reconciliation admission before waiting for the current
-// writer, then removes all currently marker-owned settings and verifies absence.
+// writer, then disables all currently active marker-owned settings.
 func (m *ManagedPAC) Uninstall(ctx context.Context) error {
 	_, workerDone := m.closeReconciliationAdmission()
 	if workerDone != nil {
@@ -412,32 +495,40 @@ func (m *ManagedPAC) Uninstall(ctx context.Context) error {
 	}
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
+	return m.cleanupActiveStateLocked(ctx)
+}
 
+func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return err
+		return ActiveStateCleanupError{InspectionErr: err}
 	}
-	var owned []string
+	var activeOwned []string
 	for _, service := range snapshot.services {
-		if service.Ownership == OwnershipOwned {
-			owned = append(owned, service.Name)
+		if service.Enabled && service.Ownership == OwnershipOwned {
+			activeOwned = append(activeOwned, service.Name)
 		}
 	}
-	clearErr := m.settings.ClearOwned(ctx, owned)
+	serviceFailures := make([]ServiceCleanupFailure, 0)
+	for _, serviceName := range activeOwned {
+		if err := m.settings.DisableOwned(ctx, []string{serviceName}); err != nil {
+			serviceFailures = append(serviceFailures, ServiceCleanupFailure{ServiceName: serviceName, Err: err})
+		}
+	}
 	after, inspectErr := m.Inspect(ctx)
 	if inspectErr != nil {
-		return errors.Join(clearErr, fmt.Errorf("managed PAC uninstall verification failed: %w", inspectErr))
+		return ActiveStateCleanupError{ServiceFailures: serviceFailures, VerificationErr: inspectErr}
 	}
 	var remaining []string
 	for _, service := range after.services {
-		if service.Ownership == OwnershipOwned {
+		if service.Enabled && service.Ownership == OwnershipOwned {
 			remaining = append(remaining, service.Name)
 		}
 	}
-	if len(remaining) > 0 {
-		return errors.Join(clearErr, fmt.Errorf("managed PAC state remains on services: %v", remaining))
+	if len(serviceFailures) > 0 || len(remaining) > 0 {
+		return ActiveStateCleanupError{ServiceFailures: serviceFailures, RemainingServices: remaining}
 	}
-	return clearErr
+	return nil
 }
 
 func (m *ManagedPAC) closeReconciliationAdmission() (uint64, <-chan struct{}) {

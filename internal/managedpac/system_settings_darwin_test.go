@@ -105,7 +105,7 @@ func TestDarwinSystemSettingsPreservesForeignPACState(t *testing.T) {
 	runner := &fakeRunner{}
 	adapter := &darwinSystemSettings{runner: runner}
 
-	if err := adapter.ClearOwned(context.Background(), []string{"Wi-Fi"}); err != nil {
+	if err := adapter.DisableOwned(context.Background(), []string{"Wi-Fi"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,25 +115,26 @@ func TestDarwinSystemSettingsPreservesForeignPACState(t *testing.T) {
 	}
 }
 
-func TestDarwinSystemSettingsClearsMarkerOwnedStateAcrossServices(t *testing.T) {
+func TestDarwinSystemSettingsDisablesMarkerOwnedStateAcrossServices(t *testing.T) {
 	runner := &fakeRunner{
 		autoProxyOut: []byte("URL: http://127.0.0.1:52144/nested/seamless-cors.pac\nEnabled: Yes\n"),
 	}
 	adapter := &darwinSystemSettings{runner: runner}
 
-	if err := adapter.ClearOwned(context.Background(), []string{"Wi-Fi", "Thunderbolt Bridge"}); err != nil {
+	if err := adapter.DisableOwned(context.Background(), []string{"Wi-Fi", "Thunderbolt Bridge"}); err != nil {
 		t.Fatal(err)
 	}
 
 	joined := strings.Join(runner.calls, "\n")
 	for _, want := range []string{
-		"networksetup -setautoproxyurl Wi-Fi ",
 		"networksetup -setautoproxystate Wi-Fi off",
-		"networksetup -setautoproxyurl Thunderbolt Bridge ",
 		"networksetup -setautoproxystate Thunderbolt Bridge off",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing call %q in:\n%s", want, joined)
 		}
+	}
+	if strings.Contains(joined, "-setautoproxyurl") {
+		t.Fatalf("cleanup must not attempt to clear the retained PAC URL:\n%s", joined)
 	}
 }

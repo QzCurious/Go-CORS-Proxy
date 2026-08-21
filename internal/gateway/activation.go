@@ -27,7 +27,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	}()
 
 	if !s.lifecycle.takeStartCleanupComplete() {
-		if failure := cleanManagedPAC(ctx, s.lifecycle.managedPAC); failure != nil {
+		if failure := cleanManagedPACActiveState(ctx, s.lifecycle.managedPAC); failure != nil {
 			return StartCleanupFailed{Failures: []CleanupFailure{*failure}}, nil
 		}
 	}
@@ -306,5 +306,5 @@ func sortedUniqueServiceNames(values []string) []string {
 }
 
 func (s startSequence) cleanupFailedPACInstall() *CleanupFailureDetail {
-	return cleanManagedPAC(context.Background(), s.lifecycle.managedPAC)
+	return uninstallManagedPAC(context.Background(), s.lifecycle.managedPAC)
 }

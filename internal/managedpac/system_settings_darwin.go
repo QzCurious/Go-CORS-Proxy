@@ -61,7 +61,7 @@ func (s *darwinSystemSettings) Snapshot(ctx context.Context) ([]serviceSnapshot,
 	return snapshots, nil
 }
 
-func (s *darwinSystemSettings) ClearOwned(ctx context.Context, serviceNames []string) error {
+func (s *darwinSystemSettings) DisableOwned(ctx context.Context, serviceNames []string) error {
 	var firstErr error
 	for _, serviceName := range serviceNames {
 		current, err := s.getAutoProxy(ctx, serviceName)
@@ -75,12 +75,6 @@ func (s *darwinSystemSettings) ClearOwned(ctx context.Context, serviceNames []st
 			continue
 		}
 		if !IsOwnedURL(current.PACURL) {
-			continue
-		}
-		if _, err := s.networksetup(ctx, "-setautoproxyurl", serviceName, ""); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
 			continue
 		}
 		if _, err := s.networksetup(ctx, "-setautoproxystate", serviceName, "off"); err != nil && firstErr == nil {

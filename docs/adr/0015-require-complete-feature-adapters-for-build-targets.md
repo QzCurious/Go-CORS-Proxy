@@ -5,3 +5,5 @@ A seamless-cors binary may be built for an operating system only when every requ
 Because target compilation establishes platform support and read-only preflight cannot reliably predict transient permission, policy, or system-state failures, the Gateway has no runtime platform capability gate or user-facing capability-check command. Each feature operation validates its immediate prerequisites and reports execution failures directly.
 
 The intended Gateway Distribution matrix is `darwin/amd64`, `darwin/arm64`, `windows/amd64`, and `windows/arm64`. Repository verification cross-builds every production package for all four targets so missing or incomplete build-tag-selected feature implementations fail before distribution.
+
+Production platform adapters remain pure Go and compatible with `CGO_ENABLED=0`. An OS integration must not trade away cross-compilation or the existing release matrix merely to access a native framework; it uses a supported operating-system command boundary when the pure-Go standard library cannot express the required mutation.

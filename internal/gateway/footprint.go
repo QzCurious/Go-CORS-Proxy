@@ -5,7 +5,14 @@ import (
 	"fmt"
 )
 
-func cleanManagedPAC(ctx context.Context, pac managedPACModule) *CleanupFailureDetail {
+func cleanManagedPACActiveState(ctx context.Context, pac managedPACModule) *CleanupFailureDetail {
+	if err := pac.CleanupActiveState(ctx); err != nil {
+		return &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
+	}
+	return nil
+}
+
+func uninstallManagedPAC(ctx context.Context, pac managedPACModule) *CleanupFailureDetail {
 	if err := pac.Uninstall(ctx); err != nil {
 		return &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
@@ -14,7 +21,7 @@ func cleanManagedPAC(ctx context.Context, pac managedPACModule) *CleanupFailureD
 
 func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coordinator, ownedCache *stateCache) []CleanupFailureDetail {
 	var failures []CleanupFailureDetail
-	if failure := cleanManagedPAC(ctx, pac); failure != nil {
+	if failure := cleanManagedPACActiveState(ctx, pac); failure != nil {
 		failures = append(failures, *failure)
 	}
 	return append(failures, cleanGatewayStateCache(coord, ownedCache, len(failures) > 0)...)
@@ -52,7 +59,7 @@ func inspectGatewayFootprint(ctx context.Context, pacModule managedPACModule, co
 		if err != nil {
 			pac.State = CleanupStatusUnknown
 			pac.Diagnostic = err.Error()
-		} else if snapshot.HasOwnedState() {
+		} else if snapshot.HasActiveOwnedState() {
 			pac.State = CleanupStatusNeeded
 		}
 	}
