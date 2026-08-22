@@ -28,16 +28,21 @@ var proxy = 'PROXY ' + VIEW_BAG.proxy;
 /** @type {PACRoute[]} */
 var routes = VIEW_BAG.routes;
 
+var defaultPorts = {
+  http: '80',
+  https: '443'
+};
+
 /**
  * Determines how a request should be routed.
  *
  * @param {string} url The requested URL.
- * @param {string} host The hostname extracted from the requested URL.
+ * @param {string} hostname The hostname extracted from the requested URL.
  * @returns {'DIRECT' | `PROXY ${string}`}
  * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Proxy_servers_and_tunneling/Proxy_Auto-Configuration_PAC_file
  */
-function FindProxyForURL(url, host) {
-  var request = normalizeRequest(url, host);
+function FindProxyForURL(url, hostname) {
+  var request = normalizeRequest(url, hostname);
   if (request == null) return 'DIRECT';
 
   for (var i = 0; i < routes.length; i++) {
@@ -48,22 +53,20 @@ function FindProxyForURL(url, host) {
 
 /**
  * @param {string} url
- * @param {string} host
+ * @param {string} hostname
  * @returns {PACRequest | null}
  */
-function normalizeRequest(url, host) {
+function normalizeRequest(url, hostname) {
   url = url.toLowerCase();
-  host = host.toLowerCase();
+  hostname = hostname.toLowerCase();
 
-  var schemeEnd = url.indexOf(':');
-  if (schemeEnd <= 0 || url.substring(schemeEnd, schemeEnd + 3) != '://') return null;
-
+  var schemeEnd = url.indexOf('://');
   var scheme = url.substring(0, schemeEnd);
   if (scheme != 'http' && scheme != 'https') return null;
-  if (host == '') return null;
 
   var authorityStart = schemeEnd + 3;
   var authorityEnd = url.length;
+
   for (var i = authorityStart; i < url.length; i++) {
     var character = url.charAt(i);
     if (character == '/' || character == '?' || character == '#') {
@@ -71,54 +74,14 @@ function normalizeRequest(url, host) {
       break;
     }
   }
-  var authority = url.substring(authorityStart, authorityEnd);
-  var identityEnd = authority.lastIndexOf('@');
-  if (identityEnd != -1) authority = authority.substring(identityEnd + 1);
-  if (authority == '') return null;
 
-  var portText = null;
-  if (authority.charAt(0) == '[') {
-    var bracketEnd = authority.indexOf(']');
-    if (bracketEnd <= 1) return null;
-    var ipv6Remainder = authority.substring(bracketEnd + 1);
-    if (ipv6Remainder != '') {
-      if (ipv6Remainder.charAt(0) != ':') return null;
-      portText = ipv6Remainder.substring(1);
-    }
-  } else {
-    var portSeparator = authority.lastIndexOf(':');
-    if (portSeparator != -1) portText = authority.substring(portSeparator + 1);
+  var portStart = url.lastIndexOf(hostname, authorityEnd) + hostname.length;
+  if (url.charAt(portStart) == ']') portStart++;
+  var port = defaultPorts[scheme];
+  if (url.charAt(portStart) == ':') {
+    port = url.substring(portStart + 1, authorityEnd);
   }
-
-  var port = defaultPort(scheme);
-  if (portText != null) {
-    port = normalizeExplicitPort(portText);
-    if (port == null) return null;
-  }
-  return {scheme: scheme, hostname: host, port: port};
-}
-
-/**
- * @param {string} scheme
- * @returns {string}
- */
-function defaultPort(scheme) {
-  return scheme == 'https' ? '443' : '80';
-}
-
-/**
- * @param {string} portText
- * @returns {string | null}
- */
-function normalizeExplicitPort(portText) {
-  if (portText == '') return null;
-  for (var i = 0; i < portText.length; i++) {
-    var character = portText.charAt(i);
-    if (character < '0' || character > '9') return null;
-  }
-  var port = parseInt(portText, 10);
-  if (port < 1 || port > 65535) return null;
-  return String(port);
+  return {scheme: scheme, hostname: hostname, port: port};
 }
 
 /**
