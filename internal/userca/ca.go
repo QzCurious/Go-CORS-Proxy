@@ -101,12 +101,8 @@ func (r MutationResult) Changed() bool { return r.changed }
 
 // Open resolves private storage and platform trust integration without
 // inspecting or mutating either.
-func Open() (*CA, error) {
-	dir, err := defaultDir()
-	if err != nil {
-		return nil, err
-	}
-	return openAt(dir, newTrustStore(), time.Now), nil
+func Open() *CA {
+	return openAt(defaultDir(), newTrustStore(), time.Now)
 }
 
 func openAt(dir string, store trustStore, now func() time.Time) *CA {

@@ -630,11 +630,7 @@ func newLifecycleState(
 		}
 	}
 	if ca == nil {
-		var err error
-		ca, err = openSystemUserCA()
-		if err != nil {
-			return nil, err
-		}
+		ca = openSystemUserCA()
 	}
 	if pac == nil {
 		pac = openSystemManagedPAC()

@@ -14,6 +14,6 @@ type userCAModule interface {
 	Uninstall(context.Context) (userca.MutationResult, error)
 }
 
-func openSystemUserCA() (userCAModule, error) {
+func openSystemUserCA() userCAModule {
 	return userca.Open()
 }

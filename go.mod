@@ -3,6 +3,7 @@ module github.com/QzCurious/seamless-cors
 go 1.23.1
 
 require (
+	github.com/adrg/xdg v0.5.3
 	github.com/danielgtaylor/huma/v2 v2.35.0
 	github.com/elazarl/goproxy v1.8.4
 	github.com/fsnotify/fsnotify v1.10.1

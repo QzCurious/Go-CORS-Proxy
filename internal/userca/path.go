@@ -1,14 +1,15 @@
 package userca
 
 import (
-	"os"
 	"path/filepath"
+
+	"github.com/adrg/xdg"
 )
 
-func defaultDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".seamless-cors", "ca"), nil
+func defaultDir() string {
+	return storageDir(xdg.StateHome)
+}
+
+func storageDir(stateHome string) string {
+	return filepath.Join(stateHome, "seamless-cors", "userca")
 }

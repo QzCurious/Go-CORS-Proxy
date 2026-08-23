@@ -349,7 +349,7 @@ A traffic rule where every CORS-bearing request reaching the Proxy Listener is e
 _Avoid_: Allowed Origin, caller-origin allowlist, per-request Upstream List gate, CORS authorization
 
 **Home Config Directory**:
-The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Gateway owns the Upstream List path policy, creation assessment and execution, and observation lifecycle; Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
+The fixed seamless-cors configuration location at `.seamless-cors` under the user's home directory. Gateway owns the Upstream List path policy, creation assessment and execution, and observation lifecycle; Gateway Coordination owns its state in a dedicated subdirectory, while UserCA storage is independent.
 _Avoid_: platform-native app config directory
 
 **Runtime State Directory**:
@@ -361,8 +361,12 @@ A lifecycle behavior that owns the Gateway Ownership Lease, Gateway State Cache 
 _Avoid_: Runtime Coordination, cleanup module, process supervisor, daemon manager, file-exists-is-running
 
 **Installed CA Storage**:
-The durable location under the Home Config Directory for seamless-cors-owned Installed User CA material, kept outside Gateway Footprint Cleanup.
-_Avoid_: runtime CA storage, temp CA files, stop-owned CA files
+The durable platform-native per-user application-state location for seamless-cors-owned Installed User CA material, selected by the UserCA Storage Environment and kept outside Gateway Footprint Cleanup.
+_Avoid_: Home Config Directory, portable user data, runtime CA storage, temp CA files, stop-owned CA files
+
+**UserCA Storage Environment**:
+The Gateway Owner's process-startup environment that selects one authoritative Installed CA Storage location for owner-routed UserCA commands; an ownerless command uses the environment of the owner it establishes. Different storage environments are distinct UserCA identities and are not searched as alternative locations or compared by clients.
+_Avoid_: global per-user storage search, dynamic storage relocation, fallback CA directory
 
 **Gateway State Cache**:
 A durable gateway coordination cache that lets client commands discover and verify the Gateway Owner by its HTTP Router listener and token identity.
@@ -565,8 +569,8 @@ A CA lifecycle command behavior where uninstalling reports already-absent seamle
 _Avoid_: missing-CA uninstall failure, forced repair before removal, noisy no-op uninstall
 
 **Complete CA Uninstall**:
-A CA lifecycle invariant where uninstall removes Active, Candidate, and non-active recovery state and reports success only after all seamless-cors-owned current-user CA trust, markers, and local material are absent.
-_Avoid_: false uninstall success, trusted CA without local material, leftover private key
+A CA lifecycle invariant where uninstall removes Active, Candidate, and non-active recovery state and reports success only after all seamless-cors-owned current-user CA trust and all markers and local material in the selected UserCA Storage Environment are absent. Material in another or legacy storage environment is outside the command's discovery and cleanup scope.
+_Avoid_: cross-environment CA search, false uninstall success, trusted CA without selected-environment material
 
 **Foreground Start**:
 A runtime behavior where `start` runs attached in the foreground rather than launching a background daemon. The first process cancellation executes Owner Stop, while a second cancellation may force immediate exit from cleanup.
@@ -621,8 +625,20 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Upstream List**:
-The user-managed newline-delimited configuration at `~/.seamless-cors/upstreams.txt`, decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. It never controls direct proxy admission or certificate scope. Except for consented Upstream List Creation, seamless-cors only observes this ordinary-file source and never repairs, rewrites, or recreates it.
-_Avoid_: Domain List, Target List, configurable Upstream List path, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, proxy rules
+One user-managed newline-delimited source decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. An Upstream List never controls direct proxy admission or certificate scope; except for consented Global Upstream List Creation, seamless-cors only observes these ordinary-file sources and never repairs, rewrites, or recreates them.
+_Avoid_: Domain List, Target List, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, proxy rules
+
+**Global Upstream List**:
+The user-wide Upstream List that always contributes to the Effective Upstream List and is the only source eligible for consented Upstream List Creation.
+_Avoid_: user Upstream List, default Upstream List, shared Upstream List
+
+**Directory Upstream List**:
+An optional Upstream List found only in the exact working directory captured when Gateway Runtime starts. Its absence is an empty source rather than degradation, it is never created by seamless-cors, and an Already-Running Start from another directory does not replace it.
+_Avoid_: Local Upstream List, project Upstream List, ancestor Upstream List, recursively discovered Upstream List, dynamic working-directory list
+
+**Effective Upstream List**:
+The deduplicated union of the continuously observed Global Upstream List and Directory Upstream List. Both sources contribute without precedence, and a successful change to either source forms a new Effective Upstream List.
+_Avoid_: overriding Upstream List, precedence-merged Upstream List, selected Upstream List, concatenated file
 
 **Upstream List Comment**:
 A full-line or inline note in the Upstream List that is ignored during matching.
