@@ -209,7 +209,7 @@ A fully prepared and OS-trusted immutable authority generation that may coexist 
 _Avoid_: partially installed CA, active signer, untrusted staging certificate, required Candidate marker
 
 **UserCA Signing Material**:
-The immutable Active UserCA certificate and matching private signer that may accompany usable UserCA facts for HTTPS interception. An active HTTPS Pipeline retains this material when HTTPS Readiness is ready, supplies it to CORS Proxy, and publishes the resulting immutable MITM Proxy Generation; without HTTPS Intent, Gateway Runtime does not assess or retain it. A usable UserCA Snapshot without this material is a Signing Material Issue rather than ready HTTPS Readiness. goproxy owns per-host leaf generation and its connection-local failures.
+The immutable Active UserCA certificate and matching private signer that always accompanies a usable UserCA Snapshot within a UserCA Assessment. An active HTTPS Pipeline retains this material when HTTPS Readiness is ready and supplies it to CORS Proxy; without HTTPS Intent, Gateway Runtime does not assess or retain it, while goproxy owns per-host leaf generation and its connection-local failures.
 _Avoid_: HTTPS Certificate Provider, HTTPS Provider Source, list-bounded signer, selector certificate set, Gateway leaf generator
 
 **MITM Proxy Generation**:
@@ -257,19 +257,15 @@ The Gateway Runtime coordination sequence admitted only while HTTPS Intent exist
 _Avoid_: always-on readiness, intent-independent MITM, parallel HTTPS capability state, UserCA lifecycle command
 
 **Unmet HTTPS Intent**:
-An HTTPS Pipeline state where HTTPS Intent exists while HTTPS Readiness is not-ready without a UserCA Assessment Issue or Signing Material Issue. Trusted HTTPS Interception remains inactive, the gateway continues serving HTTP, and Inbound Adapters receive actionable Gateway guidance to install UserCA.
+An HTTPS Pipeline state where HTTPS Intent exists while HTTPS Readiness is not-ready without a UserCA Assessment Issue. Trusted HTTPS Interception remains inactive, the gateway continues serving HTTP, and Inbound Adapters receive actionable Gateway guidance to install UserCA.
 _Avoid_: blocked gateway, failed gateway start, implicit UserCA installation
 
 **UserCA Assessment Issue**:
 A current HTTPS Pipeline issue created when the pipeline's UserCA inspection returns an error and Gateway therefore cannot establish usable facts. Start remains fulfilled with direct tunneling, the issue retains its concrete presented cause for Inbound Adapters, and a later pipeline assessment replaces it or pipeline teardown removes it.
 _Avoid_: generic HTTPS warning, UserCA not-usable state, terminal error text, warning history, intent-filtered diagnostic
 
-**Signing Material Issue**:
-A current HTTPS Pipeline contract issue created when a UserCA Assessment reports a usable snapshot without matching UserCA Signing Material. HTTPS Readiness is not-ready and CONNECT remains direct; the operation or transition that encounters the inconsistency exposes the issue, while a later pipeline assessment replaces it or pipeline teardown removes it.
-_Avoid_: valid UserCA state, generic HTTPS warning, fatal Gateway start, warning history, intent-filtered diagnostic
-
 **HTTPS Pipeline Detail**:
-An optional surface-neutral Gateway record present only while HTTPS Intent admits the HTTPS Pipeline. Its `assessing` phase has no HTTPS Readiness and keeps CONNECT direct with no HTTPS routes; its `settled` phase contains current readiness and exactly the source-specific current detail produced by a not-ready outcome—Unmet HTTPS Intent guidance, a UserCA Assessment Issue, or a Signing Material Issue—without copying Installed User CA renewal facts or collecting generic warnings. Only the current pipeline assessment may settle the record; results from removed or replaced pipeline work are discarded.
+An optional surface-neutral Gateway record present only while HTTPS Intent admits the HTTPS Pipeline. Its `assessing` phase has no HTTPS Readiness and keeps CONNECT direct with no HTTPS routes; its `settled` phase contains current readiness and exactly the source-specific current detail produced by a not-ready outcome—Unmet HTTPS Intent guidance or a UserCA Assessment Issue—without copying Installed User CA renewal facts or collecting generic warnings. Only the current pipeline assessment may settle the record; results from removed or replaced pipeline work are discarded.
 _Avoid_: always-present readiness, HTTPS warning array, duplicated Installed CA status, multiple simultaneous readiness causes, presentation prose
 
 **Live HTTPS Pipeline Delivery**:
@@ -617,8 +613,8 @@ An immutable status-only result freshly inspected by UserCA from authority mater
 _Avoid_: signing-material container, exported Active authority type, raw PEM, CA storage paths, cached CA state, live CA watcher, mutable authority record, storage snapshot, public trust-store facts
 
 **UserCA Assessment**:
-One coherent UserCA result containing a status-only UserCA Snapshot and optional matching immutable UserCA Signing Material. Inspection and successful installation form both from the same authority facts so Gateway never reconstructs or matches signing material itself; UserCA validates authority structure, validity, constraints, self-signature, and key correspondence but does not generate a leaf as a self-test. A usable snapshot normally includes the material, but its absence remains representable and becomes a Signing Material Issue only when an active HTTPS Pipeline assesses it.
-_Avoid_: independently loaded snapshot and signer, list-bound install success, optional invalid signing material, leaf-generation self-test
+One coherent UserCA result containing a status-only UserCA Snapshot and, exactly when that Snapshot is usable, matching immutable UserCA Signing Material. UserCA validates authority structure, validity, constraints, self-signature, and key correspondence so Gateway never reconstructs or matches signing material itself.
+_Avoid_: independently loaded snapshot and signer, list-bound install success, usable snapshot without signing material, leaf-generation self-test
 
 **Diagnostic Runtime Endpoint**:
 An automatically selected listener address shown by status for troubleshooting, not for user proxy setup or configuration.

@@ -10,8 +10,8 @@ import (
 // semantic value crossing it.
 type userCAModule interface {
 	Inspect(context.Context) (userca.Assessment, error)
-	Install(context.Context) (userca.InstallResult, error)
-	Uninstall(context.Context) (userca.UninstallResult, error)
+	Install(context.Context) (userca.MutationResult, error)
+	Uninstall(context.Context) (userca.MutationResult, error)
 }
 
 func openSystemUserCA() (userCAModule, error) {

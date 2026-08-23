@@ -307,21 +307,17 @@ func TestDeadlineMovesCurrentReadyPipelineBackToAssessing(t *testing.T) {
 
 func TestHTTPSPipelineDetailsPreserveTheirSource(t *testing.T) {
 	expiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
-	notUsable := settledHTTPSPipeline(userca.Snapshot{}, false, nil)
-	if notUsable.UnmetIntent == nil || notUsable.UserCAAssessmentIssue != nil || notUsable.SigningMaterialIssue != nil {
+	notUsable := settledHTTPSPipeline(userca.Snapshot{}, nil)
+	if notUsable.UnmetIntent == nil || notUsable.UserCAAssessmentIssue != nil {
 		t.Fatalf("not-usable detail = %#v", notUsable)
 	}
-	assessmentIssue := settledHTTPSPipeline(userca.Snapshot{}, false, context.DeadlineExceeded)
+	assessmentIssue := settledHTTPSPipeline(userca.Snapshot{}, context.DeadlineExceeded)
 	if assessmentIssue.UserCAAssessmentIssue == nil || assessmentIssue.UnmetIntent != nil {
 		t.Fatalf("assessment issue = %#v", assessmentIssue)
 	}
 	usable := testUserCASnapshot(t, expiry, true).Snapshot()
-	materialIssue := settledHTTPSPipeline(usable, false, nil)
-	if materialIssue.SigningMaterialIssue == nil || materialIssue.Readiness != HTTPSReadinessNotReady {
-		t.Fatalf("signing-material issue = %#v", materialIssue)
-	}
-	ready := settledHTTPSPipeline(usable, true, nil)
-	if ready.Readiness != HTTPSReadinessReady || ready.UnmetIntent != nil || ready.UserCAAssessmentIssue != nil || ready.SigningMaterialIssue != nil {
+	ready := settledHTTPSPipeline(usable, nil)
+	if ready.Readiness != HTTPSReadinessReady || ready.UnmetIntent != nil || ready.UserCAAssessmentIssue != nil {
 		t.Fatalf("ready detail = %#v", ready)
 	}
 }
@@ -462,11 +458,11 @@ func (c *closeTrackingConn) Close() error {
 
 func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) userca.Assessment {
 	t.Helper()
-	snapshot, err := userca.NewSnapshot(expiresAt, renewalDue)
+	assessment, err := userca.NewAssessment(expiresAt, renewalDue, &tls.Certificate{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return userca.NewAssessment(snapshot, &tls.Certificate{})
+	return assessment
 }
 
 func closeTrafficTestRuntime(runtime *trafficRuntime) {

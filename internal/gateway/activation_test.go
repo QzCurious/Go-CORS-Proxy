@@ -256,7 +256,7 @@ func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ca := &fakeUserCA{
-		installResult: userca.NewInstallResult(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false), true),
+		installResult: userca.NewMutationResult(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false), true),
 	}
 	lifecycle, err := newLifecycle(
 		&lifecycleTestSystemSettings{},
@@ -292,7 +292,7 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 	defer closeTrafficTestRuntime(engine)
 	engine.SetInitialHTTPSAssessment(userca.Assessment{}, nil)
 	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	ca := &fakeUserCA{installResult: userca.NewInstallResult(installed, true)}
+	ca := &fakeUserCA{installResult: userca.NewMutationResult(installed, true)}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -464,13 +464,13 @@ func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userca.InstallResult, error) {
+		install: func(ctx context.Context) (userca.MutationResult, error) {
 			if ctx.Err() != nil {
-				return userca.InstallResult{}, ctx.Err()
+				return userca.MutationResult{}, ctx.Err()
 			}
 			close(entered)
 			<-release
-			return userca.NewInstallResult(userca.Assessment{}, true), nil
+			return userca.NewMutationResult(userca.Assessment{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -530,10 +530,10 @@ func TestAdmittedCAOperationIgnoresRequestCancellation(t *testing.T) {
 	requestCtx, cancel := context.WithCancel(context.Background())
 	observed := make(chan error, 1)
 	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userca.InstallResult, error) {
+		install: func(ctx context.Context) (userca.MutationResult, error) {
 			cancel()
 			observed <- ctx.Err()
-			return userca.InstallResult{}, nil
+			return userca.MutationResult{}, nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -561,9 +561,9 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 	var inactiveDuringUninstall bool
 	ca := &fakeUserCA{
 		assessment: installed,
-		uninstall: func(context.Context) (userca.UninstallResult, error) {
+		uninstall: func(context.Context) (userca.MutationResult, error) {
 			inactiveDuringUninstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
-			return userca.NewUninstallResult(userca.Assessment{}, true), nil
+			return userca.NewMutationResult(userca.Assessment{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -620,39 +620,6 @@ func TestStartReportsUnmetHTTPSIntentWithoutInstallingUserCA(t *testing.T) {
 	}
 }
 
-func TestStartDegradesWithSourceSpecificSigningMaterialIssue(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	configDir := filepath.Join(home, ".seamless-cors")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), []byte("https://api.example.test\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := userca.NewSnapshot(time.Now().Add(24*time.Hour), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ca := &fakeUserCA{assessment: userca.NewAssessment(snapshot, nil)}
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
-	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := executeAcceptedStart(lifecycle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-	started, ok := result.(Started)
-	if !ok || pipelineReadiness(started.Guidance.HTTPSPipeline) != HTTPSReadinessNotReady ||
-		started.Guidance.HTTPSPipeline.SigningMaterialIssue == nil {
-		t.Fatalf("start result = %#v", result)
-	}
-}
-
 func TestStartWithoutHTTPSIntentSkipsRuntimeUserCAInspection(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -698,12 +665,12 @@ type fakeUserCA struct {
 	assessment      userca.Assessment
 	inspectErr      error
 	inspect         func(context.Context) (userca.Assessment, error)
-	installResult   userca.InstallResult
+	installResult   userca.MutationResult
 	installErr      error
-	uninstallResult userca.UninstallResult
+	uninstallResult userca.MutationResult
 	uninstallErr    error
-	install         func(context.Context) (userca.InstallResult, error)
-	uninstall       func(context.Context) (userca.UninstallResult, error)
+	install         func(context.Context) (userca.MutationResult, error)
+	uninstall       func(context.Context) (userca.MutationResult, error)
 	inspectCalls    int
 	installCalls    int
 	uninstallCalls  int
@@ -719,7 +686,7 @@ func (f *fakeUserCA) Inspect(ctx context.Context) (userca.Assessment, error) {
 	return f.assessment, f.inspectErr
 }
 
-func (f *fakeUserCA) Install(ctx context.Context) (userca.InstallResult, error) {
+func (f *fakeUserCA) Install(ctx context.Context) (userca.MutationResult, error) {
 	f.mu.Lock()
 	f.installCalls++
 	operation := f.install
@@ -731,7 +698,7 @@ func (f *fakeUserCA) Install(ctx context.Context) (userca.InstallResult, error) 
 	return result, err
 }
 
-func (f *fakeUserCA) Uninstall(ctx context.Context) (userca.UninstallResult, error) {
+func (f *fakeUserCA) Uninstall(ctx context.Context) (userca.MutationResult, error) {
 	f.mu.Lock()
 	f.uninstallCalls++
 	operation := f.uninstall
@@ -748,11 +715,11 @@ type emptyTestUserCA struct{}
 func (emptyTestUserCA) Inspect(context.Context) (userca.Assessment, error) {
 	return userca.Assessment{}, nil
 }
-func (emptyTestUserCA) Install(context.Context) (userca.InstallResult, error) {
-	return userca.InstallResult{}, nil
+func (emptyTestUserCA) Install(context.Context) (userca.MutationResult, error) {
+	return userca.MutationResult{}, nil
 }
-func (emptyTestUserCA) Uninstall(context.Context) (userca.UninstallResult, error) {
-	return userca.UninstallResult{}, nil
+func (emptyTestUserCA) Uninstall(context.Context) (userca.MutationResult, error) {
+	return userca.MutationResult{}, nil
 }
 
 type lifecycleTestSystemSettings struct {

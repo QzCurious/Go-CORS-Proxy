@@ -23,7 +23,7 @@ func TestInspectMissingIsNotUsable(t *testing.T) {
 	if snapshot.Snapshot().Usable() {
 		t.Fatal("missing UserCA reported usable")
 	}
-	if _, ok := snapshot.Certificate(); ok {
+	if snapshot.SigningMaterial() != nil {
 		t.Fatal("not-usable assessment exposed signing material")
 	}
 }
@@ -36,15 +36,15 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Changed() || !first.Current().Usable() {
-		t.Fatalf("first install = changed %t usable %t", first.Changed(), first.Current().Usable())
+	if !first.Changed() || !first.Current().Snapshot().Usable() {
+		t.Fatalf("first install = changed %t usable %t", first.Changed(), first.Current().Snapshot().Usable())
 	}
 	firstFingerprint, err := readActiveFingerprint(ca.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstSource, ok := first.Current().Certificate()
-	if !ok {
+	firstSource := first.Current().SigningMaterial()
+	if firstSource == nil {
 		t.Fatal("first install omitted signing material")
 	}
 
@@ -59,8 +59,8 @@ func TestInstallReturnsFreshUsableSnapshotAndIsIdempotent(t *testing.T) {
 	if err != nil || secondFingerprint != firstFingerprint {
 		t.Fatal("idempotent install replaced the authority")
 	}
-	secondSource, ok := second.Current().Certificate()
-	if !ok {
+	secondSource := second.Current().SigningMaterial()
+	if secondSource == nil {
 		t.Fatal("second install omitted signing material")
 	}
 	if firstSource == secondSource {
@@ -83,8 +83,8 @@ func TestInstallRepairsMarkerIdentifiedAuthorityWithoutReplacingIt(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !repaired.Changed() || !repaired.Current().Usable() {
-		t.Fatalf("repair = changed %t usable %t", repaired.Changed(), repaired.Current().Usable())
+	if !repaired.Changed() || !repaired.Current().Snapshot().Usable() {
+		t.Fatalf("repair = changed %t usable %t", repaired.Changed(), repaired.Current().Snapshot().Usable())
 	}
 	repairedFingerprint, _ := readActiveFingerprint(ca.dir)
 	if repairedFingerprint != firstFingerprint {
@@ -140,15 +140,15 @@ func TestInstallExplicitlyRenewsWhenDue(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstFingerprint, _ := readActiveFingerprint(ca.dir)
-	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	now = first.Current().Snapshot().ExpiresAt().Add(-renewalWindow).Add(time.Second)
 
 	renewed, err := ca.Install(context.Background())
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !renewed.Changed() || !renewed.Current().Usable() {
-		t.Fatalf("renewal = changed %t usable %t", renewed.Changed(), renewed.Current().Usable())
+	if !renewed.Changed() || !renewed.Current().Snapshot().Usable() {
+		t.Fatalf("renewal = changed %t usable %t", renewed.Changed(), renewed.Current().Snapshot().Usable())
 	}
 	renewedFingerprint, _ := readActiveFingerprint(ca.dir)
 	if renewedFingerprint == firstFingerprint {
@@ -175,8 +175,8 @@ func TestInstallClearsAmbiguousResidueBeforeAddingCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Current().Usable() || len(store.records) != 1 {
-		t.Fatalf("recovered install = usable %t trusted roots %d", result.Current().Usable(), len(store.records))
+	if !result.Current().Snapshot().Usable() || len(store.records) != 1 {
+		t.Fatalf("recovered install = usable %t trusted roots %d", result.Current().Snapshot().Usable(), len(store.records))
 	}
 }
 
@@ -188,7 +188,7 @@ func TestPostCommitCleanupFailureDoesNotHideUsableInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	now = first.Current().Snapshot().ExpiresAt().Add(-renewalWindow).Add(time.Second)
 	store.removeErr = errors.New("remove denied")
 
 	renewed, err := ca.Install(context.Background())
@@ -196,7 +196,7 @@ func TestPostCommitCleanupFailureDoesNotHideUsableInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("committed renewal exposed private cleanup failure: %v", err)
 	}
-	if !renewed.Current().Usable() {
+	if !renewed.Current().Snapshot().Usable() {
 		t.Fatal("committed renewal did not return its usable postcondition")
 	}
 	if len(store.records) != 2 {
@@ -212,7 +212,7 @@ func TestInstallWillNotAddAnotherCandidateUntilResidueCanBeCleared(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	now = first.Current().Snapshot().ExpiresAt().Add(-renewalWindow).Add(time.Second)
 	store.removeErr = errors.New("remove denied")
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
@@ -236,7 +236,7 @@ func TestInstallVerifiesNonActiveCleanupBeforeAddingCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = first.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	now = first.Current().Snapshot().ExpiresAt().Add(-renewalWindow).Add(time.Second)
 	second, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestInstallVerifiesNonActiveCleanupBeforeAddingCandidate(t *testing.T) {
 	if len(store.records) != 2 {
 		t.Fatalf("renewal roots = %d, want Active and Retired", len(store.records))
 	}
-	now = second.Current().ExpiresAt().Add(-renewalWindow).Add(time.Second)
+	now = second.Current().Snapshot().ExpiresAt().Add(-renewalWindow).Add(time.Second)
 	store.ignoreRemove = true
 
 	if _, err := ca.Install(context.Background()); err == nil {
@@ -293,8 +293,8 @@ func TestUninstallRemovesEveryOwnedFactAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Changed() || first.Current().Usable() {
-		t.Fatalf("first uninstall = changed %t usable %t", first.Changed(), first.Current().Usable())
+	if !first.Changed() || first.Current().Snapshot().Usable() {
+		t.Fatalf("first uninstall = changed %t usable %t", first.Changed(), first.Current().Snapshot().Usable())
 	}
 	if len(store.records) != 0 {
 		t.Fatalf("trusted roots remain: %d", len(store.records))
@@ -350,8 +350,14 @@ func TestAssessmentCarriesSigningMaterialOnlyWhenUsable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := result.Current().Certificate(); !ok {
+	if result.Current().SigningMaterial() == nil {
 		t.Fatal("usable assessment omitted signing material")
+	}
+}
+
+func TestNewAssessmentRequiresSigningMaterial(t *testing.T) {
+	if _, err := NewAssessment(time.Now().Add(time.Hour), false, nil); err == nil {
+		t.Fatal("usable assessment accepted missing signing material")
 	}
 }
 
@@ -363,16 +369,16 @@ func TestSnapshotRecordsInspectionTimeWhileLaterInspectUsesCurrentFacts(t *testi
 		t.Fatal(err)
 	}
 	admitted := result.Current()
-	now = admitted.ExpiresAt().Add(time.Second)
+	now = admitted.Snapshot().ExpiresAt().Add(time.Second)
 
-	if !admitted.Usable() {
+	if !admitted.Snapshot().Usable() {
 		t.Fatal("immutable admitted snapshot changed as time advanced")
 	}
 	current, err := ca.Inspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Usable() {
+	if current.Snapshot().Usable() {
 		t.Fatal("fresh inspection did not observe expiry")
 	}
 }

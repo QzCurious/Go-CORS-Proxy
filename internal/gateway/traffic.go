@@ -213,7 +213,7 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr
 		return
 	}
 	r.httpsGeneration++
-	next := settledHTTPSPipeline(snapshot, false, assessmentErr)
+	next := settledHTTPSPipeline(snapshot, assessmentErr)
 	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
 	r.httpsPipeline = next
 	if pipelineChanged {
@@ -241,13 +241,12 @@ func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, assessme
 		return false, false
 	}
 	snapshot := assessment.Snapshot()
-	certificate, certificateOK := assessment.Certificate()
-	ready := assessmentErr == nil && snapshot.Usable() && certificateOK
-	next := settledHTTPSPipeline(snapshot, certificateOK, assessmentErr)
+	ready := assessmentErr == nil && snapshot.Usable()
+	next := settledHTTPSPipeline(snapshot, assessmentErr)
 	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
 	if ready {
 		// Recovery publishes MITM behavior before exposing HTTPS PAC routes.
-		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, certificate))
+		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, assessment.SigningMaterial()))
 	}
 	r.httpsPipeline = next
 	if pipelineChanged {
@@ -632,7 +631,7 @@ func (r *trafficRuntime) httpsReadyLocked() bool {
 		r.httpsPipeline.Readiness == HTTPSReadinessReady
 }
 
-func settledHTTPSPipeline(snapshot userca.Snapshot, certificateOK bool, assessmentErr error) *HTTPSPipelineDetail {
+func settledHTTPSPipeline(snapshot userca.Snapshot, assessmentErr error) *HTTPSPipelineDetail {
 	detail := &HTTPSPipelineDetail{
 		Phase:     HTTPSPipelineSettled,
 		Readiness: HTTPSReadinessNotReady,
@@ -645,13 +644,6 @@ func settledHTTPSPipeline(snapshot userca.Snapshot, certificateOK bool, assessme
 		return detail
 	}
 	if snapshot.Usable() {
-		if !certificateOK {
-			detail.SigningMaterialIssue = &SigningMaterialIssue{
-				Diagnostic: "Installed User CA is usable but its signing material is unavailable.",
-				Action:     "Restart the gateway; if the issue persists, report it.",
-			}
-			return detail
-		}
 		detail.Readiness = HTTPSReadinessReady
 		return detail
 	}
@@ -669,8 +661,7 @@ func sameHTTPSPipelineDetail(left, right *HTTPSPipelineDetail) bool {
 	return left.Phase == right.Phase &&
 		left.Readiness == right.Readiness &&
 		sameUnmetHTTPSIntent(left.UnmetIntent, right.UnmetIntent) &&
-		sameUserCAAssessmentIssue(left.UserCAAssessmentIssue, right.UserCAAssessmentIssue) &&
-		sameSigningMaterialIssue(left.SigningMaterialIssue, right.SigningMaterialIssue)
+		sameUserCAAssessmentIssue(left.UserCAAssessmentIssue, right.UserCAAssessmentIssue)
 }
 
 func sameUnmetHTTPSIntent(left, right *UnmetHTTPSIntentDetail) bool {
@@ -681,13 +672,6 @@ func sameUnmetHTTPSIntent(left, right *UnmetHTTPSIntentDetail) bool {
 }
 
 func sameUserCAAssessmentIssue(left, right *UserCAAssessmentIssue) bool {
-	if left == nil || right == nil {
-		return left == right
-	}
-	return *left == *right
-}
-
-func sameSigningMaterialIssue(left, right *SigningMaterialIssue) bool {
 	if left == nil || right == nil {
 		return left == right
 	}

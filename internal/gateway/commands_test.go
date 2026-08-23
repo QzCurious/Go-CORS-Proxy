@@ -44,10 +44,10 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	ca := &fakeUserCA{
-		install: func(context.Context) (userca.InstallResult, error) {
+		install: func(context.Context) (userca.MutationResult, error) {
 			close(entered)
 			<-release
-			return userca.NewInstallResult(userca.Assessment{}, true), nil
+			return userca.NewMutationResult(userca.Assessment{}, true), nil
 		},
 	}
 	done := make(chan error, 1)

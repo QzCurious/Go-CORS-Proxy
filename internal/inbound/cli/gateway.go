@@ -593,9 +593,6 @@ func renderHTTPSPipelineIssue(stdout io.Writer, pipeline *gateway.HTTPSPipelineD
 	case pipeline.UserCAAssessmentIssue != nil:
 		diagnostic = "Installed User CA assessment failed: " + pipeline.UserCAAssessmentIssue.Cause
 		action = pipeline.UserCAAssessmentIssue.Action
-	case pipeline.SigningMaterialIssue != nil:
-		diagnostic = pipeline.SigningMaterialIssue.Diagnostic
-		action = pipeline.SigningMaterialIssue.Action
 	}
 	if diagnostic != "" {
 		fmt.Fprintf(stdout, "warning: %s\n", diagnostic)

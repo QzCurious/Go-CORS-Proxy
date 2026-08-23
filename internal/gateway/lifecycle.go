@@ -493,7 +493,6 @@ type HTTPSPipelineDetail struct {
 	Readiness             HTTPSReadinessStatus    `json:"readiness,omitempty"`
 	UnmetIntent           *UnmetHTTPSIntentDetail `json:"unmetIntent,omitempty"`
 	UserCAAssessmentIssue *UserCAAssessmentIssue  `json:"userCAAssessmentIssue,omitempty"`
-	SigningMaterialIssue  *SigningMaterialIssue   `json:"signingMaterialIssue,omitempty"`
 }
 
 type UnmetHTTPSIntentDetail struct {
@@ -504,11 +503,6 @@ type UnmetHTTPSIntentDetail struct {
 type UserCAAssessmentIssue struct {
 	Cause  string `json:"cause"`
 	Action string `json:"action,omitempty"`
-}
-
-type SigningMaterialIssue struct {
-	Diagnostic string `json:"diagnostic"`
-	Action     string `json:"action,omitempty"`
 }
 
 type UserCACleanupIssue struct {
@@ -714,7 +708,8 @@ func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, assessment user
 }
 
 func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessment userca.Assessment) {
-	if !assessment.Usable() {
+	snapshot := assessment.Snapshot()
+	if !snapshot.Usable() {
 		return
 	}
 	state := active.engine.snapshot()
@@ -726,7 +721,7 @@ func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessmen
 	}
 	active.deadlineGeneration = state.HTTPSGeneration
 	now := time.Now()
-	delay := assessment.ExpiresAt().Sub(now)
+	delay := snapshot.ExpiresAt().Sub(now)
 	if delay < 0 {
 		delay = 0
 	}
@@ -1112,7 +1107,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	}
 	return InstallResult{
 		Kind:               kind,
-		InstalledCAExpires: current.ExpiresAt(),
+		InstalledCAExpires: current.Snapshot().ExpiresAt(),
 		HTTPSPipeline:      pipeline,
 	}, nil
 }
