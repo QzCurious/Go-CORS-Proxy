@@ -1,6 +1,7 @@
-package corsproxy
+package corsproxy_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -9,12 +10,17 @@ import (
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/QzCurious/seamless-cors/internal/corsproxy"
 )
 
 func TestHTTPProxyForwardsRequestsAndRepairsAllStatuses(t *testing.T) {
@@ -23,29 +29,50 @@ func TestHTTPProxyForwardsRequestsAndRepairsAllStatuses(t *testing.T) {
 			t.Fatalf("Origin was rewritten: %q", got)
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "DELETE")
+		w.Header().Set("Access-Control-Future", "upstream")
+		w.Header().Set("Set-Cookie", "session=secret")
+		w.Header().Set("Set-Cookie2", "legacy=secret")
+		w.Header().Set("Vary", "Accept-Encoding")
 		w.Header().Set("X-Trace", "abc")
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte("real upstream body"))
 	}))
 	defer upstream.Close()
 
-	core := newTestCore(t, Options{Transport: testTransport(t, upstream.Client())})
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
 	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/v1/items?q=dev", nil)
 	req.Header.Set("Origin", "https://app.local")
 	rec := httptest.NewRecorder()
-
-	core.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	resp := rec.Result()
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://app.local" {
-		t.Fatalf("allow origin = %q", got)
+	for name, want := range map[string]string{
+		"Access-Control-Allow-Origin":      "https://app.local",
+		"Access-Control-Allow-Credentials": "true",
+		"Access-Control-Allow-Methods":     "",
+		"Access-Control-Future":            "",
+	} {
+		if got := resp.Header.Get(name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
 	}
-	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "true" {
-		t.Fatalf("credentials = %q", got)
+	assertHeaderTokens(t, resp.Header.Values("Vary"), "Accept-Encoding", "Origin")
+	exposed := headerTokens(resp.Header.Values("Access-Control-Expose-Headers"))
+	if !slices.Contains(exposed, "Vary") || !slices.Contains(exposed, "X-Trace") {
+		t.Fatalf("exposed headers = %#v", exposed)
+	}
+	for _, forbidden := range []string{"Set-Cookie", "Set-Cookie2", "Access-Control-Allow-Origin"} {
+		if slices.Contains(exposed, forbidden) {
+			t.Fatalf("exposed headers contain %q: %#v", forbidden, exposed)
+		}
+	}
+	if !slices.IsSorted(exposed) {
+		t.Fatalf("exposed headers are not sorted: %#v", exposed)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "real upstream body" {
@@ -53,23 +80,66 @@ func TestHTTPProxyForwardsRequestsAndRepairsAllStatuses(t *testing.T) {
 	}
 }
 
+func TestHTTPProxyLeavesResponsesWithoutOriginUntouched(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://upstream.example")
+		w.Header().Set("Access-Control-Allow-Credentials", "false")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
+	req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://upstream.example" {
+		t.Fatalf("allow origin = %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "false" {
+		t.Fatalf("allow credentials = %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Expose-Headers"); got != "" {
+		t.Fatalf("expose headers = %q", got)
+	}
+}
+
+func TestHTTPProxyPreservesWildcardVary(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Vary", "*")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
+	req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
+	req.Header.Set("Origin", "https://app.local")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	defer resp.Body.Close()
+	assertHeaderTokens(t, resp.Header.Values("Vary"), "*")
+}
+
 func TestProxyAnswersPreflightLocally(t *testing.T) {
 	var upstreamHits atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamHits.Add(1)
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	defer upstream.Close()
 
-	core := newTestCore(t, Options{Transport: testTransport(t, upstream.Client())})
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
 	req := httptest.NewRequest(http.MethodOptions, upstream.URL+"/v1/items", nil)
 	req.Header.Set("Origin", "null")
 	req.Header.Set("Access-Control-Request-Method", "PATCH")
 	req.Header.Set("Access-Control-Request-Headers", "X-Dev")
 	req.Header.Set("Access-Control-Request-Private-Network", "true")
 	rec := httptest.NewRecorder()
-
-	core.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	resp := rec.Result()
 	defer resp.Body.Close()
@@ -78,17 +148,59 @@ func TestProxyAnswersPreflightLocally(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"Access-Control-Allow-Origin":          "null",
+		"Access-Control-Allow-Credentials":     "true",
 		"Access-Control-Allow-Methods":         "PATCH",
 		"Access-Control-Allow-Headers":         "X-Dev",
 		"Access-Control-Allow-Private-Network": "true",
-		"Access-Control-Max-Age":               "600",
+		"Access-Control-Max-Age":               "0",
+		"Content-Type":                         "",
 	} {
 		if got := resp.Header.Get(name); got != want {
-			t.Fatalf("%s = %q", name, got)
+			t.Fatalf("%s = %q, want %q", name, got, want)
 		}
 	}
+	assertHeaderTokens(
+		t,
+		resp.Header.Values("Vary"),
+		"Origin",
+		"Access-Control-Request-Method",
+		"Access-Control-Request-Headers",
+		"Access-Control-Request-Private-Network",
+	)
 	if got := upstreamHits.Load(); got != 0 {
 		t.Fatalf("upstream hits = %d", got)
+	}
+}
+
+func TestDirectCONNECTLeavesHTTPSOpaque(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		_, _ = w.Write([]byte("direct"))
+	}))
+	defer upstream.Close()
+
+	proxyServer := httptest.NewServer(corsproxy.New(testTransport(t, upstream.Client()), nil))
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport := testTransport(t, upstream.Client())
+	clientTransport.Proxy = http.ProxyURL(proxyURL)
+	client := &http.Client{Transport: clientTransport}
+	req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://app.local")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("allow origin = %q", got)
 	}
 }
 
@@ -105,7 +217,6 @@ func TestTrustedHTTPSInterceptionRepairsResponseAndCompletes(t *testing.T) {
 
 	proxyServer, proxyURL, roots := trustedProxyServer(t, upstream.Client())
 	defer proxyServer.Close()
-
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
 		TLSClientConfig: roots,
@@ -121,7 +232,6 @@ func TestTrustedHTTPSInterceptionRepairsResponseAndCompletes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://app.local" {
 		t.Fatalf("allow origin = %q", got)
 	}
@@ -139,7 +249,7 @@ func TestTrustedHTTPSInterceptionRepairsResponseAndCompletes(t *testing.T) {
 
 func TestTrustedHTTPSInterceptionAnswersPreflightLocally(t *testing.T) {
 	var upstreamHits atomic.Int32
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamHits.Add(1)
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -147,7 +257,6 @@ func TestTrustedHTTPSInterceptionAnswersPreflightLocally(t *testing.T) {
 
 	proxyServer, proxyURL, roots := trustedProxyServer(t, upstream.Client())
 	defer proxyServer.Close()
-
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
 		TLSClientConfig: roots,
@@ -164,7 +273,6 @@ func TestTrustedHTTPSInterceptionAnswersPreflightLocally(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -176,61 +284,41 @@ func TestTrustedHTTPSInterceptionAnswersPreflightLocally(t *testing.T) {
 	}
 }
 
-func TestProxyLoggingIsQuietByDefault(t *testing.T) {
-	t.Setenv("SEAMLESS_CORS_DEBUG_PROXY", "")
-	core := newTestCore(t, Options{})
-
-	if core.proxy.Verbose {
-		t.Fatal("proxy should not be verbose by default")
-	}
-}
-
-func TestProxyLoggingDebugEnvEnablesVerboseLogs(t *testing.T) {
-	t.Setenv("SEAMLESS_CORS_DEBUG_PROXY", "1")
-	core := newTestCore(t, Options{})
-
-	if !core.proxy.Verbose {
-		t.Fatal("proxy should be verbose with debug env")
-	}
-}
-
-func TestEachHandlerHasAnImmutableFreshProxyAndCacheGeneration(t *testing.T) {
-	firstCertificate, _ := testHTTPSCertificate(t)
+func TestProxyGeneratedFailureIsNotCORSRepaired(t *testing.T) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	firstHandler := newTestCore(t, Options{Certificate: firstCertificate, Transport: transport})
-	first := firstHandler.proxy
-	if first.CertStore == nil {
-		t.Fatal("active generation omitted certificate cache")
+	transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		return nil, errTestDial
 	}
+	handler := corsproxy.New(transport, nil)
+	req := httptest.NewRequest(http.MethodGet, "http://upstream.invalid/resource", nil)
+	req.Header.Set("Origin", "https://app.local")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
 
-	secondCertificate, _ := testHTTPSCertificate(t)
-	secondHandler := newTestCore(t, Options{Certificate: secondCertificate, Transport: transport})
-	second := secondHandler.proxy
-	if second == first {
-		t.Fatal("certificate replacement mutated the active proxy in place")
+	resp := rec.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	if second.CertStore == nil || second.CertStore == first.CertStore {
-		t.Fatal("certificate replacement reused the previous cache generation")
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow origin = %q", got)
 	}
+}
 
-	inactiveHandler := newTestCore(t, Options{Transport: transport})
-	inactive := inactiveHandler.proxy
-	if inactive == second {
-		t.Fatal("deactivation mutated the active proxy in place")
-	}
-	if inactive.CertStore != nil {
-		t.Fatal("inactive generation retained a certificate cache")
-	}
+func TestNewRequiresTransport(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New did not panic")
+		}
+	}()
+	corsproxy.New(nil, nil)
 }
 
 func trustedProxyServer(t *testing.T, upstreamClient *http.Client) (*httptest.Server, *url.URL, *tls.Config) {
 	t.Helper()
 	certificate, certificatePEM := testHTTPSCertificate(t)
-	core := newTestCore(t, Options{
-		Certificate: certificate,
-		Transport:   testTransport(t, upstreamClient),
-	})
-	proxyServer := httptest.NewServer(core)
+	handler := corsproxy.New(testTransport(t, upstreamClient), certificate)
+	proxyServer := httptest.NewServer(handler)
 	proxyURL, err := url.Parse(proxyServer.URL)
 	if err != nil {
 		proxyServer.Close()
@@ -277,14 +365,6 @@ func testHTTPSCertificate(t *testing.T) (*tls.Certificate, []byte) {
 	return &certificate, certificatePEM
 }
 
-func newTestCore(t *testing.T, opts Options) *Handler {
-	t.Helper()
-	if opts.Transport == nil {
-		opts.Transport = http.DefaultTransport.(*http.Transport).Clone()
-	}
-	return New(opts)
-}
-
 func testTransport(t *testing.T, client *http.Client) *http.Transport {
 	t.Helper()
 	transport, ok := client.Transport.(*http.Transport)
@@ -293,3 +373,29 @@ func testTransport(t *testing.T, client *http.Client) *http.Transport {
 	}
 	return transport.Clone()
 }
+
+func assertHeaderTokens(t *testing.T, values []string, want ...string) {
+	t.Helper()
+	got := headerTokens(values)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("header tokens = %#v, want %#v", got, want)
+	}
+}
+
+func headerTokens(values []string) []string {
+	var tokens []string
+	for _, value := range values {
+		for token := range strings.SplitSeq(value, ",") {
+			tokens = append(tokens, strings.TrimSpace(token))
+		}
+	}
+	slices.Sort(tokens)
+	return tokens
+}
+
+type testDialError struct{}
+
+func (testDialError) Error() string { return "dial failed" }
+
+var errTestDial testDialError

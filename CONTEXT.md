@@ -213,8 +213,8 @@ The immutable Active UserCA certificate and matching private signer that may acc
 _Avoid_: HTTPS Certificate Provider, HTTPS Provider Source, list-bounded signer, selector certificate set, Gateway leaf generator
 
 **MITM Proxy Generation**:
-An immutable goproxy handler bound to one UserCA Signing Material generation and one fresh concurrent LRU certificate cache bounded to 1,024 hostnames. Gateway atomically replaces the handler behind its stable Proxy Listener; admitted connections may retain the previous generation, while PAC changes only when HTTPS routes change.
-_Avoid_: mutable in-place CA swap, cross-CA certificate cache, proxy-listener rotation, CA-rotation PAC rewrite
+An immutable goproxy handler bound to one UserCA Signing Material generation. Gateway atomically replaces the handler behind its stable Proxy Listener; admitted connections may retain the previous generation, while PAC changes only when HTTPS routes change.
+_Avoid_: mutable in-place CA swap, proxy-listener rotation, CA-rotation PAC rewrite
 
 **Retired UserCA**:
 The previous Active UserCA after a new active fingerprint is committed. CONNECT requests already admitted to its MITM generation may finish because its root remains trusted; after atomic replacement, old private material is removed as soon as practical and fallible OS trust removal remains Non-Active UserCA Cleanup.
@@ -347,6 +347,10 @@ _Avoid_: Upstream-gated proxy, PAC-only proxy, per-host interception gate, LAN-e
 **CORS Proxy**:
 The traffic-behavior module that forms immutable proxy generations owning CORS repair, Local Preflight Answer, Response Repair, and Trusted HTTPS Interception behavior for traffic reaching the Proxy Listener. Gateway Runtime owns generation publication and lifecycle.
 _Avoid_: active-generation owner, lifecycle manager, Upstream List admission module, PAC Routing module, generic proxy
+
+**CORS Repair Scope**:
+A traffic rule where every CORS-bearing request reaching the Proxy Listener is eligible for repair: the calling page's Origin determines reflected response values but never admission, while Upstream List destination selection happens earlier through PAC Routing.
+_Avoid_: Allowed Origin, caller-origin allowlist, per-request Upstream List gate, CORS authorization
 
 **Home Config Directory**:
 The fixed seamless-cors location at `.seamless-cors` under the user's home directory. Gateway owns the Upstream List path policy, creation assessment and execution, and observation lifecycle; Gateway Coordination and UserCA independently own their state in dedicated subdirectories.
@@ -708,6 +712,10 @@ _Avoid_: wildcard allow-headers
 A Local Preflight Answer behavior where preflight responses echo the browser's requested method instead of returning a broad method list.
 _Avoid_: broad allow-methods
 
+**Preflight Vary Declaration**:
+A Local Preflight Answer behavior where `Vary` names Origin, requested method, requested headers, and requested private-network access because those request values determine the generated response.
+_Avoid_: Origin-only preflight Vary, cache-enabled preflight
+
 **Global CORS Policy**:
 A gateway behavior where every request reaching the Proxy Listener uses the same Reflective DEV/QA Policy instead of per-domain policy settings.
 _Avoid_: per-domain CORS policy, domain-specific overrides
@@ -724,8 +732,8 @@ _Avoid_: upstream preflight, preflight repair
 A Local Preflight Answer behavior where requests reaching the Proxy Listener that ask for private network access receive `Access-Control-Allow-Private-Network: true`.
 _Avoid_: PNA omission for local targets
 
-**Fixed Preflight Cache**:
-A Local Preflight Answer behavior that uses a fixed `Access-Control-Max-Age` of 600 seconds.
+**Uncached Preflight Answer**:
+A Local Preflight Answer behavior that sets `Access-Control-Max-Age: 0` so each browser preflight is independently answered from its request instead of being reused from the browser's separate CORS-preflight cache.
 _Avoid_: configurable preflight cache, indefinite preflight cache
 
 **Response Repair**:
@@ -741,20 +749,16 @@ The product boundary that leaves browser request headers unchanged except for or
 _Avoid_: Origin rewriting, Referer rewriting, auth header mutation
 
 **CORS Header Replacement**:
-A Response Repair behavior where existing upstream CORS headers are removed before the gateway writes the Reflective DEV/QA Policy headers.
+A Response Repair behavior where every existing upstream `Access-Control-*` header is removed before the gateway writes the Reflective DEV/QA Policy headers.
 _Avoid_: CORS header merge, duplicate CORS headers
 
 **Concrete Exposed Headers**:
-A Response Repair behavior where `Access-Control-Expose-Headers` lists actual upstream response header names, excluding CORS headers, for maximum browser compatibility.
+A Response Repair behavior where `Access-Control-Expose-Headers` deterministically lists actual upstream response header names, excluding CORS and cookie-setting headers, and is omitted when no names remain.
 _Avoid_: wildcard expose-headers
 
 **HTTP CORS Scope**:
-The product boundary that focuses gateway repair on browser HTTP/HTTPS CORS requests and leaves WebSocket protocol behavior out of scope.
-_Avoid_: WebSocket repair, protocol frame rewriting
-
-**WebSocket Skip**:
-A gateway behavior where WebSocket upgrade requests are forwarded without CORS repair or protocol-specific changes.
-_Avoid_: WebSocket origin bypass, upgrade repair
+The product boundary that applies Origin-Gated Rewriting to HTTP responses, including upgrade responses, without rewriting request origins, changing upgraded protocol frames, or claiming to repair WebSocket origin policy.
+_Avoid_: WebSocket CORS support, protocol frame rewriting, upgrade exemption
 
 **Cookie Out of Scope**:
 The product boundary that leaves cookie attributes, cookie values, sessions, and authentication behavior unchanged.
@@ -1022,9 +1026,9 @@ Developer: "Will `401` or `500` upstream responses still be readable by frontend
 
 QA engineer: "Yes, All-Status Repair applies CORS repair to upstream errors too."
 
-Developer: "How long can browsers cache local preflight answers?"
+Developer: "Does the gateway select how long browsers cache local preflight answers?"
 
-QA engineer: "Fixed Preflight Cache uses 600 seconds."
+QA engineer: "Yes. Uncached Preflight Answer sets the preflight cache lifetime to zero so each preflight reaches the gateway."
 
 Developer: "Will the gateway rewrite `Origin` if the upstream rejects it?"
 
@@ -1040,11 +1044,11 @@ QA engineer: "Concrete Exposed Headers lists the upstream response headers inste
 
 Developer: "Will the gateway fix WebSocket origin behavior?"
 
-QA engineer: "No, HTTP CORS Scope keeps WebSocket protocol behavior out of v1."
+QA engineer: "No. HTTP CORS Scope may repair the HTTP upgrade response, but it does not rewrite the request Origin or change WebSocket frames."
 
 Developer: "What if the WebSocket upstream is in the Upstream List?"
 
-QA engineer: "WebSocket Skip still forwards it without gateway repair."
+QA engineer: "PAC Routing may send its handshake through CORS Proxy like other selected HTTP traffic, while WebSocket origin policy and frames remain unchanged."
 
 Developer: "Will the gateway rewrite cookies so login works?"
 

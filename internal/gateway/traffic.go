@@ -132,7 +132,7 @@ func newRuntimeWithTransport(
 			projectionIssue = &UpstreamListProjectionIssue{Cause: err.Error()}
 		}
 	}
-	directProxy := corsproxy.New(corsproxy.Options{Transport: proxyTransport})
+	directProxy := corsproxy.New(proxyTransport, nil)
 	pacContent := pacrouting.Project(initialList, false, proxyListen)
 	pacHandler := newLivePACHandler(pacContent)
 	proxyHandler := &liveProxyHandler{current: directProxy}
@@ -222,7 +222,7 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishPACProjection(projectionChanged)
-	r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+	r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil))
 	if pipelineChanged {
 		r.publishRuntimeChange(HTTPSPipelineChanged)
 	}
@@ -247,10 +247,7 @@ func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, assessme
 	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
 	if ready {
 		// Recovery publishes MITM behavior before exposing HTTPS PAC routes.
-		r.proxyHandler.Set(corsproxy.New(corsproxy.Options{
-			Certificate: certificate,
-			Transport:   r.proxyTransport,
-		}))
+		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, certificate))
 	}
 	r.httpsPipeline = next
 	if pipelineChanged {
@@ -264,7 +261,7 @@ func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, assessme
 		// Degradation withdraws served and asynchronously published HTTPS
 		// routes before new CONNECT requests switch to direct tunneling.
 		r.publishPACProjection(projectionChanged)
-		r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil))
 	}
 	if pipelineChanged {
 		r.publishRuntimeChange(HTTPSPipelineChanged)
@@ -402,7 +399,7 @@ func (r *trafficRuntime) BeginHTTPSDeadlineAssessment(expectedGeneration uint64)
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishPACProjection(projectionChanged)
-	r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+	r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil))
 	r.publishRuntimeChange(HTTPSPipelineChanged)
 	return generation, true
 }
@@ -519,7 +516,7 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(_ context.Context, outc
 	// routes before new CONNECT requests switch to direct tunneling.
 	r.publishPACProjection(projectionChanged)
 	if deactivateProxy {
-		r.proxyHandler.Set(corsproxy.New(corsproxy.Options{Transport: r.proxyTransport}))
+		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil))
 	}
 	if pipelineChanged {
 		r.publishRuntimeChange(HTTPSPipelineChanged)
