@@ -2,7 +2,7 @@
 
 ## Setup
 
-Remove the demo origin from `~/.seamless-cors/upstreams.txt`, then start the demo:
+Remove the demo origin from the repository-root `upstreams.txt`, then start the demo:
 
 ```sh
 make build
@@ -24,7 +24,7 @@ Command+Shift+5, choose **Record Entire Screen**, and click **Record**.
    ./bin/seamless-cors start
    ```
 
-3. Add the origin printed by the demo to `~/.seamless-cors/upstreams.txt`:
+3. Add the origin printed by the demo to the repository-root `upstreams.txt`:
 
    ```text
    http://api.127.0.0.1.nip.io:4100

@@ -366,7 +366,7 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 		if started, ok := result.(gateway.Started); ok {
 			guidance := started.Guidance
 			fmt.Fprintln(stdout, "seamless-cors running")
-			fmt.Fprintf(stdout, "upstream-list: %s\n", homeRelativePath(guidance.UpstreamListPath))
+			renderUpstreamListSources(stdout, guidance.UpstreamLists)
 			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(guidance.HTTPSPipeline))
 			if includeHTTPSPipeline {
 				renderHTTPSPipelineIssue(stdout, guidance.HTTPSPipeline)
@@ -385,9 +385,6 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
-			renderFileSyncIssue(stdout, guidance.UpstreamListFileSyncIssue)
-			renderUpstreamListProjectionIssue(stdout, guidance.UpstreamListProjectionIssue)
-			renderUpstreamListWarnings(stdout, guidance.UpstreamListWarnings)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
@@ -529,11 +526,8 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		if result.Owner != nil {
 			fmt.Fprintf(stdout, "gateway-router-endpoint: %s\n", result.Owner.RouterListen)
 		}
-		fmt.Fprintf(stdout, "upstream-list: %s\n", result.Runtime.UpstreamListPath)
+		renderUpstreamListSources(stdout, result.Runtime.UpstreamLists)
 		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
-		renderFileSyncIssue(stdout, result.Runtime.UpstreamListFileSyncIssue)
-		renderUpstreamListProjectionIssue(stdout, result.Runtime.UpstreamListProjectionIssue)
-		renderUpstreamListWarnings(stdout, result.Runtime.UpstreamListWarnings)
 		if result.Runtime.ManagedPACActive {
 			fmt.Fprintln(stdout, "managed-pac: active")
 		} else {
@@ -616,11 +610,22 @@ func renderUpstreamListWarnings(stdout io.Writer, warnings []gateway.UpstreamLis
 	for _, warning := range warnings {
 		fmt.Fprintf(
 			stdout,
-			"warning: upstream-list line %d: %s: %s\n",
+			"warning: %s %s:%d: %s: %s\n",
+			warning.Source,
+			warning.Path,
 			warning.Line,
 			warning.Text,
 			warning.Diagnostic,
 		)
+	}
+}
+
+func renderUpstreamListSources(stdout io.Writer, sources []gateway.UpstreamListSourceDetail) {
+	for _, source := range sources {
+		fmt.Fprintf(stdout, "upstream-list-%s: %s\n", source.Kind, source.Path)
+		renderFileSyncIssue(stdout, source.Kind, source.Path, source.FileSyncIssue)
+		renderUpstreamListProjectionIssue(stdout, source.Kind, source.Path, source.ProjectionIssue)
+		renderUpstreamListWarnings(stdout, source.Warnings)
 	}
 }
 
@@ -631,24 +636,24 @@ func renderUpstreamListCreationWarning(stdout io.Writer, warning *gateway.Upstre
 	fmt.Fprintf(stdout, "warning: upstream-list creation failed: %s\n", warning.Cause)
 }
 
-func renderFileSyncIssue(stdout io.Writer, issue *gateway.FileSyncIssue) {
+func renderFileSyncIssue(stdout io.Writer, source gateway.UpstreamListSourceKind, path string, issue *gateway.FileSyncIssue) {
 	if issue == nil {
 		return
 	}
 	if issue.Kind == gateway.FileSyncIssueObservationStopped {
-		fmt.Fprintf(stdout, "warning: upstream-list observation stopped: %s\n", issue.Cause)
+		fmt.Fprintf(stdout, "warning: %s %s observation stopped: %s\n", source, path, issue.Cause)
 		fmt.Fprintln(stdout, "action: repair the cause and restart seamless-cors")
 		return
 	}
-	fmt.Fprintf(stdout, "warning: upstream-list file unreadable: %s\n", issue.Cause)
+	fmt.Fprintf(stdout, "warning: %s %s unreadable: %s\n", source, path, issue.Cause)
 	fmt.Fprintln(stdout, "action: restore the upstream-list file; observation will resume automatically")
 }
 
-func renderUpstreamListProjectionIssue(stdout io.Writer, issue *gateway.UpstreamListProjectionIssue) {
+func renderUpstreamListProjectionIssue(stdout io.Writer, source gateway.UpstreamListSourceKind, path string, issue *gateway.UpstreamListProjectionIssue) {
 	if issue == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "warning: upstream-list contents rejected: %s\n", issue.Cause)
+	fmt.Fprintf(stdout, "warning: %s %s contents rejected: %s\n", source, path, issue.Cause)
 }
 
 func cleanupFailureText(failures []gateway.CleanupFailureDetail) string {

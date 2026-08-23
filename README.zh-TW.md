@@ -60,9 +60,13 @@ npx seamless-cors start
 seamless-cors start
 ```
 
-第一次啟動時，seamless-cors 會建立 `~/.seamless-cors/upstreams.txt`。
+第一次啟動時，seamless-cors 會詢問是否要在平台原生的 XDG 設定目錄下建立
+Global Upstream List：`seamless-cors/upstreams.txt`。例如 Linux 預設位置是
+`~/.config/seamless-cors/upstreams.txt`，macOS 則是
+`~/Library/Application Support/seamless-cors/upstreams.txt`。舊的
+`~/.seamless-cors/upstreams.txt` 不會被讀取或搬移。
 
-把需要放行 CORS 的 API hostname 或 origin 逐行加進 `~/.seamless-cors/upstreams.txt`：
+把需要放行 CORS 的 API hostname 或 origin 逐行加進 Global Upstream List：
 
 ```text
 api.dev.example.com
@@ -70,9 +74,12 @@ https://api.example.com:8443
 *.test.example.com
 ```
 
-服務執行期間會自動監看這份清單，修改後不需要重新啟動。明確的
-`https://` Origin Selector 代表 HTTPS Intent；Host Selector 本身不代表
-HTTPS Intent，但 HTTPS Readiness 為 ready 時會同時處理 HTTP 與 HTTPS。
+也可以在執行 `seamless-cors start` 的目錄直接建立選用的 `upstreams.txt`。
+Global 與 Directory Upstream List 會各自被監看與解析，再以不具優先順序的方式
+合併；重複的正規化項目只會生效一次。作用中的目錄會固定到 gateway 停止並重新啟動為止。
+
+任一來源中明確的 `https://` Origin Selector 都代表 HTTPS Intent；Host Selector
+本身不代表 HTTPS Intent，但 HTTPS Readiness 為 ready 時會同時處理 HTTP 與 HTTPS。
 
 要讓 HTTPS Readiness 成為 ready，請執行 `seamless-cors install`，並在作業系統提示中允許安裝 seamless-cors 的開發用 CA 憑證。若 gateway 已在執行，HTTPS 攔截會立即啟用。未安裝 UserCA 時，gateway 仍會繼續處理 HTTP；若 upstream list 表達 HTTPS Intent，則會顯示警告。
 

@@ -109,9 +109,12 @@ type startOutput struct {
 }
 
 func (s *routerServer) start(ctx context.Context, input *startInput) (*startOutput, error) {
-	request := StartRequest{}
-	if input.Body != nil {
-		request = *input.Body
+	if input.Body == nil {
+		return nil, newRouterError(http.StatusUnprocessableEntity, "workingDirectory is required")
+	}
+	request := *input.Body
+	if _, err := directoryUpstreamListPath(request.WorkingDirectory); err != nil {
+		return nil, newRouterError(http.StatusUnprocessableEntity, "workingDirectory must be an absolute path", err)
 	}
 	result, err := s.handler.ExecuteStart(ctx, request)
 	if err != nil {

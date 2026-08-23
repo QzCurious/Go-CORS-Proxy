@@ -44,6 +44,7 @@ const (
 )
 
 type StartRequest struct {
+	WorkingDirectory            string                            `json:"workingDirectory" minLength:"1"`
 	UpstreamListCreationConsent *UpstreamListCreationConsentInput `json:"upstreamListCreationConsent,omitempty"`
 	ManagedPACConsent           *ManagedPACConsentInput           `json:"managedPacConsent,omitempty"`
 }
@@ -277,26 +278,40 @@ type ManagedPACConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidance struct {
-	UpstreamListPath            string                       `json:"upstreamListPath"`
-	ManagedPACActive            bool                         `json:"managedPacActive"`
-	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
-	ManagedPACPublicationURL    string                       `json:"managedPacPublicationUrl,omitempty"`
-	HTTPSPipeline               *HTTPSPipelineDetail         `json:"httpsPipeline,omitempty"`
-	InstalledCA                 *InstalledCAStatusDetail     `json:"installedCA,omitempty"`
-	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
-	UpstreamListWarnings        []UpstreamListWarningDetail  `json:"upstreamListWarnings,omitempty"`
-	UpstreamListFileSyncIssue   *FileSyncIssue               `json:"upstreamListFileSyncIssue,omitempty"`
-	UpstreamListProjectionIssue *UpstreamListProjectionIssue `json:"upstreamListProjectionIssue,omitempty"`
+	UpstreamLists            []UpstreamListSourceDetail `json:"upstreamLists"`
+	ManagedPACActive         bool                       `json:"managedPacActive"`
+	ManagedPACServices       []string                   `json:"managedPacServices,omitempty"`
+	ManagedPACPublicationURL string                     `json:"managedPacPublicationUrl,omitempty"`
+	HTTPSPipeline            *HTTPSPipelineDetail       `json:"httpsPipeline,omitempty"`
+	InstalledCA              *InstalledCAStatusDetail   `json:"installedCA,omitempty"`
+	ManagedPACWarnings       []ManagedPACWarningDetail  `json:"managedPacWarnings,omitempty"`
 }
 
 // StartGuidanceDetail is retained as a representation-oriented alias for
 // existing control-surface helpers; Started uses StartGuidance.
 type StartGuidanceDetail = StartGuidance
 
+type UpstreamListSourceKind string
+
+const (
+	UpstreamListSourceGlobal    UpstreamListSourceKind = "global"
+	UpstreamListSourceDirectory UpstreamListSourceKind = "directory"
+)
+
+type UpstreamListSourceDetail struct {
+	Kind            UpstreamListSourceKind       `json:"kind"`
+	Path            string                       `json:"path"`
+	Warnings        []UpstreamListWarningDetail  `json:"warnings,omitempty"`
+	FileSyncIssue   *FileSyncIssue               `json:"fileSyncIssue,omitempty"`
+	ProjectionIssue *UpstreamListProjectionIssue `json:"projectionIssue,omitempty"`
+}
+
 type UpstreamListWarningDetail struct {
-	Line       int    `json:"line"`
-	Text       string `json:"text"`
-	Diagnostic string `json:"diagnostic"`
+	Source     UpstreamListSourceKind `json:"source"`
+	Path       string                 `json:"path"`
+	Line       int                    `json:"line"`
+	Text       string                 `json:"text"`
+	Diagnostic string                 `json:"diagnostic"`
 }
 
 type FileSyncIssueKind string
@@ -460,18 +475,15 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen                 string                       `json:"proxyListen"`
-	PACListen                   string                       `json:"pacListen"`
-	UpstreamListPath            string                       `json:"upstreamListPath"`
-	UpstreamCount               int                          `json:"upstreamCount"`
-	UpstreamListWarnings        []UpstreamListWarningDetail  `json:"upstreamListWarnings,omitempty"`
-	UpstreamListFileSyncIssue   *FileSyncIssue               `json:"upstreamListFileSyncIssue,omitempty"`
-	UpstreamListProjectionIssue *UpstreamListProjectionIssue `json:"upstreamListProjectionIssue,omitempty"`
-	HTTPSPipeline               *HTTPSPipelineDetail         `json:"httpsPipeline,omitempty"`
-	ManagedPACActive            bool                         `json:"managedPacActive"`
-	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
-	ManagedPACPublicationURL    string                       `json:"managedPacPublicationUrl,omitempty"`
-	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
+	ProxyListen              string                     `json:"proxyListen"`
+	PACListen                string                     `json:"pacListen"`
+	UpstreamLists            []UpstreamListSourceDetail `json:"upstreamLists"`
+	UpstreamCount            int                        `json:"upstreamCount"`
+	HTTPSPipeline            *HTTPSPipelineDetail       `json:"httpsPipeline,omitempty"`
+	ManagedPACActive         bool                       `json:"managedPacActive"`
+	ManagedPACServices       []string                   `json:"managedPacServices,omitempty"`
+	ManagedPACPublicationURL string                     `json:"managedPacPublicationUrl,omitempty"`
+	ManagedPACWarnings       []ManagedPACWarningDetail  `json:"managedPacWarnings,omitempty"`
 }
 
 type HTTPSReadinessStatus string
@@ -558,29 +570,30 @@ const (
 )
 
 type lifecycle struct {
-	mu                   sync.Mutex
-	caAdmissionMu        sync.Mutex
-	managedPAC           managedPACModule
-	userCA               userCAModule
-	userCASnapshot       userca.Snapshot
-	userCAAssessmentErr  error
-	coord                *coordinator
-	runtimeDir           string
-	routerListen         string
-	ownerCache           stateCache
-	startMutating        bool
-	startCleanupComplete bool
-	startCancel          context.CancelFunc
-	startDone            chan struct{}
-	ownerEnding          bool
-	transientOwner       bool
-	caMutating           bool
-	deadlinePending      bool
-	pipelinePending      bool
-	runtime              *activeRuntime
-	httpsPipelineChanged func(*HTTPSPipelineDetail)
-	userCACleanupIssue   *UserCACleanupIssue
-	fatal                chan error
+	mu                     sync.Mutex
+	caAdmissionMu          sync.Mutex
+	managedPAC             managedPACModule
+	userCA                 userCAModule
+	userCASnapshot         userca.Snapshot
+	userCAAssessmentErr    error
+	coord                  *coordinator
+	runtimeDir             string
+	globalUpstreamListPath string
+	routerListen           string
+	ownerCache             stateCache
+	startMutating          bool
+	startCleanupComplete   bool
+	startCancel            context.CancelFunc
+	startDone              chan struct{}
+	ownerEnding            bool
+	transientOwner         bool
+	caMutating             bool
+	deadlinePending        bool
+	pipelinePending        bool
+	runtime                *activeRuntime
+	httpsPipelineChanged   func(*HTTPSPipelineDetail)
+	userCACleanupIssue     *UserCACleanupIssue
+	fatal                  chan error
 }
 
 type activeRuntime struct {
@@ -641,14 +654,15 @@ func newLifecycleState(
 		initial, assessmentErr = ca.Inspect(context.Background())
 	}
 	return &lifecycle{
-		managedPAC:          pac,
-		userCA:              ca,
-		userCASnapshot:      initial.Snapshot(),
-		userCAAssessmentErr: assessmentErr,
-		coord:               coord,
-		runtimeDir:          coord.RuntimeDirPath(),
-		routerListen:        routerListen,
-		fatal:               make(chan error, 1),
+		managedPAC:             pac,
+		userCA:                 ca,
+		userCASnapshot:         initial.Snapshot(),
+		userCAAssessmentErr:    assessmentErr,
+		coord:                  coord,
+		runtimeDir:             coord.RuntimeDirPath(),
+		globalUpstreamListPath: defaultGlobalUpstreamListPath(),
+		routerListen:           routerListen,
+		fatal:                  make(chan error, 1),
 	}, nil
 }
 
@@ -1007,18 +1021,15 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
-			ProxyListen:                 state.ProxyListen,
-			PACListen:                   state.PACListen,
-			UpstreamListPath:            state.UpstreamList,
-			UpstreamCount:               state.UpstreamCount,
-			UpstreamListWarnings:        state.UpstreamListWarnings,
-			UpstreamListFileSyncIssue:   state.UpstreamListFileSyncIssue,
-			UpstreamListProjectionIssue: state.UpstreamListProjectionIssue,
-			HTTPSPipeline:               state.HTTPSPipeline,
-			ManagedPACActive:            managedPACActive,
-			ManagedPACServices:          managedPACServiceNames,
-			ManagedPACPublicationURL:    managedPACPublicationURL,
-			ManagedPACWarnings:          managedPACWarningSnapshot,
+			ProxyListen:              state.ProxyListen,
+			PACListen:                state.PACListen,
+			UpstreamLists:            state.UpstreamLists,
+			UpstreamCount:            state.UpstreamCount,
+			HTTPSPipeline:            state.HTTPSPipeline,
+			ManagedPACActive:         managedPACActive,
+			ManagedPACServices:       managedPACServiceNames,
+			ManagedPACPublicationURL: managedPACPublicationURL,
+			ManagedPACWarnings:       managedPACWarningSnapshot,
 		}
 		return result, nil
 	}
@@ -1031,10 +1042,12 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	return result, nil
 }
 
-func upstreamListWarningDetails(warnings []upstreamlist.Warning) []UpstreamListWarningDetail {
+func upstreamListWarningDetails(kind UpstreamListSourceKind, path string, warnings []upstreamlist.Warning) []UpstreamListWarningDetail {
 	details := make([]UpstreamListWarningDetail, 0, len(warnings))
 	for _, warning := range warnings {
 		details = append(details, UpstreamListWarningDetail{
+			Source:     kind,
+			Path:       path,
 			Line:       warning.Line,
 			Text:       warning.Text,
 			Diagnostic: warning.Diagnostic,

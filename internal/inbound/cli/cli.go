@@ -60,7 +60,7 @@ func run(args []string, stdout, stderr io.Writer, commands commandHandlers) erro
 		return reportCommandError(stderr, commands.uninstall(stdout, stderr))
 	case "start":
 		if len(args[1:]) > 0 {
-			err := fmt.Errorf("start does not accept flags; edit upstreams.txt instead")
+			err := fmt.Errorf("start does not accept flags; edit upstreams.txt in the Global config or working directory instead")
 			fmt.Fprintln(stderr, err)
 			return err
 		}

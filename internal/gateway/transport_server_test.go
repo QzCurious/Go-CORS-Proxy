@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,7 +87,7 @@ func TestHealthRequiresTokenAndDoesNotCallCommandHandler(t *testing.T) {
 	}
 }
 
-func TestStartAllowsEmptyBody(t *testing.T) {
+func TestStartRequiresWorkingDirectory(t *testing.T) {
 	handler := &fakeCommandHandler{}
 	server := newRouter("token", handler)
 
@@ -96,14 +97,11 @@ func TestStartAllowsEmptyBody(t *testing.T) {
 
 	server.server.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("start returned %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("start returned %d, want %d: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
 	}
-	if !handler.startCalled {
-		t.Fatal("command handler ExecuteStart was not called")
-	}
-	if handler.startRequest.ManagedPACConsent != nil {
-		t.Fatalf("start request Managed PAC Consent = %#v, want nil", handler.startRequest.ManagedPACConsent)
+	if handler.startCalled {
+		t.Fatal("command handler ExecuteStart was called without a working directory")
 	}
 }
 
@@ -125,7 +123,8 @@ func TestStartPropagatesRequestContext(t *testing.T) {
 	server := newRouter("token", handler)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/start", nil)
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/start", strings.NewReader(`{"workingDirectory":"/project"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(tokenHeader, "token")
 	rec := httptest.NewRecorder()
 
@@ -145,7 +144,8 @@ func TestStartPropagatesRequestContext(t *testing.T) {
 func TestStartFailureUsesSharedErrorShell(t *testing.T) {
 	handler := &fakeCommandHandler{startResult: StartManagedPACInstallationFailed{Diagnostic: "PAC install failed"}}
 	server := newRouter("token", handler)
-	req := httptest.NewRequest(http.MethodPost, "/start", nil)
+	req := httptest.NewRequest(http.MethodPost, "/start", strings.NewReader(`{"workingDirectory":"/project"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(tokenHeader, "token")
 	rec := httptest.NewRecorder()
 
@@ -175,7 +175,8 @@ func TestStartFailureUsesSharedErrorShell(t *testing.T) {
 func TestStartSuccessIsBareSubjectResponse(t *testing.T) {
 	handler := &fakeCommandHandler{startResult: Started{}}
 	server := newRouter("token", handler)
-	req := httptest.NewRequest(http.MethodPost, "/start", nil)
+	req := httptest.NewRequest(http.MethodPost, "/start", strings.NewReader(`{"workingDirectory":"/project"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(tokenHeader, "token")
 	rec := httptest.NewRecorder()
 

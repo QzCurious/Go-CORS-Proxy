@@ -54,6 +54,24 @@ func TestServeRejectsOwnershipLeaseContention(t *testing.T) {
 	}
 }
 
+func TestExecuteStartLoopCarriesInvokingWorkingDirectory(t *testing.T) {
+	want, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	result, err := executeStartLoop(context.Background(), StartHooks{}, func(_ context.Context, request StartRequest) (StartResult, error) {
+		got = request.WorkingDirectory
+		return AlreadyRunning{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != StartResultAlreadyRunning || got != want {
+		t.Fatalf("result = %#v, working directory = %q, want %q", result, got, want)
+	}
+}
+
 func TestStartRoutesToExistingServeOwner(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -79,6 +97,7 @@ func TestStartRoutesToExistingServeOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	owner.lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
 	owner.lease = lease
 	ready := make(chan struct{})
 	runDone := make(chan error, 1)

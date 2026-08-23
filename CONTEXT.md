@@ -65,7 +65,7 @@ The process-bootstrap role that establishes and keeps a Gateway Owner available 
 _Avoid_: CLI-owned Start semantics, implicit serve command, HTTP process bootstrap, Gateway Runtime
 
 **Gateway Runtime**:
-The live traffic-serving engine that owns the proxy listener and server, Gateway-owned outbound proxy transport, active immutable CORS Proxy generation, PAC listener and server, continuous Upstream List observation, current effective Upstream List Projection, optional Upstream List File Sync Issue, optional Upstream List Projection Issue, optional HTTPS Pipeline Detail, current PAC Projection, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. It begins only after initial observation has established those Upstream List conditions; feature degradation never ends it, while explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
+The live traffic-serving engine that owns the proxy listener and server, Gateway-owned outbound proxy transport, active immutable CORS Proxy generation, PAC listener and server, independent continuous observations and projections for each Upstream List, their current Effective Upstream List, source-specific File Sync and Projection Issues, optional HTTPS Pipeline Detail, current PAC Projection, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. It begins only after initial observation has established both source states; feature degradation never ends it, while explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
 _Avoid_: initializing runtime, retained observation result, retained raw contents, lifecycle facade, command router, OS proxy manager, cleanup owner
 
 **Router-Only Serve**:
@@ -73,7 +73,7 @@ A command behavior where the command becomes the Gateway Owner and starts the Ga
 _Avoid_: implicit gateway start, daemonized start, hidden lifecycle activation, stale-cache cleanup, OS PAC repair
 
 **Router-Hosted Start**:
-A start behavior where CLI or another client calls `POST /start` against an existing Gateway Owner, renders each independently required Start consent in its fixed order, and retries with accumulated decisions to activate Gateway Runtime without creating a competing gateway process. The existing owner remains foreground, and an already-active runtime returns an idempotent start result.
+A start behavior where CLI or another client calls `POST /start` against an existing Gateway Owner with the invoking client's absolute working directory, renders each independently required Start consent in its fixed order, and retries with accumulated decisions to activate Gateway Runtime without creating a competing gateway process. The existing owner remains foreground, and an already-active runtime returns an idempotent start result.
 _Avoid_: start plan, terminal prompt in serve, duplicate router start, serve-blocked start, split-brain gateway
 
 **Start-Hosted Router**:
@@ -301,19 +301,19 @@ The decoded and normalized interpretation of observed Upstream List contents, co
 _Avoid_: Upstream List Source, raw contents, file snapshot, PAC Route Set, semantic identity
 
 **Rejected Upstream List Contents**:
-Successfully read Upstream List contents that the Upstream List module reports cannot form a semantic projection, distinct from line-level warnings and observation failure. Rejection leaves file observation current; Gateway records an Upstream List Projection Issue and independently applies its fail-closed policy by selecting an Empty Upstream List as the effective projection.
+Successfully read contents of one Upstream List that the Upstream List module reports cannot form a semantic projection, distinct from line-level warnings and observation failure. Rejection leaves that source's file observation current; Gateway records a source-specific Upstream List Projection Issue and independently applies its fail-closed policy by selecting an Empty Upstream List as that source's projection before forming the Effective Upstream List.
 _Avoid_: Upstream List Sync Failure, upstreamlist-owned routing consequence, last-known-good routing, line warning, observation degradation
 
 **Upstream List Fail-Closed Projection**:
-The Gateway Runtime policy that selects and adopts the canonical Empty Upstream List whenever read contents are rejected while independently preserving the Upstream List Projection Issue for presentation. Every rejection follows the normal adopted-projection path and may therefore publish another PAC Projection.
+The Gateway Runtime policy that selects the canonical Empty Upstream List for a source whenever that source's read contents are rejected, while independently preserving its Upstream List Projection Issue for presentation. The healthy source continues contributing to the Effective Upstream List, and every rejection follows the normal merge and adoption path and may therefore publish another PAC Projection.
 _Avoid_: parser-returned empty success, last-known-good routing, semantic no-op suppression, Gateway-constructed projection
 
 **Upstream List File Sync Issue**:
-An optional Gateway Runtime-owned current problem whose kind is File Unreadable or Observation Stopped and which contains its presented cause. Its kind and cause define issue identity; File Unreadable can recover, Observation Stopped requires Gateway restart, file observation privately rebuilds an uncertain watcher and rereads the complete file, and the Issue's appearance, change, and clearing must remain available for Inbound Adapter presentation without prescribing a synchronization interface.
+A source-specific optional Gateway Runtime-owned current problem whose kind is File Unreadable or Observation Stopped and which contains its presented cause. Its source, kind, and cause define issue identity; File Unreadable can recover, Observation Stopped requires Gateway restart, file observation privately rebuilds an uncertain watcher and rereads the complete file, and the Issue's appearance, change, and clearing must remain available for Inbound Adapter presentation without prescribing a synchronization interface.
 _Avoid_: Upstream List Sync State, Upstream List Projection, content validity, parser state, PAC availability, watcher uncertainty, raw watcher error
 
 **Upstream List Projection Issue**:
-An optional Gateway Runtime-owned current problem containing the presented cause of Rejected Upstream List Contents. Successful projection clears it, rejection selects and adopts the Empty Upstream List, and its appearance, change, and clearing remain available for Inbound Adapter presentation independently from the resulting PAC publication.
+A source-specific optional Gateway Runtime-owned current problem containing the presented cause of Rejected Upstream List Contents. A successful source projection clears it, rejection selects the Empty Upstream List for that source, and its appearance, change, and clearing remain available for Inbound Adapter presentation independently from the resulting Effective Upstream List and PAC publication.
 _Avoid_: Upstream List Projection Error State, combined Upstream List State, raw error identity, failure event history, file sync issue
 
 **Gateway Control Command**:
@@ -321,7 +321,7 @@ A user-facing command that controls gateway-owned state or reports on it, includ
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, establishes continuous Upstream List observation and its initial Gateway-owned state even when unavailable, conditionally admits the HTTPS Pipeline and assesses HTTPS Readiness only when that state contains HTTPS Intent, and then attempts Gateway Activation. Direct start holds Gateway Ownership while removing stale state and publishing its discovery cache, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
+The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, establishes independent continuous observation and initial Gateway-owned state for both Upstream Lists even when a source is unavailable, forms the Effective Upstream List, conditionally admits the HTTPS Pipeline and assesses HTTPS Readiness only when that state contains HTTPS Intent, and then attempts Gateway Activation. Direct start holds Gateway Ownership while removing stale state and publishing its discovery cache, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
 _Avoid_: start-time CA installation, public raw activation, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
@@ -348,12 +348,12 @@ _Avoid_: active-generation owner, lifecycle manager, Upstream List admission mod
 A traffic rule where every CORS-bearing request reaching the Proxy Listener is eligible for repair: the calling page's Origin determines reflected response values but never admission, while Upstream List destination selection happens earlier through PAC Routing.
 _Avoid_: Allowed Origin, caller-origin allowlist, per-request Upstream List gate, CORS authorization
 
-**Home Config Directory**:
-The fixed seamless-cors configuration location at `.seamless-cors` under the user's home directory. Gateway owns the Upstream List path policy, creation assessment and execution, and observation lifecycle; Gateway Coordination owns its state in a dedicated subdirectory, while UserCA storage is independent.
-_Avoid_: platform-native app config directory
+**Gateway Coordination Home**:
+The fixed `.seamless-cors` location under the user's home directory used exclusively as the parent of durable Gateway Coordination state. The Global Upstream List and Installed CA Storage use their platform-native configuration and state homes instead.
+_Avoid_: Home Config Directory, platform-native app config directory, Global Upstream List directory, Installed CA Storage
 
 **Runtime State Directory**:
-The durable location under the Home Config Directory for Gateway Coordination state, including the Gateway Ownership Lease file and Gateway State Cache.
+The durable location under the Gateway Coordination Home for Gateway Coordination state, including the Gateway Ownership Lease file and Gateway State Cache.
 _Avoid_: temp runtime state, volatile cleanup files, miscellaneous runtime file storage
 
 **Gateway Coordination**:
@@ -362,7 +362,7 @@ _Avoid_: Runtime Coordination, cleanup module, process supervisor, daemon manage
 
 **Installed CA Storage**:
 The durable platform-native per-user application-state location for seamless-cors-owned Installed User CA material, selected by the UserCA Storage Environment and kept outside Gateway Footprint Cleanup.
-_Avoid_: Home Config Directory, portable user data, runtime CA storage, temp CA files, stop-owned CA files
+_Avoid_: Gateway Coordination Home, portable user data, runtime CA storage, temp CA files, stop-owned CA files
 
 **UserCA Storage Environment**:
 The Gateway Owner's process-startup environment that selects one authoritative Installed CA Storage location for owner-routed UserCA commands; an ownerless command uses the environment of the owner it establishes. Different storage environments are distinct UserCA identities and are not searched as alternative locations or compared by clients.
@@ -461,7 +461,7 @@ A gateway ownership rule where only one Gateway Owner may run for a user at a ti
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
 **Upstream List Creation**:
-A Gateway-owned Start operation that assesses the fixed Upstream List path and, after Upstream List Creation Consent, immediately and exclusively attempts creation of the missing file and required parent directories with the Upstream List module's exact default contents. Failure returns its actionable cause without preventing Start; Gateway subsequently establishes observation independently, and creation is neither deferred until Gateway Activation nor rolled back when a later Start decision prevents activation.
+A Gateway-owned Start operation that assesses the Global Upstream List path and, after Upstream List Creation Consent, immediately and exclusively attempts creation of the missing file and required parent directories with the Upstream List module's exact default contents. Failure returns its actionable cause without preventing Start; Gateway subsequently establishes observation independently, and creation is neither available for the Directory Upstream List, deferred until Gateway Activation, nor rolled back when a later Start decision prevents activation.
 _Avoid_: Configuration Bootstrap, silent file creation, init command, manual file scaffolding, read-time mutation, configurable Upstream List path, replacing invalid paths
 
 **Upstream List Creation Warning**:
@@ -481,8 +481,8 @@ A surface-neutral successful start result detail containing the user-relevant Up
 _Avoid_: terminal start text, listener status detail, proxy setup instructions
 
 **Already-Running Start**:
-An idempotent fulfilled start result where executing start against an active Gateway Runtime reports that the requested running postcondition is already satisfied without requiring another mutation.
-_Avoid_: changed-means-fulfilled, duplicate runtime activation, start failure for active runtime, second owner
+An idempotent fulfilled start result where executing start against an active Gateway Runtime reports only that the requested running postcondition is already satisfied without mutation. A different invoking working directory does not replace the active Directory Upstream List or add mismatch guidance; runtime-source visibility belongs to status.
+_Avoid_: changed-means-fulfilled, duplicate runtime activation, start failure for active runtime, second owner, configuration mismatch warning, status-shaped start result
 
 **Execute-Time Start Assessment**:
 A start execution rule that presents independently required Upstream List Creation Consent and Managed PAC Consent at most once each in a fixed creation-then-PAC order. Accepted creation mutates immediately without changing PAC consent semantics; accepted PAC consent fixes the agreed manageable service set, whose members that become absent or foreign remain selected but are skipped with Managed PAC Warnings while excluded and newly appearing services do not join.
@@ -629,11 +629,11 @@ One user-managed newline-delimited source decoded by the Upstream List module in
 _Avoid_: Domain List, Target List, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, proxy rules
 
 **Global Upstream List**:
-The user-wide Upstream List that always contributes to the Effective Upstream List and is the only source eligible for consented Upstream List Creation.
+The user-wide Upstream List at `seamless-cors/upstreams.txt` under the platform-native user configuration home. It always contributes to the Effective Upstream List and is the only source eligible for consented Upstream List Creation; the former `~/.seamless-cors/upstreams.txt` is neither migrated nor used as a fallback.
 _Avoid_: user Upstream List, default Upstream List, shared Upstream List
 
 **Directory Upstream List**:
-An optional Upstream List found only in the exact working directory captured when Gateway Runtime starts. Its absence is an empty source rather than degradation, it is never created by seamless-cors, and an Already-Running Start from another directory does not replace it.
+An optional `upstreams.txt` found only in the invoking client's exact absolute working directory captured when Gateway Runtime starts. Its absence is an empty source rather than degradation, it is never created by seamless-cors, and an Already-Running Start from another directory does not replace it.
 _Avoid_: Local Upstream List, project Upstream List, ancestor Upstream List, recursively discovered Upstream List, dynamic working-directory list
 
 **Effective Upstream List**:
@@ -653,7 +653,7 @@ A persistent line-level diagnostic for an invalid Upstream List line that is ign
 _Avoid_: silent invalid entry, fatal line error, transient log warning, semantic no-op, unpublished warning transition
 
 **Upstream List Observation Failure**:
-A concrete file-observation failure that Gateway records as an Upstream List File Sync Issue while retaining the current effective Upstream List Projection. A read failure remains recoverable, while failure to rebuild observation is terminal and requires cause repair plus Gateway restart; watcher uncertainty is private recovery work rather than a Gateway-visible condition.
+A concrete failure observing one source that Gateway records as a source-specific Upstream List File Sync Issue while retaining that source's current projection. The other source continues to be observed, projected, and merged; a read failure remains recoverable, while failure to rebuild one observation is terminal for that source and requires cause repair plus Gateway restart. Watcher uncertainty remains private recovery work rather than a Gateway-visible condition.
 _Avoid_: projection rejection, sync-error-as-empty, fatal Gateway Runtime error, Gateway-visible watcher uncertainty, silent observation failure
 
 **Upstream List Entry**:
@@ -681,8 +681,8 @@ An Upstream List behavior where each line is validated independently so valid Up
 _Avoid_: Line-Level Domain Validation, parser-reason diagnostic taxonomy, silent invalid entry, whole-list rejection, invalid line as active entry
 
 **Upstream List Deduplication**:
-An Upstream List module behavior where equivalent normalized source-level entries are treated as one active entry, keeping the first occurrence and ignoring later duplicates. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived PAC Routes.
-_Avoid_: duplicate source selectors, line-count domains, PAC-owned source deduplication
+An Upstream List module behavior applied both within each source projection and while merging source projections into the Effective Upstream List. Equivalent normalized entries are treated as one active entry, keeping the first occurrence in Global-then-Directory order and ignoring later duplicates without giving either source routing precedence. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived PAC Routes.
+_Avoid_: Gateway-owned selector equality, duplicate source selectors, line-count domains, source override, PAC-owned source deduplication
 
 **Exact Host Match**:
 A Host Selector behavior that selects only the named hostname.
@@ -928,11 +928,11 @@ QA engineer: "Only the Upstream List: one Host Selector or Origin Selector per l
 
 Developer: "Where do config files live by default?"
 
-QA engineer: "Home Config Directory keeps them under `.seamless-cors` in the user's home directory."
+QA engineer: "Gateway Coordination Home keeps them under `.seamless-cors` in the user's home directory."
 
 Developer: "Where does the Gateway State Cache live?"
 
-QA engineer: "Runtime State Directory keeps runtime coordination state and product-owned cleanup files under the Home Config Directory."
+QA engineer: "Runtime State Directory keeps runtime coordination state and product-owned cleanup files under the Gateway Coordination Home."
 
 Developer: "How do client commands find the Gateway Owner?"
 

@@ -61,6 +61,50 @@ func Project(contents []byte) (Projection, error) {
 	return deduplicate(parsed), nil
 }
 
+// Merge forms one projection from source projections in the supplied order.
+// Equivalent selectors keep their first occurrence. Warnings remain ordered
+// with their source projections; callers retain source attribution separately.
+func Merge(projections ...Projection) Projection {
+	hostCount, originCount, warningCount := 0, 0, 0
+	for _, projection := range projections {
+		hostCount += len(projection.HostSelectors)
+		originCount += len(projection.OriginSelectors)
+		warningCount += len(projection.Warnings)
+	}
+	hosts := make([]HostSelector, 0, hostCount)
+	origins := make([]OriginSelector, 0, originCount)
+	warnings := make([]Warning, 0, warningCount)
+	seenHosts := make(map[HostSelector]struct{}, hostCount)
+	seenOrigins := make(map[OriginSelector]struct{}, originCount)
+	for _, projection := range projections {
+		for _, selector := range projection.HostSelectors {
+			if _, ok := seenHosts[selector]; ok {
+				continue
+			}
+			seenHosts[selector] = struct{}{}
+			hosts = append(hosts, selector)
+		}
+		for _, selector := range projection.OriginSelectors {
+			if _, ok := seenOrigins[selector]; ok {
+				continue
+			}
+			seenOrigins[selector] = struct{}{}
+			origins = append(origins, selector)
+		}
+		warnings = append(warnings, projection.Warnings...)
+	}
+	if len(hosts) == 0 {
+		hosts = nil
+	}
+	if len(origins) == 0 {
+		origins = nil
+	}
+	if len(warnings) == 0 {
+		warnings = nil
+	}
+	return Projection{HostSelectors: hosts, OriginSelectors: origins, Warnings: warnings}
+}
+
 func deduplicate(parsed parsedUpstreamList) Projection {
 	var hosts []HostSelector
 	seenHosts := make(map[HostSelector]struct{}, len(parsed.HostSelectors))

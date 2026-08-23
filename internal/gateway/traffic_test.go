@@ -27,7 +27,7 @@ func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(runtime)
 
-	issue := runtime.snapshot().UpstreamListFileSyncIssue
+	issue := runtime.snapshot().UpstreamLists[0].FileSyncIssue
 	if issue == nil || issue.Kind != FileSyncIssueFileUnreadable || !strings.Contains(issue.Cause, "source unavailable") {
 		t.Fatalf("file sync issue = %#v", issue)
 	}
@@ -64,6 +64,96 @@ func TestRuntimeRejectsInvalidFileObservationUpdate(t *testing.T) {
 	}
 }
 
+func TestRuntimeProjectsSourcesIndependentlyThenMerges(t *testing.T) {
+	runtime, err := newRuntimeFromSources([]runtimeUpstreamListInput{
+		{kind: UpstreamListSourceGlobal, path: "/config/upstreams.txt", initial: fileobservation.Contents("global.example.test\nshared.example.test\n")},
+		{kind: UpstreamListSourceDirectory, path: "/project/upstreams.txt", optional: true, initial: fileobservation.Contents("shared.example.test\ndirectory.example.test\n")},
+	}, defaultProxyTransport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	state := runtime.snapshot()
+	if state.UpstreamCount != 3 || len(state.UpstreamLists) != 2 {
+		t.Fatalf("merged runtime state = %#v", state)
+	}
+	if state.UpstreamLists[0].Kind != UpstreamListSourceGlobal || state.UpstreamLists[1].Kind != UpstreamListSourceDirectory {
+		t.Fatalf("source order = %#v", state.UpstreamLists)
+	}
+}
+
+func TestRejectedSourceFailsClosedWithoutRemovingHealthySource(t *testing.T) {
+	runtime, err := newRuntimeFromSources([]runtimeUpstreamListInput{
+		{kind: UpstreamListSourceGlobal, path: "/config/upstreams.txt", initial: fileobservation.Contents("global.example.test\n")},
+		{kind: UpstreamListSourceDirectory, path: "/project/upstreams.txt", optional: true, initial: fileobservation.Contents("directory.example.test\n")},
+	}, defaultProxyTransport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	if err := runtime.applyUpstreamListSourceOutcome(1, fileobservation.Contents{0xff}); err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.snapshot()
+	if state.UpstreamCount != 1 || state.UpstreamLists[1].ProjectionIssue == nil || state.UpstreamLists[0].ProjectionIssue != nil {
+		t.Fatalf("source-local rejection state = %#v", state)
+	}
+}
+
+func TestSourceReadFailureRetainsItsProjectionWhileOtherSourceChanges(t *testing.T) {
+	runtime, err := newRuntimeFromSources([]runtimeUpstreamListInput{
+		{kind: UpstreamListSourceGlobal, path: "/config/upstreams.txt", initial: fileobservation.Contents("global.example.test\n")},
+		{kind: UpstreamListSourceDirectory, path: "/project/upstreams.txt", optional: true, initial: fileobservation.Contents("directory.example.test\n")},
+	}, defaultProxyTransport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	readErr := fileobservation.ReadError{Path: "/project/upstreams.txt", Cause: errors.New("temporarily unavailable")}
+	if err := runtime.applyUpstreamListSourceOutcome(1, readErr); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.applyUpstreamListSourceOutcome(0, fileobservation.Contents("changed.example.test\n")); err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.snapshot()
+	if state.UpstreamCount != 2 || state.UpstreamLists[1].FileSyncIssue == nil {
+		t.Fatalf("independent source state = %#v", state)
+	}
+}
+
+func TestOptionalDirectorySourceTreatsMissingAsEmptyAndKeepsObserving(t *testing.T) {
+	missing := fileobservation.ReadError{Path: "/project/upstreams.txt", Cause: os.ErrNotExist}
+	runtime, err := newRuntimeFromSources([]runtimeUpstreamListInput{
+		{kind: UpstreamListSourceGlobal, path: "/config/upstreams.txt", initial: fileobservation.Contents("global.example.test\n")},
+		{kind: UpstreamListSourceDirectory, path: "/project/upstreams.txt", optional: true, initial: missing},
+	}, defaultProxyTransport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(runtime)
+
+	state := runtime.snapshot()
+	if state.UpstreamCount != 1 || state.UpstreamLists[1].FileSyncIssue != nil {
+		t.Fatalf("initial optional source state = %#v", state)
+	}
+	if err := runtime.applyUpstreamListSourceOutcome(1, fileobservation.Contents("directory.example.test\n")); err != nil {
+		t.Fatal(err)
+	}
+	if state = runtime.snapshot(); state.UpstreamCount != 2 {
+		t.Fatalf("created optional source state = %#v", state)
+	}
+	if err := runtime.applyUpstreamListSourceOutcome(1, missing); err != nil {
+		t.Fatal(err)
+	}
+	if state = runtime.snapshot(); state.UpstreamCount != 1 || state.UpstreamLists[1].FileSyncIssue != nil {
+		t.Fatalf("removed optional source state = %#v", state)
+	}
+}
+
 func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
 	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents("api.example.test\n"))
 	if err != nil {
@@ -75,7 +165,7 @@ func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := runtime.snapshot()
-	if state.UpstreamListProjectionIssue == nil || state.UpstreamListFileSyncIssue != nil || state.UpstreamCount != 0 {
+	if state.UpstreamLists[0].ProjectionIssue == nil || state.UpstreamLists[0].FileSyncIssue != nil || state.UpstreamCount != 0 {
 		t.Fatalf("rejected contents state = %#v", state)
 	}
 
@@ -84,7 +174,7 @@ func TestProjectionFailureIsIndependentAndFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	state = runtime.snapshot()
-	if state.UpstreamListFileSyncIssue == nil || state.UpstreamListProjectionIssue == nil || state.UpstreamCount != 0 {
+	if state.UpstreamLists[0].FileSyncIssue == nil || state.UpstreamLists[0].ProjectionIssue == nil || state.UpstreamCount != 0 {
 		t.Fatalf("observation failure did not preserve projection state = %#v", state)
 	}
 }
@@ -104,7 +194,7 @@ func TestSuccessfulProjectionClearsIssuesAndPublishesPAC(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := runtime.snapshot()
-	if state.UpstreamListFileSyncIssue != nil || state.UpstreamListProjectionIssue != nil || state.UpstreamCount != 0 {
+	if state.UpstreamLists[0].FileSyncIssue != nil || state.UpstreamLists[0].ProjectionIssue != nil || state.UpstreamCount != 0 {
 		t.Fatalf("cleared equal projection state = %#v", state)
 	}
 	select {
@@ -154,12 +244,12 @@ func TestPACPublicationFollowsEverySuccessfulProjection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errs := make(chan serverError, 1)
-	go runtime.watchUpstreamList(ctx, errs)
+	go runtime.watchUpstreamList(ctx, 0, errs)
 	desired := runtime.PACProjections()
 
 	writeTrafficTestFile(t, upstreamPath, "API.EXAMPLE.TEST\nhttps://bad.example.test/path\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {
-		return len(state.UpstreamListWarnings) == 1
+		return len(state.UpstreamLists[0].Warnings) == 1
 	})
 	select {
 	case state := <-desired:
@@ -196,7 +286,7 @@ func TestPACPublicationExcludesInactiveHTTPSRoutes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errs := make(chan serverError, 1)
-	go runtime.watchUpstreamList(ctx, errs)
+	go runtime.watchUpstreamList(ctx, 0, errs)
 	desired := runtime.PACProjections()
 
 	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
@@ -221,7 +311,7 @@ func TestHTTPSIntentAdmitsAssessingPipelineAndRequestsAssessment(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errs := make(chan serverError, 1)
-	go runtime.watchUpstreamList(ctx, errs)
+	go runtime.watchUpstreamList(ctx, 0, errs)
 
 	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool {

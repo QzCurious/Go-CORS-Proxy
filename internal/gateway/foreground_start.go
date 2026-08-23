@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 )
 
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
@@ -139,7 +140,11 @@ func executeStartLoop(
 	hooks StartHooks,
 	start func(context.Context, StartRequest) (StartResult, error),
 ) (StartResult, error) {
-	request := StartRequest{}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("resolve working directory: %w", err)
+	}
+	request := StartRequest{WorkingDirectory: workingDirectory}
 	for {
 		result, err := start(ctx, request)
 		if hooks.Started != nil {

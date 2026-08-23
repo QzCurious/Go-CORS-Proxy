@@ -32,16 +32,17 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		}
 	}
 
-	upstreamListPath, err := defaultUpstreamListPath()
+	globalUpstreamListPath := s.lifecycle.globalUpstreamListPath
+	directoryListPath, err := directoryUpstreamListPath(request.WorkingDirectory)
 	if err != nil {
 		return nil, err
 	}
-	create, creationResult, err := authorizeUpstreamListCreation(upstreamListPath, request)
+	create, creationResult, err := authorizeUpstreamListCreation(globalUpstreamListPath, request)
 	if err != nil || creationResult != nil {
 		return creationResult, err
 	}
 	if create {
-		creationErr = createUpstreamList(upstreamListPath)
+		creationErr = createUpstreamList(globalUpstreamListPath)
 	}
 	postStartFailure := func(err error) (StartResult, error) {
 		if ctx.Err() != nil {
@@ -57,20 +58,37 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		}
 		return assessmentResult, nil
 	}
-	upstreamListObservation := fileobservation.Open(upstreamListPath)
-	closeUpstreamListObservation := true
+	globalObservation := fileobservation.Open(globalUpstreamListPath)
+	directoryObservation := fileobservation.Open(directoryListPath)
+	closeUpstreamListObservations := true
 	defer func() {
-		if closeUpstreamListObservation {
-			upstreamListObservation.Close()
+		if closeUpstreamListObservations {
+			globalObservation.Close()
+			directoryObservation.Close()
 		}
 	}()
-	initialUpstreamOutcome := <-upstreamListObservation.Outcomes()
+	initialGlobalOutcome := <-globalObservation.Outcomes()
+	initialDirectoryOutcome := <-directoryObservation.Outcomes()
 
-	engine, err := newRuntime(upstreamListPath, upstreamListObservation, initialUpstreamOutcome)
+	engine, err := newRuntimeFromSources([]runtimeUpstreamListInput{
+		{
+			kind:        UpstreamListSourceGlobal,
+			path:        globalUpstreamListPath,
+			observation: globalObservation,
+			initial:     initialGlobalOutcome,
+		},
+		{
+			kind:        UpstreamListSourceDirectory,
+			path:        directoryListPath,
+			optional:    true,
+			observation: directoryObservation,
+			initial:     initialDirectoryOutcome,
+		},
+	}, defaultProxyTransport())
 	if err != nil {
 		return postStartFailure(err)
 	}
-	closeUpstreamListObservation = false
+	closeUpstreamListObservations = false
 	cleanupEngine := true
 	defer func() {
 		if cleanupEngine {
@@ -216,16 +234,13 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		installedCA = &status
 	}
 	return Started{Guidance: StartGuidance{
-		UpstreamListPath:            upstreamListPath,
-		ManagedPACActive:            true,
-		ManagedPACServices:          pacInstall.State().ServiceNames(),
-		ManagedPACPublicationURL:    pacInstall.State().PACURL(),
-		ManagedPACWarnings:          managedPACWarningDetails(pacInstall.Warnings()),
-		HTTPSPipeline:               state.HTTPSPipeline,
-		InstalledCA:                 installedCA,
-		UpstreamListWarnings:        state.UpstreamListWarnings,
-		UpstreamListFileSyncIssue:   state.UpstreamListFileSyncIssue,
-		UpstreamListProjectionIssue: state.UpstreamListProjectionIssue,
+		UpstreamLists:            state.UpstreamLists,
+		ManagedPACActive:         true,
+		ManagedPACServices:       pacInstall.State().ServiceNames(),
+		ManagedPACPublicationURL: pacInstall.State().PACURL(),
+		ManagedPACWarnings:       managedPACWarningDetails(pacInstall.Warnings()),
+		HTTPSPipeline:            state.HTTPSPipeline,
+		InstalledCA:              installedCA,
 	}}, nil
 }
 

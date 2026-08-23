@@ -34,8 +34,9 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
 
-	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
+	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +52,7 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	)
 	settings.installResult = &installResult
 	changed, err := lifecycle.ExecuteStart(context.Background(), StartRequest{
+		WorkingDirectory: t.TempDir(),
 		ManagedPACConsent: &ManagedPACConsentInput{
 			ServiceNames: detail.ProposedServices,
 			Fingerprint:  detail.Fingerprint,
@@ -94,7 +96,8 @@ func TestStatusAdoptsLatestManagedPACReconciliationSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executeAcceptedStart(lifecycle); err != nil {
+	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
+	if _, err := executeAcceptedStart(t, lifecycle); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
@@ -122,6 +125,59 @@ func TestStatusAdoptsLatestManagedPACReconciliationSnapshot(t *testing.T) {
 	}
 }
 
+func TestExecuteStartLoadsGlobalAndDirectoryUpstreamLists(t *testing.T) {
+	globalPath := filepath.Join(t.TempDir(), "seamless-cors", "upstreams.txt")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte("global.example.test\nshared.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workingDirectory := t.TempDir()
+	directoryPath := filepath.Join(workingDirectory, "upstreams.txt")
+	if err := os.WriteFile(directoryPath, []byte("shared.example.test\ndirectory.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.globalUpstreamListPath = globalPath
+
+	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consent, ok := first.(StartConsentRequired)
+	if !ok {
+		t.Fatalf("first start = %#v", first)
+	}
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{
+		WorkingDirectory: workingDirectory,
+		ManagedPACConsent: &ManagedPACConsentInput{
+			ServiceNames: consent.Consent.ProposedServices,
+			Fingerprint:  consent.Consent.Fingerprint,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
+	started, ok := result.(Started)
+	if !ok || len(started.Guidance.UpstreamLists) != 2 {
+		t.Fatalf("start result = %#v", result)
+	}
+	status, err := lifecycle.Status(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Runtime == nil || status.Runtime.UpstreamCount != 3 ||
+		status.Runtime.UpstreamLists[0].Path != globalPath || status.Runtime.UpstreamLists[1].Path != directoryPath {
+		t.Fatalf("runtime source state = %#v", status.Runtime)
+	}
+}
+
 func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -132,7 +188,8 @@ func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
+	lifecycle.globalUpstreamListPath = filepath.Join(t.TempDir(), "seamless-cors", "upstreams.txt")
+	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +197,7 @@ func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testi
 	if !ok {
 		t.Fatalf("first = %#v", first)
 	}
-	second, err := lifecycle.ExecuteStart(context.Background(), StartRequest{UpstreamListCreationConsent: &UpstreamListCreationConsentInput{
+	second, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{
 		Decision: UpstreamListCreationAccepted, Fingerprint: creation.Consent.Fingerprint,
 	}})
 	if err != nil {
@@ -179,7 +236,7 @@ func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T)
 		t.Fatal(err)
 	}
 
-	result, err := executeAcceptedStart(lifecycle)
+	result, err := executeAcceptedStart(t, lifecycle)
 
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +261,7 @@ func TestExecuteStartStopsWhenNoManageablePACServiceExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}})
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,8 +294,9 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 	if err != nil {
 		t.Fatal(err)
 	}
+	lifecycle.globalUpstreamListPath = filepath.Join(home, "upstreams.txt")
 
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}, ManagedPACConsent: &ManagedPACConsentInput{ServiceNames: []string{"Wi-Fi"}, Fingerprint: pacConsentFingerprint([]string{"Wi-Fi"})}})
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}, ManagedPACConsent: &ManagedPACConsentInput{ServiceNames: []string{"Wi-Fi"}, Fingerprint: pacConsentFingerprint([]string{"Wi-Fi"})}})
 
 	if err != nil {
 		t.Fatal(err)
@@ -267,6 +325,8 @@ func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	globalPath := filepath.Join(t.TempDir(), "seamless-cors", "upstreams.txt")
+	lifecycle.globalUpstreamListPath = globalPath
 
 	result, err := lifecycle.Install(context.Background())
 	if err != nil {
@@ -278,7 +338,7 @@ func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
 	if ca.installCalls != 1 {
 		t.Fatalf("UserCA install calls = %d", ca.installCalls)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".seamless-cors", "upstreams.txt")); !os.IsNotExist(err) {
+	if _, err := os.Stat(globalPath); !os.IsNotExist(err) {
 		t.Fatalf("install touched Upstream List source: %v", err)
 	}
 }
@@ -516,7 +576,7 @@ func TestTransientOwnerRejectsStartBeforeCAMutationAdmission(t *testing.T) {
 	}
 	lifecycle.transientOwner = true
 
-	result, err := executeAcceptedStart(lifecycle)
+	result, err := executeAcceptedStart(t, lifecycle)
 
 	if err != nil {
 		t.Fatal(err)
@@ -605,7 +665,8 @@ func TestStartReportsUnmetHTTPSIntentWithoutInstallingUserCA(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := executeAcceptedStart(lifecycle)
+	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
+	result, err := executeAcceptedStart(t, lifecycle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +700,8 @@ func TestStartWithoutHTTPSIntentSkipsRuntimeUserCAInspection(t *testing.T) {
 	}
 	inspectionsAtConstruction := ca.inspectCalls
 
-	result, err := executeAcceptedStart(lifecycle)
+	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
+	result, err := executeAcceptedStart(t, lifecycle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,13 +840,15 @@ func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
 	return nil
 }
 
-func executeAcceptedStart(lifecycle *lifecycle) (StartResult, error) {
-	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{})
+func executeAcceptedStart(t *testing.T, lifecycle *lifecycle) (StartResult, error) {
+	t.Helper()
+	workingDirectory := t.TempDir()
+	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory})
 	consentResult, ok := first.(StartConsentRequired)
 	if err != nil || !ok {
 		return first, err
 	}
-	return lifecycle.ExecuteStart(context.Background(), StartRequest{ManagedPACConsent: &ManagedPACConsentInput{
+	return lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory, ManagedPACConsent: &ManagedPACConsentInput{
 		ServiceNames: consentResult.Consent.ProposedServices,
 		Fingerprint:  consentResult.Consent.Fingerprint,
 	}})

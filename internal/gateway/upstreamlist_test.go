@@ -8,24 +8,29 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
-func TestDefaultUpstreamListPathIsCleanAndAbsolute(t *testing.T) {
-	realHome := t.TempDir()
-	home := filepath.Join(t.TempDir(), "home-link")
-	if err := os.Symlink(realHome, home); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
+func TestGlobalUpstreamListPathUsesXDGConfigHome(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "config")
+	path := globalUpstreamListPath(configHome)
+	want := filepath.Join(configHome, "seamless-cors", "upstreams.txt")
+	if path != want {
+		t.Fatalf("Global Upstream List path = %q, want %q", path, want)
 	}
-	t.Setenv("HOME", home)
+	if !filepath.IsAbs(path) {
+		t.Fatalf("Global Upstream List path is not absolute: %q", path)
+	}
+}
 
-	path, err := defaultUpstreamListPath()
+func TestDirectoryUpstreamListPathUsesExactAbsoluteDirectory(t *testing.T) {
+	directory := t.TempDir()
+	path, err := directoryUpstreamListPath(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Clean(filepath.Join(home, ".seamless-cors", "upstreams.txt"))
-	if path != want {
-		t.Fatalf("default Upstream List path = %q, want %q", path, want)
+	if want := filepath.Join(directory, "upstreams.txt"); path != want {
+		t.Fatalf("Directory Upstream List path = %q, want %q", path, want)
 	}
-	if !filepath.IsAbs(path) {
-		t.Fatalf("default Upstream List path is not absolute: %q", path)
+	if _, err := directoryUpstreamListPath("relative"); err == nil {
+		t.Fatal("relative working directory was accepted")
 	}
 }
 

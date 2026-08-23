@@ -66,10 +66,14 @@ Or, if installed, invoke the command directly:
 seamless-cors start
 ```
 
-On first start, seamless-cors creates `~/.seamless-cors/upstreams.txt`.
+On first start, seamless-cors offers to create the Global Upstream List at
+`seamless-cors/upstreams.txt` under your platform's XDG configuration home. For
+example, the default is `~/.config/seamless-cors/upstreams.txt` on Linux and
+`~/Library/Application Support/seamless-cors/upstreams.txt` on macOS. The
+former `~/.seamless-cors/upstreams.txt` path is not read or migrated.
 
 Add the upstream hostnames or origins for which you want to enable CORS, one per
-line, to `~/.seamless-cors/upstreams.txt`:
+line, to that Global Upstream List:
 
 ```text
 api.dev.example.com
@@ -77,10 +81,15 @@ https://api.example.com:8443
 *.test.example.com
 ```
 
-The upstream list is watched for changes while the gateway is running. An
-explicit `https://` Origin Selector expresses HTTPS Intent. A Host Selector
-does not express HTTPS Intent, but it serves both HTTP and HTTPS whenever HTTPS
-Readiness is ready.
+You can also create an optional `upstreams.txt` directly in the directory from
+which you run `seamless-cors start`. The Global and Directory Upstream Lists are
+watched and parsed independently, then merged without precedence; duplicate
+normalized entries are active only once. The active directory is fixed until
+the gateway is stopped and started again.
+
+An explicit `https://` Origin Selector in either source expresses HTTPS Intent.
+A Host Selector does not express HTTPS Intent, but it serves both HTTP and HTTPS
+whenever HTTPS Readiness is ready.
 
 To make HTTPS Readiness ready, run `seamless-cors install` and approve the
 operating-system prompt for the seamless-cors development CA. If the gateway is

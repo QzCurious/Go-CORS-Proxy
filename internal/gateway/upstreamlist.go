@@ -8,21 +8,29 @@ import (
 	"path/filepath"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
+	"github.com/adrg/xdg"
 )
 
-// defaultUpstreamListPath is application policy. The resulting path is
-// absolute and cleaned, but intentionally not resolved through symlinks; the
-// file observation module enforces ordinary-file safety when it reads the path.
-func defaultUpstreamListPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+const upstreamListFileName = "upstreams.txt"
+
+// defaultGlobalUpstreamListPath is application policy. It has no filesystem
+// side effects and intentionally does not resolve symlinks.
+func defaultGlobalUpstreamListPath() string {
+	return globalUpstreamListPath(xdg.ConfigHome)
+}
+
+func globalUpstreamListPath(configHome string) string {
+	return filepath.Clean(filepath.Join(configHome, "seamless-cors", upstreamListFileName))
+}
+
+func directoryUpstreamListPath(workingDirectory string) (string, error) {
+	if workingDirectory == "" {
+		return "", fmt.Errorf("working directory is required")
 	}
-	path, err := filepath.Abs(filepath.Join(home, ".seamless-cors", "upstreams.txt"))
-	if err != nil {
-		return "", err
+	if !filepath.IsAbs(workingDirectory) {
+		return "", fmt.Errorf("working directory must be absolute: %q", workingDirectory)
 	}
-	return filepath.Clean(path), nil
+	return filepath.Join(filepath.Clean(workingDirectory), upstreamListFileName), nil
 }
 
 func assessUpstreamListCreation(path string) *UpstreamListCreationConsent {

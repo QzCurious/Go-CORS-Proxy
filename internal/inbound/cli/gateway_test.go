@@ -102,10 +102,16 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 		result := gateway.Started{Guidance: gateway.StartGuidance{
 			ManagedPACActive:   true,
 			ManagedPACServices: []string{"Wi-Fi"},
-			UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
-				Line:       2,
-				Text:       "https://*.bad.example.test",
-				Diagnostic: "wildcards require a Host Selector",
+			UpstreamLists: []gateway.UpstreamListSourceDetail{{
+				Kind: gateway.UpstreamListSourceGlobal,
+				Path: "/config/seamless-cors/upstreams.txt",
+				Warnings: []gateway.UpstreamListWarningDetail{{
+					Source:     gateway.UpstreamListSourceGlobal,
+					Path:       "/config/seamless-cors/upstreams.txt",
+					Line:       2,
+					Text:       "https://*.bad.example.test",
+					Diagnostic: "wildcards require a Host Selector",
+				}},
 			}},
 		}}
 		hooks.Started(result)
@@ -118,7 +124,7 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 		"seamless-cors running",
 		"managed-pac: active",
 		"managed-pac-services: Wi-Fi",
-		"warning: upstream-list line 2: https://*.bad.example.test: wildcards require a Host Selector",
+		"warning: global /config/seamless-cors/upstreams.txt:2: https://*.bad.example.test: wildcards require a Host Selector",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
@@ -129,17 +135,18 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 func TestStartResultRendersIndependentUpstreamListIssues(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
-		UpstreamListFileSyncIssue: &gateway.FileSyncIssue{
-			Kind:  gateway.FileSyncIssueObservationStopped,
-			Cause: "watcher unavailable",
-		},
-		UpstreamListProjectionIssue: &gateway.UpstreamListProjectionIssue{Cause: "content must be UTF-8"},
+		UpstreamLists: []gateway.UpstreamListSourceDetail{{
+			Kind:            gateway.UpstreamListSourceGlobal,
+			Path:            "/config/seamless-cors/upstreams.txt",
+			FileSyncIssue:   &gateway.FileSyncIssue{Kind: gateway.FileSyncIssueObservationStopped, Cause: "watcher unavailable"},
+			ProjectionIssue: &gateway.UpstreamListProjectionIssue{Cause: "content must be UTF-8"},
+		}},
 	}})
 
 	for _, want := range []string{
-		"upstream-list observation stopped: watcher unavailable",
+		"global /config/seamless-cors/upstreams.txt observation stopped: watcher unavailable",
 		"repair the cause and restart seamless-cors",
-		"upstream-list contents rejected: content must be UTF-8",
+		"global /config/seamless-cors/upstreams.txt contents rejected: content must be UTF-8",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
@@ -149,13 +156,13 @@ func TestStartResultRendersIndependentUpstreamListIssues(t *testing.T) {
 
 func TestRecoverableFileSyncIssueRendersRepairAction(t *testing.T) {
 	var out bytes.Buffer
-	renderFileSyncIssue(&out, &gateway.FileSyncIssue{
+	renderFileSyncIssue(&out, gateway.UpstreamListSourceGlobal, "/config/seamless-cors/upstreams.txt", &gateway.FileSyncIssue{
 		Kind:  gateway.FileSyncIssueFileUnreadable,
 		Cause: "file missing",
 	})
 
 	for _, want := range []string{
-		"upstream-list file unreadable: file missing",
+		"global /config/seamless-cors/upstreams.txt unreadable: file missing",
 		"restore the upstream-list file; observation will resume automatically",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -223,23 +230,22 @@ func TestInstallReportsGatewayClassifiedApprovalDenial(t *testing.T) {
 	}
 }
 
-func TestStartCommandShortensHomePaths(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
+func TestStartCommandRendersBothUpstreamListPaths(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
-		UpstreamListPath: filepath.Join(home, ".seamless-cors", "upstreams.txt"),
+		UpstreamLists: []gateway.UpstreamListSourceDetail{
+			{Kind: gateway.UpstreamListSourceGlobal, Path: "/config/seamless-cors/upstreams.txt"},
+			{Kind: gateway.UpstreamListSourceDirectory, Path: "/project/upstreams.txt"},
+		},
 	}})
 
-	wantUpstreams := "upstream-list: " + filepath.Join("~", ".seamless-cors", "upstreams.txt")
-	for _, want := range []string{wantUpstreams} {
+	for _, want := range []string{
+		"upstream-list-global: /config/seamless-cors/upstreams.txt",
+		"upstream-list-directory: /project/upstreams.txt",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("start output missing %q:\n%s", want, out.String())
 		}
-	}
-	if strings.Contains(out.String(), home) {
-		t.Fatalf("start output contains home path %q:\n%s", home, out.String())
 	}
 }
 
@@ -309,15 +315,21 @@ func TestStatusRendersCurrentUpstreamListWarnings(t *testing.T) {
 		StatusReport: gateway.StatusReport{
 			State: gateway.GatewayStatusRunning,
 			Runtime: &gateway.RuntimeStatusDetail{
-				UpstreamListWarnings: []gateway.UpstreamListWarningDetail{{
-					Line:       4,
-					Text:       "bad/origin",
-					Diagnostic: "Host Selector must not include a scheme, port, or path",
+				UpstreamLists: []gateway.UpstreamListSourceDetail{{
+					Kind: gateway.UpstreamListSourceDirectory,
+					Path: "/project/upstreams.txt",
+					Warnings: []gateway.UpstreamListWarningDetail{{
+						Source:     gateway.UpstreamListSourceDirectory,
+						Path:       "/project/upstreams.txt",
+						Line:       4,
+						Text:       "bad/origin",
+						Diagnostic: "Host Selector must not include a scheme, port, or path",
+					}},
 				}},
 			},
 		},
 	})
-	if !strings.Contains(out.String(), "warning: upstream-list line 4: bad/origin: Host Selector") {
+	if !strings.Contains(out.String(), "warning: directory /project/upstreams.txt:4: bad/origin: Host Selector") {
 		t.Fatalf("status output = %q", out.String())
 	}
 }

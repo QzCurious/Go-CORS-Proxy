@@ -75,7 +75,7 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 	if status.State != GatewayStatusRouterOnly || status.InstalledCA.Health != CAHealthMutating {
 		t.Fatalf("transient status = %#v", status)
 	}
-	start, err := target.client.Start(context.Background(), StartRequest{})
+	start, err := target.client.Start(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

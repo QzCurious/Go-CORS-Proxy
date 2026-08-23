@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
@@ -17,28 +18,43 @@ import (
 )
 
 type trafficRuntime struct {
-	httpsMu                 sync.Mutex
-	mu                      sync.RWMutex
-	upstreamListPath        string
-	upstreamListObservation *fileobservation.Observation
-	currentUpstreamList     upstreamlist.Projection
-	fileSyncIssue           *FileSyncIssue
-	projectionIssue         *UpstreamListProjectionIssue
-	httpsPipeline           *HTTPSPipelineDetail
-	httpsGeneration         uint64
-	proxyHandler            *liveProxyHandler
-	proxyTransport          *http.Transport
-	proxy                   *http.Server
-	pacContent              string
-	pacHandler              *livePACHandler
-	pac                     *http.Server
-	listeners               []net.Listener
-	publishMu               sync.Mutex
-	pacProjectionPublisher  conflatedstream.Publisher[string]
-	pacProjectionStream     conflatedstream.Stream[string]
-	runtimeChangePublisher  conflatedstream.Publisher[RuntimeChangeKind]
-	runtimeChangeStream     conflatedstream.Stream[RuntimeChangeKind]
-	httpsPipelineRevision   uint64
+	httpsMu                sync.Mutex
+	mu                     sync.RWMutex
+	upstreamLists          []runtimeUpstreamListSource
+	currentUpstreamList    upstreamlist.Projection
+	httpsPipeline          *HTTPSPipelineDetail
+	httpsGeneration        uint64
+	proxyHandler           *liveProxyHandler
+	proxyTransport         *http.Transport
+	proxy                  *http.Server
+	pacContent             string
+	pacHandler             *livePACHandler
+	pac                    *http.Server
+	listeners              []net.Listener
+	publishMu              sync.Mutex
+	pacProjectionPublisher conflatedstream.Publisher[string]
+	pacProjectionStream    conflatedstream.Stream[string]
+	runtimeChangePublisher conflatedstream.Publisher[RuntimeChangeKind]
+	runtimeChangeStream    conflatedstream.Stream[RuntimeChangeKind]
+	httpsPipelineRevision  uint64
+}
+
+type runtimeUpstreamListSource struct {
+	kind            UpstreamListSourceKind
+	path            string
+	optional        bool
+	observation     *fileobservation.Observation
+	projection      upstreamlist.Projection
+	fileSyncIssue   *FileSyncIssue
+	projectionIssue *UpstreamListProjectionIssue
+}
+
+type runtimeUpstreamListInput struct {
+	kind        UpstreamListSourceKind
+	path        string
+	optional    bool
+	observation *fileobservation.Observation
+	initial     fileobservation.Outcome
 }
 
 // RuntimeChangeKind identifies the current-state concern invalidated by a
@@ -87,8 +103,17 @@ func newRuntimeWithTransport(
 	initial fileobservation.Outcome,
 	proxyTransport *http.Transport,
 ) (*trafficRuntime, error) {
+	return newRuntimeFromSources([]runtimeUpstreamListInput{{
+		kind: UpstreamListSourceGlobal, path: upstreamListPath, observation: observation, initial: initial,
+	}}, proxyTransport)
+}
+
+func newRuntimeFromSources(inputs []runtimeUpstreamListInput, proxyTransport *http.Transport) (*trafficRuntime, error) {
 	if proxyTransport == nil {
 		return nil, fmt.Errorf("proxy transport is required")
+	}
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("at least one Upstream List source is required")
 	}
 	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -102,36 +127,19 @@ func newRuntimeWithTransport(
 
 	proxyListen := proxyListener.Addr().String()
 
-	initialList := upstreamlist.Projection{}
-	var fileIssue *FileSyncIssue
-	var projectionIssue *UpstreamListProjectionIssue
-	var initialContents fileobservation.Contents
-	var initialObservationError error
-	switch initial := initial.(type) {
-	case fileobservation.Contents:
-		initialContents = initial
-	case fileobservation.ReadError:
-		initialObservationError = initial
-	case fileobservation.ObservationStoppedError:
-		initialObservationError = initial
-	default:
-		_ = proxyListener.Close()
-		_ = pacListener.Close()
-		return nil, fmt.Errorf("unsupported initial file observation outcome %T", initial)
-	}
-	if initialObservationError != nil {
-		fileIssue, err = classifyFileSyncIssue(initialObservationError)
-		if err != nil {
+	sources := make([]runtimeUpstreamListSource, 0, len(inputs))
+	projections := make([]upstreamlist.Projection, 0, len(inputs))
+	for _, input := range inputs {
+		source, sourceErr := initialRuntimeUpstreamListSource(input)
+		if sourceErr != nil {
 			_ = proxyListener.Close()
 			_ = pacListener.Close()
-			return nil, err
+			return nil, sourceErr
 		}
-	} else {
-		initialList, err = upstreamlist.Project(initialContents)
-		if err != nil {
-			projectionIssue = &UpstreamListProjectionIssue{Cause: err.Error()}
-		}
+		sources = append(sources, source)
+		projections = append(projections, source.projection)
 	}
+	initialList := upstreamlist.Merge(projections...)
 	directProxy := corsproxy.New(proxyTransport, nil)
 	pacContent := pacrouting.Project(initialList, false, proxyListen)
 	pacHandler := newLivePACHandler(pacContent)
@@ -145,25 +153,63 @@ func newRuntimeWithTransport(
 	pacProjectionPublisher, pacProjectionStream := conflatedstream.New[string]()
 	runtimeChangePublisher, runtimeChangeStream := conflatedstream.New[RuntimeChangeKind]()
 	return &trafficRuntime{
-		upstreamListPath:        upstreamListPath,
-		upstreamListObservation: observation,
-		currentUpstreamList:     initialList,
-		fileSyncIssue:           fileIssue,
-		projectionIssue:         projectionIssue,
-		httpsPipeline:           httpsPipeline,
-		httpsGeneration:         httpsGeneration,
-		proxyHandler:            proxyHandler,
-		proxyTransport:          proxyTransport,
-		pacContent:              pacContent,
-		pacHandler:              pacHandler,
-		proxy:                   &http.Server{Handler: proxyHandler},
-		pac:                     &http.Server{Handler: pacHandler},
-		listeners:               []net.Listener{proxyListener, pacListener},
-		pacProjectionPublisher:  pacProjectionPublisher,
-		pacProjectionStream:     pacProjectionStream,
-		runtimeChangePublisher:  runtimeChangePublisher,
-		runtimeChangeStream:     runtimeChangeStream,
+		upstreamLists:          sources,
+		currentUpstreamList:    initialList,
+		httpsPipeline:          httpsPipeline,
+		httpsGeneration:        httpsGeneration,
+		proxyHandler:           proxyHandler,
+		proxyTransport:         proxyTransport,
+		pacContent:             pacContent,
+		pacHandler:             pacHandler,
+		proxy:                  &http.Server{Handler: proxyHandler},
+		pac:                    &http.Server{Handler: pacHandler},
+		listeners:              []net.Listener{proxyListener, pacListener},
+		pacProjectionPublisher: pacProjectionPublisher,
+		pacProjectionStream:    pacProjectionStream,
+		runtimeChangePublisher: runtimeChangePublisher,
+		runtimeChangeStream:    runtimeChangeStream,
 	}, nil
+}
+
+func initialRuntimeUpstreamListSource(input runtimeUpstreamListInput) (runtimeUpstreamListSource, error) {
+	source := runtimeUpstreamListSource{
+		kind: input.kind, path: input.path, optional: input.optional, observation: input.observation,
+	}
+	outcome := optionalMissingAsEmpty(input.optional, input.initial)
+	switch outcome := outcome.(type) {
+	case fileobservation.Contents:
+		projection, err := upstreamlist.Project(outcome)
+		if err != nil {
+			source.projectionIssue = &UpstreamListProjectionIssue{Cause: err.Error()}
+		} else {
+			source.projection = projection
+		}
+	case fileobservation.ReadError:
+		issue, err := classifyFileSyncIssue(outcome)
+		if err != nil {
+			return runtimeUpstreamListSource{}, err
+		}
+		source.fileSyncIssue = issue
+	case fileobservation.ObservationStoppedError:
+		issue, err := classifyFileSyncIssue(outcome)
+		if err != nil {
+			return runtimeUpstreamListSource{}, err
+		}
+		source.fileSyncIssue = issue
+	default:
+		return runtimeUpstreamListSource{}, fmt.Errorf("unsupported initial file observation outcome %T", outcome)
+	}
+	return source, nil
+}
+
+func optionalMissingAsEmpty(optional bool, outcome fileobservation.Outcome) fileobservation.Outcome {
+	if !optional {
+		return outcome
+	}
+	if readErr, ok := outcome.(fileobservation.ReadError); ok && errors.Is(readErr.Cause, os.ErrNotExist) {
+		return fileobservation.Contents(nil)
+	}
+	return outcome
 }
 
 func defaultProxyTransport() *http.Transport {
@@ -275,8 +321,10 @@ func (r *trafficRuntime) Serve(ctx context.Context) error {
 // ServeReady reports when both bound traffic listeners have entered their
 // serving goroutines. Callers may then safely publish the PAC URL.
 func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
-	errs := make(chan serverError, 3)
-	go r.watchUpstreamList(ctx, errs)
+	errs := make(chan serverError, len(r.upstreamLists)+2)
+	for index := range r.upstreamLists {
+		go r.watchUpstreamList(ctx, index, errs)
+	}
 	go func() {
 		errs <- serverError{source: "proxy", err: r.proxy.Serve(r.listeners[0])}
 	}()
@@ -329,8 +377,10 @@ func (r *trafficRuntime) Close() error {
 }
 
 func (r *trafficRuntime) CloseTraffic() error {
-	if r.upstreamListObservation != nil {
-		r.upstreamListObservation.Close()
+	for index := range r.upstreamLists {
+		if r.upstreamLists[index].observation != nil {
+			r.upstreamLists[index].observation.Close()
+		}
 	}
 	closeErr := errors.Join(
 		r.proxy.Close(),
@@ -403,11 +453,12 @@ func (r *trafficRuntime) BeginHTTPSDeadlineAssessment(expectedGeneration uint64)
 	return generation, true
 }
 
-func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serverError) {
-	if r.upstreamListObservation == nil {
+func (r *trafficRuntime) watchUpstreamList(ctx context.Context, sourceIndex int, errs chan<- serverError) {
+	source := &r.upstreamLists[sourceIndex]
+	if source.observation == nil {
 		return
 	}
-	outcomes := r.upstreamListObservation.Outcomes()
+	outcomes := source.observation.Outcomes()
 	for {
 		select {
 		case <-ctx.Done():
@@ -416,11 +467,11 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 			if !ok {
 				return
 			}
-			if err := r.applyUpstreamListOutcomeContext(ctx, outcome); err != nil {
+			if err := r.applyUpstreamListSourceOutcomeContext(ctx, sourceIndex, outcome); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				errs <- serverError{source: "upstream-list", err: err}
+				errs <- serverError{source: string(source.kind) + "-upstream-list", err: err}
 				return
 			}
 		}
@@ -428,10 +479,23 @@ func (r *trafficRuntime) watchUpstreamList(ctx context.Context, errs chan<- serv
 }
 
 func (r *trafficRuntime) applyUpstreamListOutcome(outcome fileobservation.Outcome) error {
-	return r.applyUpstreamListOutcomeContext(context.Background(), outcome)
+	return r.applyUpstreamListSourceOutcomeContext(context.Background(), 0, outcome)
 }
 
 func (r *trafficRuntime) applyUpstreamListOutcomeContext(_ context.Context, outcome fileobservation.Outcome) error {
+	return r.applyUpstreamListSourceOutcomeContext(context.Background(), 0, outcome)
+}
+
+func (r *trafficRuntime) applyUpstreamListSourceOutcome(sourceIndex int, outcome fileobservation.Outcome) error {
+	return r.applyUpstreamListSourceOutcomeContext(context.Background(), sourceIndex, outcome)
+}
+
+func (r *trafficRuntime) applyUpstreamListSourceOutcomeContext(_ context.Context, sourceIndex int, outcome fileobservation.Outcome) error {
+	if sourceIndex < 0 || sourceIndex >= len(r.upstreamLists) {
+		return fmt.Errorf("unsupported Upstream List source index %d", sourceIndex)
+	}
+	source := &r.upstreamLists[sourceIndex]
+	outcome = optionalMissingAsEmpty(source.optional, outcome)
 	var contents fileobservation.Contents
 	var observationError error
 	switch outcome := outcome.(type) {
@@ -457,8 +521,8 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(_ context.Context, outc
 	if observationError != nil {
 		r.mu.Lock()
 		statusChanged := false
-		if !sameFileSyncIssue(r.fileSyncIssue, nextFileIssue) {
-			r.fileSyncIssue = nextFileIssue
+		if !sameFileSyncIssue(source.fileSyncIssue, nextFileIssue) {
+			source.fileSyncIssue = nextFileIssue
 			statusChanged = true
 		}
 		r.mu.Unlock()
@@ -484,17 +548,22 @@ func (r *trafficRuntime) applyUpstreamListOutcomeContext(_ context.Context, outc
 	assessmentRequested := false
 	deactivateProxy := false
 	hadHTTPSIntent := r.httpsPipeline != nil
-	if r.fileSyncIssue != nil {
-		r.fileSyncIssue = nil
+	if source.fileSyncIssue != nil {
+		source.fileSyncIssue = nil
 		statusChanged = true
 	}
-	if !sameProjectionIssue(r.projectionIssue, nextProjectionIssue) {
-		r.projectionIssue = nextProjectionIssue
+	if !sameProjectionIssue(source.projectionIssue, nextProjectionIssue) {
+		source.projectionIssue = nextProjectionIssue
 		statusChanged = true
 	}
-	r.currentUpstreamList = candidate
+	source.projection = candidate
+	projections := make([]upstreamlist.Projection, 0, len(r.upstreamLists))
+	for index := range r.upstreamLists {
+		projections = append(projections, r.upstreamLists[index].projection)
+	}
+	r.currentUpstreamList = upstreamlist.Merge(projections...)
 	statusChanged = true
-	hasHTTPSIntent := candidate.HTTPSIntent()
+	hasHTTPSIntent := r.currentUpstreamList.HTTPSIntent()
 	switch {
 	case !hadHTTPSIntent && hasHTTPSIntent:
 		r.httpsGeneration++
@@ -597,31 +666,35 @@ func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
 }
 
 type runtimeState struct {
-	HTTPSPipelineRevision       uint64
-	HTTPSGeneration             uint64
-	ProxyListen                 string
-	PACListen                   string
-	UpstreamList                string
-	HTTPSPipeline               *HTTPSPipelineDetail
-	UpstreamCount               int
-	UpstreamListWarnings        []UpstreamListWarningDetail
-	UpstreamListFileSyncIssue   *FileSyncIssue
-	UpstreamListProjectionIssue *UpstreamListProjectionIssue
+	HTTPSPipelineRevision uint64
+	HTTPSGeneration       uint64
+	ProxyListen           string
+	PACListen             string
+	UpstreamLists         []UpstreamListSourceDetail
+	HTTPSPipeline         *HTTPSPipelineDetail
+	UpstreamCount         int
 }
 
 func (r *trafficRuntime) stateLocked() runtimeState {
 	upstreamList := r.currentUpstreamList
+	sources := make([]UpstreamListSourceDetail, 0, len(r.upstreamLists))
+	for _, source := range r.upstreamLists {
+		sources = append(sources, UpstreamListSourceDetail{
+			Kind:            source.kind,
+			Path:            source.path,
+			Warnings:        upstreamListWarningDetails(source.kind, source.path, source.projection.Warnings),
+			FileSyncIssue:   source.fileSyncIssue,
+			ProjectionIssue: source.projectionIssue,
+		})
+	}
 	return runtimeState{
-		HTTPSPipelineRevision:       r.httpsPipelineRevision,
-		HTTPSGeneration:             r.httpsGeneration,
-		ProxyListen:                 r.listeners[0].Addr().String(),
-		PACListen:                   r.listeners[1].Addr().String(),
-		UpstreamList:                r.upstreamListPath,
-		HTTPSPipeline:               r.httpsPipeline,
-		UpstreamCount:               len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
-		UpstreamListWarnings:        upstreamListWarningDetails(upstreamList.Warnings),
-		UpstreamListFileSyncIssue:   r.fileSyncIssue,
-		UpstreamListProjectionIssue: r.projectionIssue,
+		HTTPSPipelineRevision: r.httpsPipelineRevision,
+		HTTPSGeneration:       r.httpsGeneration,
+		ProxyListen:           r.listeners[0].Addr().String(),
+		PACListen:             r.listeners[1].Addr().String(),
+		UpstreamLists:         sources,
+		HTTPSPipeline:         r.httpsPipeline,
+		UpstreamCount:         len(upstreamList.HostSelectors) + len(upstreamList.OriginSelectors),
 	}
 }
 
