@@ -44,7 +44,7 @@ npm install --global seamless-cors
 
 ### Go install
 
-With Go 1.23.1 or later installed, build and install the latest release:
+With Go 1.27.0 or later installed, build and install the latest release:
 
 ```sh
 go install github.com/QzCurious/seamless-cors/cmd/seamless-cors@latest

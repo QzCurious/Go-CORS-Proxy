@@ -38,7 +38,7 @@ npm install --global seamless-cors
 
 ### 使用 Go 安裝
 
-若已安裝 Go 1.23.1 或更新版本，可建置並安裝最新發行版：
+若已安裝 Go 1.27.0 或更新版本，可建置並安裝最新發行版：
 
 ```sh
 go install github.com/QzCurious/seamless-cors/cmd/seamless-cors@latest
