@@ -107,7 +107,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 
 	publishRuntime := func() error {
 		state := engine.snapshot()
-		var assessment userca.Assessment
+		var assessment userca.CurrentState
 		var assessmentErr error
 		if state.HTTPSPipeline != nil {
 			// Only an intent-admitted pipeline inspects UserCA for runtime use.
@@ -125,7 +125,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 			return ctx.Err()
 		}
 		if state.HTTPSPipeline != nil {
-			s.lifecycle.userCASnapshot = assessment.Snapshot()
+			s.lifecycle.userCAState = assessment
 			s.lifecycle.userCAAssessmentErr = assessmentErr
 		}
 		s.lifecycle.runtime = active
@@ -225,7 +225,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	if state.HTTPSPipeline != nil {
 		s.lifecycle.mu.Lock()
 		status := installedCAStatus(
-			s.lifecycle.userCASnapshot,
+			s.lifecycle.userCAState,
 			s.lifecycle.userCAAssessmentErr,
 			false,
 			s.lifecycle.userCACleanupIssue,

@@ -314,7 +314,7 @@ func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ca := &fakeUserCA{
-		installResult: userca.NewMutationResult(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false), true),
+		installResult: userca.NewMutationResult(testUserCAState(t, time.Now().Add(24*time.Hour), false), true),
 	}
 	lifecycle, err := newLifecycle(
 		&lifecycleTestSystemSettings{},
@@ -350,8 +350,8 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	engine.SetInitialHTTPSAssessment(userca.Assessment{}, nil)
-	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
+	engine.SetInitialHTTPSAssessment(userca.CurrentState{}, nil)
+	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
 	ca := &fakeUserCA{installResult: userca.NewMutationResult(installed, true)}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
@@ -369,6 +369,65 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 	}
 }
 
+func TestInstallWithdrawsHTTPSBeforeUserCAMutation(t *testing.T) {
+	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(engine)
+	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
+	engine.SetInitialHTTPSAssessment(installed, nil)
+	var inactiveDuringInstall bool
+	ca := &fakeUserCA{
+		state: installed,
+		install: func(context.Context) (userca.MutationResult, error) {
+			inactiveDuringInstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
+			return userca.NewMutationResult(installed, false), nil
+		},
+	}
+	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+
+	result, err := lifecycle.Install(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != InstallResultAlreadyUsable || !inactiveDuringInstall || pipelineReadiness(engine.snapshot().HTTPSPipeline) != HTTPSReadinessReady {
+		t.Fatalf("install = %#v inactive during mutation %t runtime = %#v", result, inactiveDuringInstall, engine.snapshot())
+	}
+}
+
+func TestInstallFailureLeavesHTTPSWithdrawn(t *testing.T) {
+	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
+	engine, err := newRuntime(path, source, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTrafficTestRuntime(engine)
+	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
+	engine.SetInitialHTTPSAssessment(installed, nil)
+	wantErr := errors.New("trust mutation failed")
+	ca := &fakeUserCA{state: installed, installErr: wantErr}
+	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+
+	if _, err := lifecycle.Install(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("install error = %v", err)
+	}
+	state := engine.snapshot()
+	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessNotReady || state.HTTPSPipeline.UserCAAssessmentIssue == nil {
+		t.Fatalf("failed install runtime = %#v", state)
+	}
+}
+
 func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
 	engine, err := newRuntime(path, source, upstreams)
@@ -376,7 +435,7 @@ func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
+	assessment := testUserCAState(t, time.Now().Add(time.Hour), false)
 	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
@@ -413,13 +472,13 @@ func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
+	assessment := testUserCAState(t, time.Now().Add(time.Hour), false)
 	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
 	default:
 	}
-	ca := &fakeUserCA{assessment: assessment}
+	ca := &fakeUserCA{state: assessment}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +501,7 @@ func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *test
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCASnapshot(t, time.Now().Add(time.Hour), false)
+	assessment := testUserCAState(t, time.Now().Add(time.Hour), false)
 	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
@@ -482,7 +541,7 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCASnapshot(t, time.Now().Add(75*time.Millisecond), false)
+	assessment := testUserCAState(t, time.Now().Add(75*time.Millisecond), false)
 	engine.SetInitialHTTPSAssessment(assessment, nil)
 	select {
 	case <-engine.PACProjections():
@@ -490,11 +549,11 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 	}
 	var inspectCalls atomic.Int32
 	ca := &fakeUserCA{
-		inspect: func(context.Context) (userca.Assessment, error) {
+		inspect: func(context.Context) (userca.CurrentState, error) {
 			if inspectCalls.Add(1) == 1 {
 				return assessment, nil
 			}
-			return userca.Assessment{}, nil
+			return userca.CurrentState{}, nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -530,7 +589,7 @@ func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
 			}
 			close(entered)
 			<-release
-			return userca.NewMutationResult(userca.Assessment{}, true), nil
+			return userca.NewMutationResult(userca.CurrentState{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -616,14 +675,14 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
+	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
 	engine.SetInitialHTTPSAssessment(installed, nil)
 	var inactiveDuringUninstall bool
 	ca := &fakeUserCA{
-		assessment: installed,
+		state: installed,
 		uninstall: func(context.Context) (userca.MutationResult, error) {
 			inactiveDuringUninstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
-			return userca.NewMutationResult(userca.Assessment{}, true), nil
+			return userca.NewMutationResult(userca.CurrentState{}, true), nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -691,8 +750,8 @@ func TestStartWithoutHTTPSIntentSkipsRuntimeUserCAInspection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), []byte("api.example.test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	installed := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	ca := &fakeUserCA{assessment: installed}
+	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
+	ca := &fakeUserCA{state: installed}
 	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
 	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
@@ -724,9 +783,9 @@ func pipelineReadiness(pipeline *HTTPSPipelineDetail) HTTPSReadinessStatus {
 
 type fakeUserCA struct {
 	mu              sync.Mutex
-	assessment      userca.Assessment
+	state           userca.CurrentState
 	inspectErr      error
-	inspect         func(context.Context) (userca.Assessment, error)
+	inspect         func(context.Context) (userca.CurrentState, error)
 	installResult   userca.MutationResult
 	installErr      error
 	uninstallResult userca.MutationResult
@@ -738,14 +797,14 @@ type fakeUserCA struct {
 	uninstallCalls  int
 }
 
-func (f *fakeUserCA) Inspect(ctx context.Context) (userca.Assessment, error) {
+func (f *fakeUserCA) Inspect(ctx context.Context) (userca.CurrentState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inspectCalls++
 	if f.inspect != nil {
 		return f.inspect(ctx)
 	}
-	return f.assessment, f.inspectErr
+	return f.state, f.inspectErr
 }
 
 func (f *fakeUserCA) Install(ctx context.Context) (userca.MutationResult, error) {
@@ -774,8 +833,8 @@ func (f *fakeUserCA) Uninstall(ctx context.Context) (userca.MutationResult, erro
 
 type emptyTestUserCA struct{}
 
-func (emptyTestUserCA) Inspect(context.Context) (userca.Assessment, error) {
-	return userca.Assessment{}, nil
+func (emptyTestUserCA) Inspect(context.Context) (userca.CurrentState, error) {
+	return userca.CurrentState{}, nil
 }
 func (emptyTestUserCA) Install(context.Context) (userca.MutationResult, error) {
 	return userca.MutationResult{}, nil

@@ -334,6 +334,31 @@ func TestStatusRendersCurrentUpstreamListWarnings(t *testing.T) {
 	}
 }
 
+func TestStatusRendersUserCARenewalDueFact(t *testing.T) {
+	var out bytes.Buffer
+	expires := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	renderStatus(&out, gateway.StatusResult{
+		Kind: gateway.StatusResultReported,
+		StatusReport: gateway.StatusReport{
+			State: gateway.GatewayStatusRouterOnly,
+			InstalledCA: gateway.InstalledCAStatusDetail{
+				Health:     gateway.CAHealthUsable,
+				Expires:    expires,
+				RenewalDue: true,
+			},
+		},
+	})
+	for _, want := range []string{
+		"installed-ca: usable",
+		"installed-ca-expires: 2026-10-01",
+		"installed-ca-renewal: due",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("status output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestStatusRendersUnmetHTTPSIntent(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{

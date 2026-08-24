@@ -574,7 +574,7 @@ type lifecycle struct {
 	caAdmissionMu          sync.Mutex
 	managedPAC             managedPACModule
 	userCA                 userCAModule
-	userCASnapshot         userca.Snapshot
+	userCAState            userca.CurrentState
 	userCAAssessmentErr    error
 	coord                  *coordinator
 	runtimeDir             string
@@ -648,7 +648,7 @@ func newLifecycleState(
 	if pac == nil {
 		pac = openSystemManagedPAC()
 	}
-	var initial userca.Assessment
+	var initial userca.CurrentState
 	var assessmentErr error
 	if inspectUserCA {
 		initial, assessmentErr = ca.Inspect(context.Background())
@@ -656,7 +656,7 @@ func newLifecycleState(
 	return &lifecycle{
 		managedPAC:             pac,
 		userCA:                 ca,
-		userCASnapshot:         initial.Snapshot(),
+		userCAState:            initial,
 		userCAAssessmentErr:    assessmentErr,
 		coord:                  coord,
 		runtimeDir:             coord.RuntimeDirPath(),
@@ -708,18 +708,17 @@ func (f *lifecycle) takeStartCleanupComplete() bool {
 	return complete
 }
 
-func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, assessment userca.Assessment) {
+func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, current userca.CurrentState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.runtime != active {
 		return
 	}
-	f.scheduleHTTPSDeadlineLocked(active, assessment)
+	f.scheduleHTTPSDeadlineLocked(active, current)
 }
 
-func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessment userca.Assessment) {
-	snapshot := assessment.Snapshot()
-	if !snapshot.Usable() {
+func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, current userca.CurrentState) {
+	if !current.Usable {
 		return
 	}
 	state := active.engine.snapshot()
@@ -731,7 +730,7 @@ func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, assessmen
 	}
 	active.deadlineGeneration = state.HTTPSGeneration
 	now := time.Now()
-	delay := snapshot.ExpiresAt().Sub(now)
+	delay := current.ExpiresAt.Sub(now)
 	if delay < 0 {
 		delay = 0
 	}
@@ -836,7 +835,7 @@ func (f *lifecycle) assessHTTPSPipeline(active *activeRuntime, generation uint64
 	active.assessmentCancel = nil
 	stillActive := f.runtime == active
 	if applied && stillActive {
-		f.userCASnapshot = assessment.Snapshot()
+		f.userCAState = assessment
 		f.userCAAssessmentErr = assessmentErr
 	}
 	f.mu.Unlock()
@@ -977,7 +976,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	active := f.runtime
 	ownerCache := f.ownerCache
 	ownerEnding := f.ownerEnding
-	caSnapshot := f.userCASnapshot
+	caState := f.userCAState
 	caAssessmentErr := f.userCAAssessmentErr
 	caMutating := f.caMutating
 	caCleanupIssue := f.userCACleanupIssue
@@ -1001,7 +1000,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		StatusReport: StatusReport{
 			State:       GatewayStatusNotRunning,
 			Cleanup:     f.cleanupStatus(ctx, stale, active != nil, ownerCache),
-			InstalledCA: installedCAStatus(caSnapshot, caAssessmentErr, caMutating, caCleanupIssue),
+			InstalledCA: installedCAStatus(caState, caAssessmentErr, caMutating, caCleanupIssue),
 		},
 	}
 	if ownerEnding {
@@ -1081,11 +1080,27 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	active := f.runtime
 	f.mu.Unlock()
 	defer f.finishCAMutation(active)
+	// Gateway owns the runtime consequence of every CA mutation. Withdraw HTTPS
+	// before UserCA can repair or replace trust and local signing material; a
+	// successful result below publishes one matching replacement capability.
+	if active != nil {
+		active.engine.DeactivateHTTPS(userca.CurrentState{}, nil)
+		f.cancelHTTPSDeadline(active)
+	}
 	// Once admitted, CA work belongs to the owner rather than the request.
 	result, err := f.userCA.Install(context.Background())
 	if err != nil {
+		var pipeline *HTTPSPipelineDetail
+		if active != nil {
+			active.engine.DeactivateHTTPS(userca.CurrentState{}, err)
+			pipeline = active.engine.snapshot().HTTPSPipeline
+		}
+		f.mu.Lock()
+		f.userCAState = userca.CurrentState{}
+		f.userCAAssessmentErr = err
+		f.mu.Unlock()
 		if errors.Is(err, userca.ErrApprovalDenied) {
-			return InstallResult{Kind: InstallResultApprovalDenied}, nil
+			return InstallResult{Kind: InstallResultApprovalDenied, HTTPSPipeline: pipeline}, nil
 		}
 		return InstallResult{}, err
 	}
@@ -1106,7 +1121,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 		}
 	}
 	f.mu.Lock()
-	f.userCASnapshot = current.Snapshot()
+	f.userCAState = current
 	f.userCAAssessmentErr = nil
 	f.userCACleanupIssue = nil
 	f.mu.Unlock()
@@ -1116,7 +1131,7 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	}
 	return InstallResult{
 		Kind:               kind,
-		InstalledCAExpires: current.Snapshot().ExpiresAt(),
+		InstalledCAExpires: current.ExpiresAt,
 		HTTPSPipeline:      pipeline,
 	}, nil
 }
@@ -1158,7 +1173,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	f.mu.Unlock()
 	defer f.finishCAMutation(active)
 	if active != nil {
-		active.engine.DeactivateHTTPS(userca.Snapshot{}, nil)
+		active.engine.DeactivateHTTPS(userca.CurrentState{}, nil)
 		f.cancelHTTPSDeadline(active)
 	}
 	result, err := f.userCA.Uninstall(context.Background())
@@ -1168,7 +1183,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 			Action: "Run `seamless-cors uninstall` again.",
 		}
 		f.mu.Lock()
-		f.userCASnapshot = userca.Snapshot{}
+		f.userCAState = userca.CurrentState{}
 		f.userCAAssessmentErr = err
 		f.userCACleanupIssue = cleanupIssue
 		f.mu.Unlock()
@@ -1179,7 +1194,7 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	}
 	current := result.Current()
 	f.mu.Lock()
-	f.userCASnapshot = current.Snapshot()
+	f.userCAState = current
 	f.userCAAssessmentErr = nil
 	f.userCACleanupIssue = nil
 	f.mu.Unlock()
@@ -1325,17 +1340,17 @@ func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive
 	return inspectGatewayFootprint(ctx, f.managedPAC, f.coord, stale, runtimeActive, ownerCache)
 }
 
-func installedCAStatus(snapshot userca.Snapshot, assessmentErr error, mutating bool, cleanupIssue *UserCACleanupIssue) InstalledCAStatusDetail {
+func installedCAStatus(current userca.CurrentState, assessmentErr error, mutating bool, cleanupIssue *UserCACleanupIssue) InstalledCAStatusDetail {
 	if mutating {
 		return InstalledCAStatusDetail{Health: CAHealthMutating, CleanupIssue: cleanupIssue}
 	}
-	if assessmentErr != nil || !snapshot.Usable() {
+	if assessmentErr != nil || !current.Usable {
 		return InstalledCAStatusDetail{Health: CAHealthNotUsable, CleanupIssue: cleanupIssue}
 	}
 	return InstalledCAStatusDetail{
 		Health:       CAHealthUsable,
-		Expires:      snapshot.ExpiresAt(),
-		RenewalDue:   snapshot.RenewalDue(),
+		Expires:      current.ExpiresAt,
+		RenewalDue:   current.RenewalDue,
 		CleanupIssue: cleanupIssue,
 	}
 }

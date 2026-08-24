@@ -9,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -18,7 +17,7 @@ import (
 	"time"
 )
 
-// authority is one immutable fingerprint-named local certificate generation.
+// authority is the one locally persisted certificate and private-key pair.
 type authority struct {
 	certPath string
 	keyPath  string
@@ -27,8 +26,8 @@ type authority struct {
 	cert     *x509.Certificate
 }
 
-func createCandidate(dir string, now func() time.Time) (*authority, error) {
-	// Phase 1: generate a self-signed development authority entirely in memory.
+func createAuthority(dir string, now func() time.Time) (*authority, error) {
+	// Generate a self-signed development authority entirely in memory.
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
@@ -49,49 +48,45 @@ func createCandidate(dir string, now func() time.Time) (*authority, error) {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	fingerprint, err := sha1Fingerprint(certPEM)
+	// Publish the complete pair with one directory rename. Callers establish an
+	// absent precondition before creation, so no generation marker is needed.
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, err
+	}
+	tempDir, err := os.MkdirTemp(parent, ".userca-*")
 	if err != nil {
 		return nil, err
 	}
-
-	// Phase 2: durably publish the immutable generation before trust mutation.
-	authoritiesDir := filepath.Join(dir, authoritiesDirName)
-	if err := os.MkdirAll(authoritiesDir, 0o700); err != nil {
+	defer os.RemoveAll(tempDir)
+	if err := os.Chmod(tempDir, 0o700); err != nil {
 		return nil, err
 	}
-	generationDir := filepath.Join(authoritiesDir, fingerprint)
-	if err := os.Mkdir(generationDir, 0o700); err != nil {
+	tempCertPath := filepath.Join(tempDir, certFileName)
+	tempKeyPath := filepath.Join(tempDir, keyFileName)
+	if err := writeDurableFile(tempCertPath, certPEM, 0o600); err != nil {
 		return nil, err
 	}
-	certPath := filepath.Join(generationDir, certFileName)
-	keyPath := filepath.Join(generationDir, keyFileName)
-	if err := writeDurableFile(certPath, certPEM, 0o600); err != nil {
-		_ = os.RemoveAll(generationDir)
+	if err := writeDurableFile(tempKeyPath, keyPEM, 0o600); err != nil {
 		return nil, err
 	}
-	if err := writeDurableFile(keyPath, keyPEM, 0o600); err != nil {
-		_ = os.RemoveAll(generationDir)
+	if err := syncDirectory(tempDir); err != nil {
 		return nil, err
 	}
-	if err := errors.Join(
-		syncDirectory(generationDir),
-		syncDirectory(authoritiesDir),
-		syncDirectory(dir),
-		syncDirectory(filepath.Dir(dir)),
-	); err != nil {
-		_ = os.RemoveAll(generationDir)
+	if err := os.Rename(tempDir, dir); err != nil {
 		return nil, err
 	}
+	if err := syncDirectory(parent); err != nil {
+		return nil, err
+	}
+	certPath := filepath.Join(dir, certFileName)
+	keyPath := filepath.Join(dir, keyFileName)
 	return &authority{certPath: certPath, keyPath: keyPath, certPEM: certPEM, keyPEM: keyPEM, cert: template}, nil
 }
 
-func loadGeneration(dir, fingerprint string) (*authority, error) {
-	if !validFingerprint(fingerprint) {
-		return nil, fmt.Errorf("active UserCA fingerprint is invalid")
-	}
-	generationDir := filepath.Join(dir, authoritiesDirName, fingerprint)
-	certPath := filepath.Join(generationDir, certFileName)
-	keyPath := filepath.Join(generationDir, keyFileName)
+func loadAuthority(dir string) (*authority, error) {
+	certPath := filepath.Join(dir, certFileName)
+	keyPath := filepath.Join(dir, keyFileName)
 	certPEM, err := readFile(certPath)
 	if err != nil {
 		return nil, err

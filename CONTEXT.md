@@ -29,7 +29,7 @@ A rule that only the Gateway Module orders and combines file-observation facts, 
 _Avoid_: feature-owned lifecycle orchestration, per-request Upstream List gate, duplicated selector translation, ordering-means-waiting
 
 **Independent Feature Serialization**:
-A concurrency rule where each feature module serializes only its own mutations, while Gateway conditionally coordinates one active HTTPS Pipeline and atomically publishes immutable MITM or direct CORS Proxy generations during intent, UserCA, expiry, and uninstall transitions. This Gateway boundary does not hold UserCA's private mutation lock or Managed PAC serialization, and PAC publication remains independent.
+A concurrency rule where Gateway serializes UserCA lifecycle work and conditionally coordinates one active HTTPS Pipeline, while other feature modules serialize only their own mutations. Gateway atomically publishes immutable MITM or direct CORS Proxy generations during intent, UserCA, expiry, and uninstall transitions without holding Managed PAC serialization, and PAC publication remains independent.
 _Avoid_: global lifecycle lock, PAC-blocked UserCA mutation, list-coupled UserCA adoption
 
 **Surface-Neutral Command Result**:
@@ -165,19 +165,19 @@ A maintenance operation performed by explicit install that replaces an Installed
 _Avoid_: traffic-triggered trust mutation, automatic root replacement, silent CA replacement, treating near-expiry as expired
 
 **CA Replacement Rule**:
-A CA lifecycle rule where a valid Active UserCA is reused, its missing trust or local permissions are repaired in place, and renewal-due authority rotates through an overlapping Candidate without interrupting active HTTPS. When the Active marker is absent, invalid, or does not identify valid material, install removes every ambiguous owned authority and verifies cleanup before creating a fresh Candidate rather than guessing an Active identity.
-_Avoid_: newest-authority inference, unmarked authority adoption, adding a root beside ambiguous residue, proxy-failure-triggered replacement, destructive pre-candidate renewal, trusting invalid material, start-time repair
+A CA lifecycle rule where valid UserCA material is reused, its missing trust or local permissions are repaired in place, and renewal-due, expired, invalid, or ambiguous state is completely removed and verified before one replacement authority is installed. Gateway withdraws active HTTPS before replacement and restores it only from the returned usable UserCA Current State.
+_Avoid_: overlapping roots, proxy-failure-triggered replacement, trusting invalid material, start-time repair, UserCA-owned HTTPS coordination
 
 **UserCA Installation**:
 The explicit UserCA operation that installs, repairs, or renews the current user's seamless-cors authority and requests platform approval only when trust must be added or replaced. It is independent of the Upstream List; when a live Gateway has an active HTTPS Pipeline, Gateway settles the resulting HTTPS Pipeline Detail before returning it separately from the fulfilled CA mutation outcome, while install without HTTPS Intent has no runtime HTTPS consequence.
 _Avoid_: start-time CA installation, activation-owned CA setup, asynchronous live-install reconciliation, list-bound install result, repeated trust prompt, implicit trust repair
 
 **Owner-Owned CA Mutation**:
-An admitted install or uninstall belongs to the Gateway Owner and settles independently of request cancellation or client disconnection. Owner Stop waits for it, while process interruption relies on immutable generations, the Active fingerprint marker, and the next install or uninstall for recovery.
+An admitted install or uninstall belongs to the Gateway Owner and settles independently of request cancellation or client disconnection. Owner Stop waits for it, while process interruption leaves an assessable single-pair footprint that the next install or uninstall reconciles.
 _Avoid_: request-owned mutation, disconnect cancellation, stop-cancelled CA command, caller-managed commit boundary
 
 **Gateway-Owned CA Lifecycle**:
-A lifecycle rule where install, UserCA Rotation, and uninstall route through an existing Gateway Owner or a discoverable Transient Gateway Owner published before ownerless work. Gateway Ownership provides cross-process routing and discovery, UserCA privately serializes its own mutations, and Gateway conditionally coordinates the short active-HTTPS-Pipeline consequence without blocking other features.
+A lifecycle rule where install, Installed User CA Renewal, and uninstall route through an existing Gateway Owner or a discoverable Transient Gateway Owner published before ownerless work. Gateway Ownership provides cross-process routing, discovery, mutation serialization, and active-HTTPS-Pipeline coordination without blocking other features.
 _Avoid_: ownerless CA mutation, undiscoverable ownership holder, separate CA Mutation Lease, direct UserCA command execution, caller-managed CA locking
 
 **Transient Gateway Owner**:
@@ -185,7 +185,7 @@ A discoverable Gateway Owner published before ownerless CA lifecycle work. It ex
 _Avoid_: promotable CA owner, install-owned Gateway Runtime, private one-shot lease holder, hidden CA process, background daemon, undiscoverable owner
 
 **Fail-Fast CA Mutation Admission**:
-A UserCA serialization rule where install and uninstall are rejected for explicit retry when another UserCA mutation is already admitted. Gateway maps that condition to `userca: mutating`, holds command admission only through the short runtime adoption or deactivation consequence, and never waits for independent Managed PAC Reconciliation; status remains available, stop waits for admitted work, and no queue is maintained.
+A Gateway serialization rule where install and uninstall are rejected for explicit retry when another CA mutation is already admitted. Gateway maps that condition to `userca: mutating`, holds command admission through the short runtime withdrawal and adoption consequence, and never waits for independent Managed PAC Reconciliation; status remains available, stop waits for admitted work, and no queue is maintained.
 _Avoid_: owner-exists-means-busy, queued CA mutation, concurrent CA mutation, blocked status
 
 **Ownership-Protected Status Assessment**:
@@ -196,44 +196,20 @@ _Avoid_: Transient Gateway Owner for status, status-written discovery cache, unl
 An owner-coordinated startup boundary used only when initial HTTPS Intent admits the HTTPS Pipeline, where UserCA assessment is serialized with CA Lifecycle Commands so Gateway Runtime never loads authority facts from an in-progress mutation. Start without HTTPS Intent performs no runtime UserCA assessment.
 _Avoid_: runtime boot from mutating CA state, marker polling, UserCA-owned runtime coordination
 
-**Installed UserCA Set**:
-The seamless-cors-owned immutable fingerprint-named authority generations represented in current-user OS trust or local authority storage. Normal state contains one Active UserCA and at most one Candidate or Retired UserCA; another rotation cannot begin until non-active residue is reconciled.
-_Avoid_: permanent multiple UserCAs, ambiguous authority collection, unbounded trusted identities
-
-**Active UserCA**:
-The one Installed User CA identified by the durable atomic active-fingerprint marker and used to produce UserCA Signing Material. During live rotation, CONNECT requests admitted before atomic replacement may finish using the previous authority while its Retired root remains trusted.
-_Avoid_: unmarked authority, newest-certificate inference, arbitrary installed authority, multiple active signers
-
-**Candidate UserCA**:
-A fully prepared and OS-trusted immutable authority generation that may coexist with the Active UserCA but does not become the source of UserCA Signing Material until its fingerprint is atomically persisted as active.
-_Avoid_: partially installed CA, active signer, untrusted staging certificate, required Candidate marker
+**Installed UserCA Pair**:
+The one seamless-cors-owned certificate and matching private key represented in current-user OS trust and local authority storage. A usable state has exactly one matching trusted identity; replacement does not preserve an overlapping old authority.
+_Avoid_: authority generation set, active marker, permanent multiple UserCAs, overlapping trusted identities
 
 **UserCA Signing Material**:
-The immutable Active UserCA certificate and matching private signer that always accompanies a usable UserCA Snapshot within a UserCA Assessment. An active HTTPS Pipeline retains this material when HTTPS Readiness is ready and supplies it to CORS Proxy; without HTTPS Intent, Gateway Runtime does not assess or retain it, while goproxy owns per-host leaf generation and its connection-local failures.
+The immutable Installed UserCA Pair certificate and matching private signer that always accompanies a usable UserCA Current State. An active HTTPS Pipeline retains this material when HTTPS Readiness is ready and supplies it to CORS Proxy; without HTTPS Intent, Gateway Runtime does not inspect or retain it, while goproxy owns per-host leaf generation and its connection-local failures.
 _Avoid_: HTTPS Certificate Provider, HTTPS Provider Source, list-bounded signer, selector certificate set, Gateway leaf generator
 
 **MITM Proxy Generation**:
 An immutable goproxy handler bound to one UserCA Signing Material generation. Gateway atomically replaces the handler behind its stable Proxy Listener; admitted connections may retain the previous generation, while PAC changes only when HTTPS routes change.
 _Avoid_: mutable in-place CA swap, proxy-listener rotation, CA-rotation PAC rewrite
 
-**Retired UserCA**:
-The previous Active UserCA after a new active fingerprint is committed. CONNECT requests already admitted to its MITM generation may finish because its root remains trusted; after atomic replacement, old private material is removed as soon as practical and fallible OS trust removal remains Non-Active UserCA Cleanup.
-_Avoid_: active signer, permanent secondary root, connection drain, retained private key
-
-**UserCA Rotation**:
-A CA maintenance transition that creates and trusts an immutable Candidate generation and atomically persists its fingerprint as active. When a live Gateway has an active HTTPS Pipeline, it may settle that pipeline by publishing a MITM Proxy Generation bound to the new UserCA Signing Material; without HTTPS Intent, rotation has no runtime proxy consequence. Admitted and established connections are not drained, and a closing runtime may skip adoption because the durable marker is sufficient for the next eligible pipeline assessment.
-_Avoid_: list-bound rotation commit, TLS handshake barrier, connection registry, stop-required renewal, synchronous retired-root cleanup, rotation journal
-
-**Interrupted UserCA Rotation**:
-A recoverable state with a marked valid Active UserCA and non-active owned authority residue. Gateway restart serves the marked authority without mutating OS trust, while the next UserCA lifecycle event privately reconciles non-active authority state before adding another authority.
-_Avoid_: Candidate marker, startup trust mutation, multiple-authority readiness failure, newest-certificate guessing, rotation journal
-
-**Non-Active UserCA Cleanup**:
-A private UserCA behavior inside install and uninstall that removes owned authority state not retained by the requested postcondition, including pre-marker Candidate and post-marker Retired residue. Post-rotation failure does not disable usable HTTPS and is retried by the next install or uninstall before another authority may be added.
-_Avoid_: public reconcile operation, Gateway cleanup hook, Gateway cleanup state, public cleanup warning, administrator-assumed cleanup, active HTTPS disablement, unbounded trusted-root accumulation
-
 **CA Material Integrity**:
-A CA lifecycle invariant where current-user CA trust and local signing material match for each member of the Installed UserCA Set; missing or mismatched material is treated as repair-needed state.
+A CA lifecycle invariant where current-user CA trust and the Installed UserCA Pair match; missing or mismatched material is treated as replacement-needed state.
 _Avoid_: trusted cert without signing key, orphaned signing key, mismatched CA pair
 
 **OS-Backed CA Installation**:
@@ -245,7 +221,7 @@ A CA lifecycle behavior where otherwise-valid Installed User CA material with lo
 _Avoid_: permission-triggered CA rotation, loose CA key permissions
 
 **HTTPS Deadline Signal**:
-A signal emitted only while an active ready HTTPS Pipeline has a deadline timer, when that timer reaches the expiry reported by its adopted UserCA Assessment. Gateway reconstructs current truth through a fresh pipeline assessment and changes HTTPS Readiness only when the current pipeline generation accepts that result, making a stale signal harmless; a signal arriving during admitted CA lifecycle mutation is deferred until that mutation and its conditional pipeline consequence settle.
+A signal emitted only while an active ready HTTPS Pipeline has a deadline timer, when that timer reaches the expiry reported by its adopted UserCA Current State. Gateway reconstructs current truth through a fresh UserCA inspection and changes HTTPS Readiness only when the current pipeline generation accepts that state, making a stale signal harmless; a signal arriving during admitted CA lifecycle mutation is deferred until that mutation and its conditional pipeline consequence settle.
 _Avoid_: cached expiry truth, certificate-generation expiry callback, signal-carried UserCA state, silent renewal
 
 **HTTPS Intent**:
@@ -265,7 +241,7 @@ A current HTTPS Pipeline issue created when the pipeline's UserCA inspection ret
 _Avoid_: generic HTTPS warning, UserCA not-usable state, terminal error text, warning history, intent-filtered diagnostic
 
 **HTTPS Pipeline Detail**:
-An optional surface-neutral Gateway record present only while HTTPS Intent admits the HTTPS Pipeline. Its `assessing` phase has no HTTPS Readiness and keeps CONNECT direct with no HTTPS routes; its `settled` phase contains current readiness and exactly the source-specific current detail produced by a not-ready outcome—Unmet HTTPS Intent guidance or a UserCA Assessment Issue—without copying Installed User CA renewal facts or collecting generic warnings. Only the current pipeline assessment may settle the record; results from removed or replaced pipeline work are discarded.
+An optional surface-neutral Gateway record present only while HTTPS Intent admits the HTTPS Pipeline. Its `assessing` phase has no HTTPS Readiness and keeps CONNECT direct with no HTTPS routes; its `settled` phase contains current readiness and exactly the source-specific current detail produced by a not-ready outcome—Unmet HTTPS Intent guidance or a UserCA Assessment Issue—without copying Installed User CA renewal facts or collecting generic warnings. Only the current pipeline inspection may settle the record; results from removed or replaced pipeline work are discarded.
 _Avoid_: always-present readiness, HTTPS warning array, duplicated Installed CA status, multiple simultaneous readiness causes, presentation prose
 
 **Live HTTPS Pipeline Delivery**:
@@ -273,11 +249,11 @@ A foreground lifecycle callback that publishes the changed optional HTTPS Pipeli
 _Avoid_: warning snapshot, per-warning callback, Gateway-owned terminal output, required HTTP event stream, pipeline event log
 
 **HTTPS Readiness**:
-The fact-only result of UserCA assessment inside an active HTTPS Pipeline, expressed as `ready` when a coherent UserCA Assessment contains usable UserCA facts and matching UserCA Signing Material or `not-ready` otherwise. Ready selects a CA-backed CORS Proxy generation and enables managed HTTPS routes; not-ready selects direct tunneling and withholds those routes. Without HTTPS Intent, HTTPS Readiness is not assessed and has no value. A usable snapshot that omits signing material is not-ready. Gateway alone schedules the admitted assessment's expiry deadline and freshly reassesses UserCA before changing readiness.
+The fact-only result of UserCA inspection inside an active HTTPS Pipeline, expressed as `ready` when a coherent UserCA Current State is usable and contains matching UserCA Signing Material or `not-ready` otherwise. Ready selects a CA-backed CORS Proxy generation and enables managed HTTPS routes; not-ready selects direct tunneling and withholds those routes. Without HTTPS Intent, HTTPS Readiness is not established and has no value. A usable current state that omits signing material is invalid. Gateway alone schedules the adopted current state's expiry deadline and freshly inspects UserCA before changing readiness.
 _Avoid_: always-present runtime state, HTTPS Intent alias, proxy health, continuous trust-store polling, installed-file check, expiry warning as not-ready
 
 **HTTPS Readiness Loss**:
-A runtime fact transition from ready to not-ready HTTPS Readiness when a fresh UserCA Assessment after an HTTPS Deadline Signal finds the authority expired or otherwise unusable, when that assessment fails and current usability therefore cannot be established, or after confirmed Live UserCA Uninstall. Gateway first adopts and serves the no-HTTPS PAC Projection without waiting for asynchronous Managed PAC Reconciliation, then atomically installs direct-tunnel CONNECT behavior, cancels the ready assessment's deadline, and discards its retained signing material. The admitted pipeline remains settled not-ready with its source-specific detail. Assessment failure becomes a UserCA Assessment Issue while HTTP service and CA material or OS trust remain untouched; recovery requires explicit install.
+A runtime fact transition from ready to not-ready HTTPS Readiness when a fresh UserCA inspection after an HTTPS Deadline Signal finds the authority expired or otherwise unusable, when that inspection fails and current usability therefore cannot be established, or after confirmed Live UserCA Uninstall. Gateway first adopts and serves the no-HTTPS PAC Projection without waiting for asynchronous Managed PAC Reconciliation, then atomically installs direct-tunnel CONNECT behavior, cancels the current state's deadline, and discards its retained signing material. The admitted pipeline remains settled not-ready with its source-specific detail. Inspection failure becomes a UserCA Assessment Issue while HTTP service and CA material or OS trust remain untouched; recovery requires explicit install.
 _Avoid_: proxy operational failure, failed gateway, continuous trust-store revalidation, status mutation
 
 **HTTPS Readiness Recovery**:
@@ -421,7 +397,7 @@ A status fact derived from the presence of Managed PAC Runtime State, meaning th
 _Avoid_: all-services-controlled, live OS PAC verification, warning-free Managed PAC, Managed PAC lease held
 
 **Managed PAC Mutation Sequence**:
-Managed PAC's private ordering rule where installation, PAC Projection publication, reconciliation, and uninstall execute one at a time independently from Upstream List observation and UserCA serialization. A newer accepted PAC Projection replaces older pending publication input without interrupting an active attempt; failed attempts retain the last successfully published PAC and retry the newest projection, and uninstall waits for the current writer before removing and verifying all marker-owned PAC state.
+Managed PAC's private ordering rule where installation, PAC Projection publication, reconciliation, and uninstall execute one at a time independently from Upstream List observation and Gateway CA mutation serialization. A newer accepted PAC Projection replaces older pending publication input without interrupting an active attempt; failed attempts retain the last successfully published PAC and retry the newest projection, and uninstall waits for the current writer before removing and verifying all marker-owned PAC state.
 _Avoid_: caller-owned PAC lock, operation-success wait, concurrent PAC writes, refresh-cleanup race, post-stop PAC install, uninstall racing an old writer, global lifecycle mutex
 
 **Managed PAC Reconciliation**:
@@ -545,15 +521,15 @@ A CA lifecycle command boundary where installing or repairing the Installed User
 _Avoid_: install-time configuration bootstrap, intent-dependent install, separate readiness endpoint, restart-required recovery
 
 **UserCA Install Reconciliation**:
-An install order that first attempts Non-Active UserCA Cleanup, then reuses valid Active UserCA Signing Material, repairs its missing OS trust when required, or installs/rotates authority state that is invalid, expired, mismatched, or renewal-due. Failed cleanup blocks only work that would add another trusted root: a valid Active authority can still be reused, while required rotation stops before Candidate creation; inside an active HTTPS Pipeline, discovering missing active trust makes HTTPS Readiness not-ready until repair succeeds.
-_Avoid_: proxy failure-triggered CA rotation, trust repair before non-active reconciliation, arbitrary non-active adoption, unbounded trusted roots
+An install behavior that reuses valid UserCA Signing Material, repairs its missing OS trust or local permissions, or completely removes and verifies invalid, expired, mismatched, ambiguous, or renewal-due state before installing one replacement pair. Gateway withdraws an active HTTPS Pipeline before reconciliation and restores it only from the successful returned UserCA Current State.
+_Avoid_: proxy failure-triggered CA replacement, overlapping trusted roots, partial replacement, UserCA-owned runtime coordination
 
 **Idempotent CA Install**:
-A CA lifecycle command behavior where installing reuses valid Active UserCA trust without requesting platform approval or changing CA material, while a live Gateway refreshes its active HTTPS Pipeline only when HTTPS Intent exists.
+A CA lifecycle command behavior where installing reuses valid UserCA trust without requesting platform approval or changing CA material, while Gateway withdraws and refreshes a live HTTPS Pipeline only when HTTPS Intent exists.
 _Avoid_: reinstalling valid CA, proxy failure-triggered rotation, noisy no-op install, repeated trust approval
 
 **Active HTTPS Uninstall Consent**:
-A confirmation required before UserCA uninstall disables active Trusted HTTPS Interception and removes the entire Installed UserCA Set. Consent authorizes that identity-independent consequence rather than one Active fingerprint; declining leaves HTTPS Readiness and all UserCA state unchanged, and no confirmation is required when interception is already inactive.
+A confirmation required before UserCA uninstall disables active Trusted HTTPS Interception and removes the Installed UserCA Pair. Consent authorizes that identity-independent consequence rather than a certificate fingerprint; declining leaves HTTPS Readiness and all UserCA state unchanged, and no confirmation is required when interception is already inactive.
 _Avoid_: certificate-bound consent, active-runtime uninstall block, unconditional uninstall prompt, partial UserCA removal, implicit consent
 
 **Live UserCA Uninstall**:
@@ -569,7 +545,7 @@ A CA lifecycle command behavior where uninstalling reports already-absent seamle
 _Avoid_: missing-CA uninstall failure, forced repair before removal, noisy no-op uninstall
 
 **Complete CA Uninstall**:
-A CA lifecycle invariant where uninstall removes Active, Candidate, and non-active recovery state and reports success only after all seamless-cors-owned current-user CA trust and all markers and local material in the selected UserCA Storage Environment are absent. Material in another or legacy storage environment is outside the command's discovery and cleanup scope.
+A CA lifecycle invariant where uninstall removes all seamless-cors-owned current-user CA trust and the complete Installed UserCA Pair, then reports success only after those facts are absent from the selected UserCA Storage Environment. Material in another or legacy storage environment is outside the command's discovery and cleanup scope.
 _Avoid_: cross-environment CA search, false uninstall success, trusted CA without selected-environment material
 
 **Foreground Start**:
@@ -601,7 +577,7 @@ A compact Human Status rendering of `https: inactive` when the HTTPS Pipeline is
 _Avoid_: absent-means-not-ready, `https-interception-health`, `trusted-https-active`, generic warning collection, internal state dump
 
 **Read-Only Status**:
-A status behavior that reports gateway, cleanup-needed, Installed User CA, Human HTTPS Status, and stale Gateway State Cache detection without latching HTTPS Readiness Loss or changing proxy settings, CA trust, local CA material, runtime files, or discovery state. An existing owner reports its latched UserCA Snapshot, an ownerless command uses Ownership-Protected Status Assessment, and admitted CA work is reported as `userca: mutating`.
+A status behavior that reports gateway, cleanup-needed, Installed User CA, Human HTTPS Status, and stale Gateway State Cache detection without latching HTTPS Readiness Loss or changing proxy settings, CA trust, local CA material, runtime files, or discovery state. An existing owner reports its latched UserCA Current State, an ownerless command uses Ownership-Protected Status Assessment, and admitted CA work is reported as `userca: mutating`.
 _Avoid_: status-triggered cleanup, mutating status command
 
 **Gateway Status State**:
@@ -609,16 +585,12 @@ A read-only gateway status vocabulary that describes whether the Gateway Owner a
 _Avoid_: status-as-command-failure, cleanup status, UserCA state, start result, runtime state file truth
 
 **UserCA Usability**:
-A two-state assessment where UserCA is `usable` only when one valid Active UserCA has matching local material and current-user OS trust, and is otherwise `not-usable`. Renewal due is an independent fact; private cleanup state does not cross the UserCA seam, assessment failure is an error, and `mutating` belongs to Gateway command coordination rather than UserCA state.
+A two-state assessment where UserCA is `usable` only when one valid Installed UserCA Pair has matching current-user OS trust, and is otherwise `not-usable`. Renewal due is an independent fact; private reconciliation facts do not cross the UserCA seam, assessment failure is an error, and `mutating` belongs to Gateway command coordination rather than UserCA state.
 _Avoid_: public missing/expired/mismatched state taxonomy, unknown UserCA state, public cleanup state, mutation-as-UserCA-state
 
-**UserCA Snapshot**:
-An immutable status-only result freshly inspected by UserCA from authority material, the Active fingerprint marker, and current-user OS trust. It exposes UserCA Usability at inspection, expiry, and renewal due without carrying certificates, private keys, signers, or another operational capability; UserCA never caches or observes it, while Gateway Runtime may latch an admitted Snapshot.
-_Avoid_: signing-material container, exported Active authority type, raw PEM, CA storage paths, cached CA state, live CA watcher, mutable authority record, storage snapshot, public trust-store facts
-
-**UserCA Assessment**:
-One coherent UserCA result containing a status-only UserCA Snapshot and, exactly when that Snapshot is usable, matching immutable UserCA Signing Material. UserCA validates authority structure, validity, constraints, self-signature, and key correspondence so Gateway never reconstructs or matches signing material itself.
-_Avoid_: independently loaded snapshot and signer, list-bound install success, usable snapshot without signing material, leaf-generation self-test
+**UserCA Current State**:
+One coherent current UserCA result exposing UserCA Usability, expiry, and renewal due and, exactly when usable, matching opaque UserCA Signing Material. UserCA freshly derives it from the Installed UserCA Pair and current-user OS trust and validates authority structure, validity, constraints, self-signature, and key correspondence so Gateway never reconstructs or matches signing material itself. Gateway may retain an admitted Current State but UserCA never caches one.
+_Avoid_: UserCA Snapshot, UserCA Assessment value, independently loaded status and signer, raw PEM, CA storage paths, cached UserCA state, live CA watcher, usable state without signing material
 
 **Diagnostic Runtime Endpoint**:
 An automatically selected listener address shown by status for troubleshooting, not for user proxy setup or configuration.

@@ -221,18 +221,18 @@ func defaultProxyTransport() *http.Transport {
 
 // SetInitialHTTPSAssessment settles the pipeline admitted by the initial
 // Upstream List. Start skips UserCA inspection entirely when no pipeline exists.
-func (r *trafficRuntime) SetInitialHTTPSAssessment(assessment userca.Assessment, assessmentErr error) bool {
+func (r *trafficRuntime) SetInitialHTTPSAssessment(current userca.CurrentState, assessmentErr error) bool {
 	r.mu.RLock()
 	generation := r.httpsGeneration
 	r.mu.RUnlock()
-	applied, _ := r.settleHTTPSAssessment(generation, assessment, assessmentErr)
+	applied, _ := r.settleHTTPSAssessment(generation, current, assessmentErr)
 	return applied
 }
 
 // AdoptInstalledUserCA invalidates any in-flight pipeline assessment and
 // settles the current pipeline from an explicit install result. Without HTTPS
 // Intent it has no runtime consequence.
-func (r *trafficRuntime) AdoptInstalledUserCA(assessment userca.Assessment) *HTTPSPipelineDetail {
+func (r *trafficRuntime) AdoptInstalledUserCA(current userca.CurrentState) *HTTPSPipelineDetail {
 	r.httpsMu.Lock()
 	defer r.httpsMu.Unlock()
 	r.mu.Lock()
@@ -243,14 +243,14 @@ func (r *trafficRuntime) AdoptInstalledUserCA(assessment userca.Assessment) *HTT
 	r.httpsGeneration++
 	generation := r.httpsGeneration
 	r.mu.Unlock()
-	r.settleHTTPSAssessmentLocked(generation, assessment, nil)
+	r.settleHTTPSAssessmentLocked(generation, current, nil)
 	return r.snapshot().HTTPSPipeline
 }
 
 // DeactivateHTTPS is the live-uninstall linearization companion. It removes
 // HTTPS routes before publishing a direct generation. Without an admitted
 // pipeline the UserCA operation has no runtime HTTPS consequence.
-func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr error) {
+func (r *trafficRuntime) DeactivateHTTPS(current userca.CurrentState, assessmentErr error) {
 	r.httpsMu.Lock()
 	defer r.httpsMu.Unlock()
 	r.mu.Lock()
@@ -259,7 +259,7 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr
 		return
 	}
 	r.httpsGeneration++
-	next := settledHTTPSPipeline(snapshot, assessmentErr)
+	next := settledHTTPSPipeline(current, assessmentErr)
 	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
 	r.httpsPipeline = next
 	if pipelineChanged {
@@ -274,25 +274,24 @@ func (r *trafficRuntime) DeactivateHTTPS(snapshot userca.Snapshot, assessmentErr
 	}
 }
 
-func (r *trafficRuntime) settleHTTPSAssessment(generation uint64, assessment userca.Assessment, assessmentErr error) (bool, bool) {
+func (r *trafficRuntime) settleHTTPSAssessment(generation uint64, current userca.CurrentState, assessmentErr error) (bool, bool) {
 	r.httpsMu.Lock()
 	defer r.httpsMu.Unlock()
-	return r.settleHTTPSAssessmentLocked(generation, assessment, assessmentErr)
+	return r.settleHTTPSAssessmentLocked(generation, current, assessmentErr)
 }
 
-func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, assessment userca.Assessment, assessmentErr error) (bool, bool) {
+func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, current userca.CurrentState, assessmentErr error) (bool, bool) {
 	r.mu.Lock()
 	if r.httpsPipeline == nil || r.httpsGeneration != generation {
 		r.mu.Unlock()
 		return false, false
 	}
-	snapshot := assessment.Snapshot()
-	ready := assessmentErr == nil && snapshot.Usable()
-	next := settledHTTPSPipeline(snapshot, assessmentErr)
+	ready := assessmentErr == nil && current.Usable && current.SigningMaterial() != nil
+	next := settledHTTPSPipeline(current, assessmentErr)
 	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
 	if ready {
 		// Recovery publishes MITM behavior before exposing HTTPS PAC routes.
-		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, assessment.SigningMaterial()))
+		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, current.SigningMaterial()))
 	}
 	r.httpsPipeline = next
 	if pipelineChanged {
@@ -704,7 +703,7 @@ func (r *trafficRuntime) httpsReadyLocked() bool {
 		r.httpsPipeline.Readiness == HTTPSReadinessReady
 }
 
-func settledHTTPSPipeline(snapshot userca.Snapshot, assessmentErr error) *HTTPSPipelineDetail {
+func settledHTTPSPipeline(current userca.CurrentState, assessmentErr error) *HTTPSPipelineDetail {
 	detail := &HTTPSPipelineDetail{
 		Phase:     HTTPSPipelineSettled,
 		Readiness: HTTPSReadinessNotReady,
@@ -716,7 +715,7 @@ func settledHTTPSPipeline(snapshot userca.Snapshot, assessmentErr error) *HTTPSP
 		}
 		return detail
 	}
-	if snapshot.Usable() {
+	if current.Usable && current.SigningMaterial() != nil {
 		detail.Readiness = HTTPSReadinessReady
 		return detail
 	}

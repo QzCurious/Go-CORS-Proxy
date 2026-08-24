@@ -339,8 +339,8 @@ func TestInstalledUserCASettlesActivePipelineAndPublishesHTTPSPACInput(t *testin
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	runtime.SetInitialHTTPSAssessment(userca.Assessment{}, nil)
-	pipeline := runtime.AdoptInstalledUserCA(testUserCASnapshot(t, time.Now().Add(24*time.Hour), false))
+	runtime.SetInitialHTTPSAssessment(userca.CurrentState{}, nil)
+	pipeline := runtime.AdoptInstalledUserCA(testUserCAState(t, time.Now().Add(24*time.Hour), false))
 	state := runtime.snapshot()
 	if pipeline == nil || pipeline.Readiness != HTTPSReadinessReady || !runtime.interceptionActive() {
 		t.Fatalf("recovered state = %#v", state)
@@ -384,7 +384,7 @@ func TestDeadlineMovesCurrentReadyPipelineBackToAssessing(t *testing.T) {
 	}
 	defer closeTrafficTestRuntime(runtime)
 	expiresAt := time.Now().Add(time.Hour)
-	runtime.SetInitialHTTPSAssessment(testUserCASnapshot(t, expiresAt, false), nil)
+	runtime.SetInitialHTTPSAssessment(testUserCAState(t, expiresAt, false), nil)
 	before := runtime.snapshot()
 	if _, ok := runtime.BeginHTTPSDeadlineAssessment(before.HTTPSGeneration); !ok {
 		t.Fatal("deadline did not admit a fresh assessment")
@@ -397,15 +397,19 @@ func TestDeadlineMovesCurrentReadyPipelineBackToAssessing(t *testing.T) {
 
 func TestHTTPSPipelineDetailsPreserveTheirSource(t *testing.T) {
 	expiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
-	notUsable := settledHTTPSPipeline(userca.Snapshot{}, nil)
+	notUsable := settledHTTPSPipeline(userca.CurrentState{}, nil)
 	if notUsable.UnmetIntent == nil || notUsable.UserCAAssessmentIssue != nil {
 		t.Fatalf("not-usable detail = %#v", notUsable)
 	}
-	assessmentIssue := settledHTTPSPipeline(userca.Snapshot{}, context.DeadlineExceeded)
+	assessmentIssue := settledHTTPSPipeline(userca.CurrentState{}, context.DeadlineExceeded)
 	if assessmentIssue.UserCAAssessmentIssue == nil || assessmentIssue.UnmetIntent != nil {
 		t.Fatalf("assessment issue = %#v", assessmentIssue)
 	}
-	usable := testUserCASnapshot(t, expiry, true).Snapshot()
+	invalidUsable := settledHTTPSPipeline(userca.CurrentState{Usable: true, ExpiresAt: expiry}, nil)
+	if invalidUsable.Readiness == HTTPSReadinessReady || invalidUsable.UnmetIntent == nil {
+		t.Fatalf("usable state without signing material = %#v", invalidUsable)
+	}
+	usable := testUserCAState(t, expiry, true)
 	ready := settledHTTPSPipeline(usable, nil)
 	if ready.Readiness != HTTPSReadinessReady || ready.UnmetIntent != nil || ready.UserCAAssessmentIssue != nil {
 		t.Fatalf("ready detail = %#v", ready)
@@ -428,7 +432,7 @@ func TestStaleHTTPSAssessmentCannotSettleReplacementPipeline(t *testing.T) {
 	}
 	applied, _ := runtime.settleHTTPSAssessment(
 		staleGeneration,
-		testUserCASnapshot(t, time.Now().Add(24*time.Hour), false),
+		testUserCAState(t, time.Now().Add(24*time.Hour), false),
 		nil,
 	)
 	if applied {
@@ -446,8 +450,8 @@ func TestLiveHTTPSIntentAssessmentSettlesCurrentPipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	assessment := testUserCASnapshot(t, time.Now().Add(24*time.Hour), false)
-	ca := &fakeUserCA{assessment: assessment}
+	assessment := testUserCAState(t, time.Now().Add(24*time.Hour), false)
+	ca := &fakeUserCA{state: assessment}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -546,13 +550,13 @@ func (c *closeTrackingConn) Close() error {
 	return c.Conn.Close()
 }
 
-func testUserCASnapshot(t *testing.T, expiresAt time.Time, renewalDue bool) userca.Assessment {
+func testUserCAState(t *testing.T, expiresAt time.Time, renewalDue bool) userca.CurrentState {
 	t.Helper()
-	assessment, err := userca.NewAssessment(expiresAt, renewalDue, &tls.Certificate{})
+	current, err := userca.NewCurrentState(expiresAt, renewalDue, &tls.Certificate{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return assessment
+	return current
 }
 
 func closeTrafficTestRuntime(runtime *trafficRuntime) {

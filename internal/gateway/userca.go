@@ -9,7 +9,7 @@ import (
 // userCAModule is the Gateway-owned behavioral seam. UserCA owns every
 // semantic value crossing it.
 type userCAModule interface {
-	Inspect(context.Context) (userca.Assessment, error)
+	Inspect(context.Context) (userca.CurrentState, error)
 	Install(context.Context) (userca.MutationResult, error)
 	Uninstall(context.Context) (userca.MutationResult, error)
 }
