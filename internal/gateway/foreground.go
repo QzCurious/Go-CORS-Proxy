@@ -16,7 +16,7 @@ type owner struct {
 	listener  net.Listener
 	lifecycle *lifecycle
 	router    *routerServer
-	lease     *ownershipLease
+	lock      *ownerLock
 }
 
 func newOwnerWithCoordinator(pac managedPACModule, ca userCAModule, coord *coordinator) (*owner, error) {
@@ -60,12 +60,12 @@ func newOwner(pac managedPACModule, ca userCAModule, coord *coordinator, inspect
 }
 
 func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) error) error {
-	if o.lease == nil {
-		return fmt.Errorf("gateway owner requires ownership lease")
+	if o.lock == nil {
+		return fmt.Errorf("Gateway Owner requires Gateway Ownership Lock")
 	}
 	defer func() {
-		_ = o.lease.Release()
-		o.lease = nil
+		_ = o.lock.Release()
+		o.lock = nil
 	}()
 	errs := make(chan error, 1)
 	go func() { errs <- o.router.Serve(o.listener) }()

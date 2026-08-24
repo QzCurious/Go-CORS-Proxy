@@ -11,18 +11,16 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
-func TestStartReturnsOwnerTransitionWhenOwnershipLeaseIsHeldWithoutPublishedOwner(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	coord := newCoordinator(filepath.Join(home, ".seamless-cors", "runtime"))
-	lease, acquired, err := coord.AcquireOwnershipLease()
+func TestStartReturnsOwnerTransitionWhenOwnerLockIsHeldWithoutPublishedOwner(t *testing.T) {
+	_, coord := useTestGatewayEnvironment(t)
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !acquired {
-		t.Fatal("test did not acquire ownership lease")
+		t.Fatal("test did not acquire ownership lock")
 	}
-	defer lease.Release()
+	defer lock.Release()
 
 	result, err := start(context.Background(), nil, nil, StartHooks{})
 
@@ -34,18 +32,16 @@ func TestStartReturnsOwnerTransitionWhenOwnershipLeaseIsHeldWithoutPublishedOwne
 	}
 }
 
-func TestServeRejectsOwnershipLeaseContention(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	coord := newCoordinator(filepath.Join(home, ".seamless-cors", "runtime"))
-	lease, acquired, err := coord.AcquireOwnershipLease()
+func TestServeRejectsOwnerLockContention(t *testing.T) {
+	_, coord := useTestGatewayEnvironment(t)
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !acquired {
-		t.Fatal("test did not acquire ownership lease")
+		t.Fatal("test did not acquire ownership lock")
 	}
-	defer lease.Release()
+	defer lock.Release()
 
 	err = serve(context.Background(), nil, nil, nil)
 
@@ -73,8 +69,7 @@ func TestExecuteStartLoopCarriesInvokingWorkingDirectory(t *testing.T) {
 }
 
 func TestStartRoutesToExistingServeOwner(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home, coord := useTestGatewayEnvironment(t)
 	configDir := filepath.Join(home, ".seamless-cors")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -82,8 +77,7 @@ func TestStartRoutesToExistingServeOwner(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	coord := newCoordinator(filepath.Join(configDir, "runtime"))
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +92,7 @@ func TestStartRoutesToExistingServeOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner.lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
-	owner.lease = lease
+	owner.lock = lock
 	ready := make(chan struct{})
 	runDone := make(chan error, 1)
 	go func() {

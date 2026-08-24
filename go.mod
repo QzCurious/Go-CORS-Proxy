@@ -9,7 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-playground/validator/v10 v10.27.0
-	golang.org/x/sys v0.35.0
+	github.com/gofrs/flock v0.13.0
 )
 
 require (
@@ -19,5 +19,6 @@ require (
 	github.com/leodido/go-urn v1.4.0 // indirect
 	golang.org/x/crypto v0.41.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 )

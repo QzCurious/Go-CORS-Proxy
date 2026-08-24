@@ -3,9 +3,58 @@ package gateway
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 )
+
+func TestNewOwnerUsesEphemeralLoopbackRouter(t *testing.T) {
+	owner, err := newOwnerWithCoordinator(
+		&lifecycleTestSystemSettings{},
+		emptyTestUserCA{},
+		newCoordinator(t.TempDir()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.listener.Close() })
+	address, ok := owner.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("Router address type = %T, want *net.TCPAddr", owner.listener.Addr())
+	}
+	if !address.IP.IsLoopback() {
+		t.Fatalf("Router IP = %s, want loopback", address.IP)
+	}
+	if address.Port == 0 {
+		t.Fatal("Router did not receive an assigned ephemeral port")
+	}
+}
+
+func TestIndependentOwnerListenersReceiveDistinctEphemeralPorts(t *testing.T) {
+	first, err := newOwnerWithCoordinator(
+		&lifecycleTestSystemSettings{},
+		emptyTestUserCA{},
+		newCoordinator(t.TempDir()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.listener.Close() })
+	second, err := newOwnerWithCoordinator(
+		&lifecycleTestSystemSettings{},
+		emptyTestUserCA{},
+		newCoordinator(t.TempDir()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.listener.Close() })
+	firstAddress := first.listener.Addr().(*net.TCPAddr)
+	secondAddress := second.listener.Addr().(*net.TCPAddr)
+	if firstAddress.Port == secondAddress.Port {
+		t.Fatalf("independent Router ports = %d, want distinct ports", firstAddress.Port)
+	}
+}
 
 func TestSuperviseOwnerCancelsPendingActivationOnCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -100,16 +149,16 @@ func TestSuperviseOwnerContinuesAfterActivationCompletes(t *testing.T) {
 
 func TestUnexpectedRouterTerminationExecutesOwnerStop(t *testing.T) {
 	coord := newCoordinator(t.TempDir())
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil || !acquired {
-		t.Fatalf("acquire ownership lease = %t, %v", acquired, err)
+		t.Fatalf("acquire ownership lock = %t, %v", acquired, err)
 	}
 	settings := &lifecycleTestSystemSettings{}
 	owner, err := newOwnerWithCoordinator(settings, emptyTestUserCA{}, coord)
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner.lease = lease
+	owner.lock = lock
 	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {

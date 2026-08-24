@@ -7,10 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/adrg/xdg"
 )
 
 const stateFileName = "gateway-state-cache.json"
-const ownershipLeaseFileName = "gateway-owner.lock"
+const ownerLockFileName = "gateway-owner.lock"
+const gatewayRuntimeDirectoryName = "seamless-cors"
 
 type stateStatus string
 
@@ -41,17 +44,30 @@ func defaultCoordinator() (*coordinator, error) {
 }
 
 func defaultRuntimeDir() (string, error) {
-	home, err := os.UserHomeDir()
+	return resolveRuntimeDir(xdg.RuntimeFile)
+}
+
+type runtimeFileResolver func(string) (string, error)
+
+func resolveRuntimeDir(resolve runtimeFileResolver) (string, error) {
+	statePath, err := resolve(filepath.Join(gatewayRuntimeDirectoryName, stateFileName))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve Gateway Runtime Directory: %w", err)
 	}
-	return filepath.Join(home, ".seamless-cors", "runtime"), nil
+	statePath = filepath.Clean(statePath)
+	if !filepath.IsAbs(statePath) {
+		return "", fmt.Errorf(
+			"Gateway Runtime Directory resolution returned a non-absolute path: %q",
+			statePath,
+		)
+	}
+	return filepath.Dir(statePath), nil
 }
 
 type coordinator struct {
 	runtimeDir    string
 	statePath     string
-	leasePath     string
+	lockPath      string
 	ownerVerifier ownerVerifier
 }
 
@@ -66,7 +82,7 @@ func newCoordinatorWithVerifier(runtimeDir string, ownerVerifier ownerVerifier) 
 	return &coordinator{
 		runtimeDir:    runtimeDir,
 		statePath:     filepath.Join(runtimeDir, stateFileName),
-		leasePath:     filepath.Join(runtimeDir, ownershipLeaseFileName),
+		lockPath:      filepath.Join(runtimeDir, ownerLockFileName),
 		ownerVerifier: ownerVerifier,
 	}
 }

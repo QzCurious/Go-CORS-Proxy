@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +12,7 @@ import (
 )
 
 func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	coord := newCoordinator(filepath.Join(home, ".seamless-cors", "runtime"))
+	_, coord := useTestGatewayEnvironment(t)
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +36,7 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 }
 
 func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	useTestGatewayEnvironment(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	ca := &fakeUserCA{
@@ -107,17 +103,15 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 }
 
 func TestOwnerlessStatusReportsOwnershipTransitionInsteadOfInspectingUnlocked(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	coord := newCoordinator(filepath.Join(home, ".seamless-cors", "runtime"))
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	_, coord := useTestGatewayEnvironment(t)
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !acquired {
 		t.Fatal("test did not acquire Gateway Ownership")
 	}
-	defer lease.Release()
+	defer lock.Release()
 	ca := &fakeUserCA{}
 
 	result, err := status(context.Background(), &lifecycleTestSystemSettings{}, ca)
@@ -133,9 +127,7 @@ func TestOwnerlessStatusReportsOwnershipTransitionInsteadOfInspectingUnlocked(t 
 }
 
 func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	coord := newCoordinator(filepath.Join(home, ".seamless-cors", "runtime"))
+	_, coord := useTestGatewayEnvironment(t)
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
 		t.Fatal(err)
 	}
@@ -161,18 +153,16 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	}
 }
 
-func TestStopWithoutPublishedOwnerRejectsOwnershipLeaseContention(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	coord := newCoordinator(filepath.Join(home, ".seamless-cors", "runtime"))
-	lease, acquired, err := coord.AcquireOwnershipLease()
+func TestStopWithoutPublishedOwnerRejectsOwnerLockContention(t *testing.T) {
+	_, coord := useTestGatewayEnvironment(t)
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !acquired {
-		t.Fatal("test did not acquire ownership lease")
+		t.Fatal("test did not acquire ownership lock")
 	}
-	defer lease.Release()
+	defer lock.Release()
 	settings := &lifecycleTestSystemSettings{}
 
 	_, err = stop(context.Background(), settings)

@@ -32,7 +32,7 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 	if err != nil {
 		return nil, err
 	}
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		return nil, err
 	}
@@ -46,10 +46,10 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 		}
 		return StartOwnerTransition{}, nil
 	}
-	releaseLease := true
+	releaseLock := true
 	defer func() {
-		if releaseLease {
-			_ = lease.Release()
+		if releaseLock {
+			_ = lock.Release()
 		}
 	}()
 	if verification := coord.Verify(); verification.Status == stateActive {
@@ -63,8 +63,8 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 	if err != nil {
 		return nil, err
 	}
-	owner.lease = lease
-	releaseLease = false
+	owner.lock = lock
+	releaseLock = false
 	owner.lifecycle.MarkStartCleanupComplete()
 	var result StartResult
 	err = owner.Run(ctx, func(activationCtx context.Context) error {
@@ -101,17 +101,17 @@ func serve(ctx context.Context, pac managedPACModule, ca userCAModule, ready fun
 	if err != nil {
 		return err
 	}
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		return err
 	}
 	if !acquired {
 		return fmt.Errorf("gateway owner already running")
 	}
-	releaseLease := true
+	releaseLock := true
 	defer func() {
-		if releaseLease {
-			_ = lease.Release()
+		if releaseLock {
+			_ = lock.Release()
 		}
 	}()
 	if coord.Verify().Status == stateActive {
@@ -121,8 +121,8 @@ func serve(ctx context.Context, pac managedPACModule, ca userCAModule, ready fun
 	if err != nil {
 		return err
 	}
-	owner.lease = lease
-	releaseLease = false
+	owner.lock = lock
+	releaseLock = false
 	return owner.Run(ctx, func(context.Context) error {
 		if ready != nil {
 			ready()
@@ -202,13 +202,13 @@ func cleanRuntime(ctx context.Context, pac managedPACModule) ([]CleanupFailureDe
 	if err != nil {
 		return nil, err
 	}
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		return nil, err
 	}
 	if !acquired {
 		return nil, fmt.Errorf("gateway owner already running; retry after it finishes starting or stopping")
 	}
-	defer lease.Release()
+	defer lock.Release()
 	return cleanGatewayFootprint(ctx, pac, coord, nil), nil
 }

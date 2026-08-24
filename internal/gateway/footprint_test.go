@@ -67,3 +67,22 @@ func TestCleanupStatusIgnoresDisabledOwnedPACURL(t *testing.T) {
 		t.Fatalf("cleanup status = %#v, want no cleanup needed", status)
 	}
 }
+
+func TestCleanupStatusReportsManagedPACWithoutGatewayStateCache(t *testing.T) {
+	coord := newCoordinator(t.TempDir())
+	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
+		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
+	}}}
+
+	status := inspectGatewayFootprint(context.Background(), settings, coord, false, false, stateCache{})
+
+	if status.State != CleanupStatusNeeded {
+		t.Fatalf("cleanup status = %#v, want cleanup needed", status)
+	}
+	if status.Subjects[0].Subject != CleanupSubjectGatewayStateCache || status.Subjects[0].State != CleanupStatusNone {
+		t.Fatalf("Gateway State Cache status = %#v", status.Subjects[0])
+	}
+	if status.Subjects[1].Subject != CleanupSubjectManagedPAC || status.Subjects[1].State != CleanupStatusNeeded {
+		t.Fatalf("Managed PAC status = %#v", status.Subjects[1])
+	}
+}

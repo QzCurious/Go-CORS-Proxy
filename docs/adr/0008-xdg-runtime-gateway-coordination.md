@@ -1,0 +1,5 @@
+# XDG runtime Gateway coordination
+
+The Global Upstream List already uses XDG configuration storage and Installed CA Storage uses XDG state, while Gateway Coordination remained hardcoded beneath the user's home and duplicated Unix and Windows locking APIs. The Gateway Router intentionally binds an ephemeral authenticated loopback port, so ownership and discovery remain separate: `adrg/xdg.RuntimeFile` selects one `seamless-cors` Gateway Runtime Directory, `gofrs/flock` v0.13.0 provides the Gateway Ownership Lock, and the unchanged two-field Gateway State Cache plus authenticated health verification publishes and validates the Router identity.
+
+The lock and cache are always derived from the same selected directory. Runtime storage may disappear at reboot, but cache loss does not weaken ownership while the lock is held, and Managed PAC cleanup remains independently discoverable. The legacy `~/.seamless-cors/runtime` directory is neither searched nor migrated; old and new binaries must not run concurrently across this clean break. Different XDG runtime selections form distinct Gateway Coordination Environments.

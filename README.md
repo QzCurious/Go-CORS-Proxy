@@ -105,6 +105,21 @@ disables HTTPS immediately while the gateway continues serving HTTP.
 When you are finished, press `Ctrl+C` to stop the gateway and remove its PAC
 settings.
 
+## Storage locations
+
+| Purpose                          | Location                |
+| -------------------------------- | ----------------------- |
+| Global Upstream List             | XDG configuration home  |
+| Installed UserCA material        | XDG state home          |
+| Gateway lock and discovery state | XDG runtime directory   |
+| Directory Upstream List          | Start working directory |
+
+When upgrading from a version that used `~/.seamless-cors/runtime`, stop the
+older gateway first. That directory is not read, and its lock or discovery
+files are not migrated; after the old process has stopped, stale legacy files
+may be removed manually. Do not run old and new binaries concurrently, because
+their different lock paths can bypass mutual exclusion.
+
 ## Platform support
 
 The managed platform integrations currently target macOS and Windows.

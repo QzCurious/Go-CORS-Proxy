@@ -57,7 +57,7 @@ A typed client-facing layer used by CLI and future user interfaces to discover a
 _Avoid_: HTTP response leak, non-success-means-error, message-parsing client, command service, lifecycle client, generic JSON caller, managed gateway
 
 **Gateway Owner**:
-The module that holds the Gateway Ownership Lease and publishes Gateway Router discovery state for a long-running ownerless `serve` or `start` command or transient ownerless CA work. Once published, start, CA Lifecycle Commands, status, and stop address that owner, while competing serve fails.
+The module that holds the Gateway Ownership Lock and publishes Gateway Router discovery state for a long-running ownerless `serve` or `start` command or transient ownerless CA work. Once published, start, CA Lifecycle Commands, status, and stop address that owner, while competing serve fails.
 _Avoid_: daemon supervisor, client command, detached runtime owner, terminal command renderer
 
 **Gateway Host**:
@@ -189,7 +189,7 @@ A UserCA serialization rule where install and uninstall are rejected for explici
 _Avoid_: owner-exists-means-busy, queued CA mutation, concurrent CA mutation, blocked status
 
 **Ownership-Protected Status Assessment**:
-An ownerless Read-Only Status behavior that briefly holds the Gateway Ownership Lease without publishing Gateway Router discovery state, assesses Gateway and UserCA facts coherently, then releases the lease. If ownership acquisition loses a race, status rediscovers the new owner rather than combining facts across ownership generations.
+An ownerless Read-Only Status behavior that briefly holds the Gateway Ownership Lock without publishing Gateway Router discovery state, assesses Gateway and UserCA facts coherently, then releases the lock. If ownership acquisition loses a race, status rediscovers the new owner rather than combining facts across ownership generations.
 _Avoid_: Transient Gateway Owner for status, status-written discovery cache, unlocked multi-location CA assessment, status mutation
 
 **Settled-CA Start Admission**:
@@ -348,33 +348,33 @@ _Avoid_: active-generation owner, lifecycle manager, Upstream List admission mod
 A traffic rule where every CORS-bearing request reaching the Proxy Listener is eligible for repair: the calling page's Origin determines reflected response values but never admission, while Upstream List destination selection happens earlier through PAC Routing.
 _Avoid_: Allowed Origin, caller-origin allowlist, per-request Upstream List gate, CORS authorization
 
-**Gateway Coordination Home**:
-The fixed `.seamless-cors` location under the user's home directory used exclusively as the parent of durable Gateway Coordination state. The Global Upstream List and Installed CA Storage use their platform-native configuration and state homes instead.
-_Avoid_: Home Config Directory, platform-native app config directory, Global Upstream List directory, Installed CA Storage
-
-**Runtime State Directory**:
-The durable location under the Gateway Coordination Home for Gateway Coordination state, including the Gateway Ownership Lease file and Gateway State Cache.
-_Avoid_: temp runtime state, volatile cleanup files, miscellaneous runtime file storage
+**Gateway Runtime Directory**:
+The platform-native per-user XDG runtime location used by Gateway Coordination for the Gateway Ownership Lock and Gateway State Cache. It is selected once from the Gateway Coordination Environment, may be volatile, and is not persistent application data.
+_Avoid_: Gateway Coordination Home, XDG State Home, configuration directory, persistent state directory, legacy `.seamless-cors/runtime`
 
 **Gateway Coordination**:
-A lifecycle behavior that owns the Gateway Ownership Lease, Gateway State Cache operations, Gateway State Verification, and Single User Instance decisions while allowing lifecycle cleanup paths to remove cache state through Gateway Footprint Cleanup.
+A lifecycle behavior that owns the Gateway Ownership Lock, Gateway State Cache operations, Gateway State Verification, and Single User Instance decisions while allowing lifecycle cleanup paths to remove cache state through Gateway Footprint Cleanup.
 _Avoid_: Runtime Coordination, cleanup module, process supervisor, daemon manager, file-exists-is-running
+
+**Gateway Coordination Environment**:
+The Gateway process-startup environment that selects one XDG runtime location for the Gateway Ownership Lock and Gateway State Cache. Commands using a different runtime environment occupy a different coordination namespace and do not discover or contend with that owner.
+_Avoid_: cross-environment owner search, dynamic runtime relocation, legacy coordination fallback
 
 **Installed CA Storage**:
 The durable platform-native per-user application-state location for seamless-cors-owned Installed User CA material, selected by the UserCA Storage Environment and kept outside Gateway Footprint Cleanup.
-_Avoid_: Gateway Coordination Home, portable user data, runtime CA storage, temp CA files, stop-owned CA files
+_Avoid_: Gateway Runtime Directory, portable user data, runtime CA storage, temp CA files, stop-owned CA files
 
 **UserCA Storage Environment**:
 The Gateway Owner's process-startup environment that selects one authoritative Installed CA Storage location for owner-routed UserCA commands; an ownerless command uses the environment of the owner it establishes. Different storage environments are distinct UserCA identities and are not searched as alternative locations or compared by clients.
 _Avoid_: global per-user storage search, dynamic storage relocation, fallback CA directory
 
 **Gateway State Cache**:
-A durable gateway coordination cache that lets client commands discover and verify the Gateway Owner by its HTTP Router listener and token identity.
+A runtime coordination record that atomically publishes the active Gateway Router's ephemeral loopback listener and authentication token. Clients verify it through the authenticated health route; malformed or unreachable records are stale.
 _Avoid_: Runtime State File, control state, pid-only lock file, configured control address, in-memory instance registry, source of truth
 
-**Gateway Ownership Lease**:
-A process-lifetime, operating-system-backed exclusive lease that is the authoritative Single User Instance and CA lifecycle ownership signal. A contender must acquire it before verification, cleanup, publication, or ownerless CA work and fails immediately when another process holds it; the Gateway State Cache remains discovery data rather than ownership authority.
-_Avoid_: Gateway State Lease, cache ownership watcher, verify-then-claim, advisory lock, waiting owner queue
+**Gateway Ownership Lock**:
+The nonblocking OS-backed exclusive file lock held for the complete Gateway Owner lifetime. It is the authority for Single User Instance decisions; lock-file existence alone carries no ownership meaning.
+_Avoid_: Gateway State Lease, cache ownership watcher, verify-then-claim, waiting owner queue
 
 **Gateway State Verification**:
 A read-only Gateway Coordination behavior where an existing Gateway State Cache is checked through the HTTP Router before the gateway treats another Gateway Owner as active.
@@ -457,7 +457,7 @@ A user-facing cleanup behavior where failed cleanup explains that seamless-cors-
 _Avoid_: silent cleanup failure, false cleanup success, manual OS instructions first
 
 **Single User Instance**:
-A gateway ownership rule where only one Gateway Owner may run for a user at a time, with the Gateway State Cache used as the first signal that an owner may already be active.
+A gateway ownership rule where only one Gateway Owner may run in a Gateway Coordination Environment at a time, with the Gateway Ownership Lock as authority and the Gateway State Cache as verified discovery data.
 _Avoid_: multi-instance gateway, competing PAC state, port-based instance detection
 
 **Upstream List Creation**:
@@ -585,7 +585,7 @@ A CA Lifecycle Command behavior where work is sent to an existing Gateway Owner 
 _Avoid_: bypassing owner command authority, ownerless local mutation, separate CA Mutation Lease, separate readiness endpoint, blanket active-runtime rejection
 
 **Gateway Footprint Cleanup**:
-A lifecycle behavior that asks Managed PAC to uninstall stale or intentionally released marker-owned PAC state and independently removes the appropriate Gateway State Cache while leaving Installed User CA state untouched. Direct start holds the Gateway Ownership Lease while cleaning stale cache and PAC state, router-hosted start preserves its live owner cache, and stop removes both when ending ownership.
+A lifecycle behavior that asks Managed PAC to uninstall stale or intentionally released marker-owned PAC state and independently removes the appropriate Gateway State Cache while leaving Installed User CA state untouched. Direct start holds the Gateway Ownership Lock while cleaning stale cache and PAC state, router-hosted start preserves its live owner cache, and stop removes both when ending ownership.
 _Avoid_: unconditional cache removal, live-owner eviction, runtime cleanup, status cleanup, serve-start cleanup, broad cleanup, CA removal, restore-based cleanup
 
 **No PAC Restoration**:
@@ -928,11 +928,11 @@ QA engineer: "Only the Upstream List: one Host Selector or Origin Selector per l
 
 Developer: "Where do config files live by default?"
 
-QA engineer: "Gateway Coordination Home keeps them under `.seamless-cors` in the user's home directory."
+QA engineer: "The Global Upstream List uses the platform-native XDG configuration home, Installed CA Storage uses XDG state, Gateway coordination uses the XDG runtime directory, and the Directory Upstream List uses the exact Start working directory."
 
 Developer: "Where does the Gateway State Cache live?"
 
-QA engineer: "Runtime State Directory keeps runtime coordination state and product-owned cleanup files under the Gateway Coordination Home."
+QA engineer: "The Gateway State Cache lives with the Gateway Ownership Lock in the Gateway Runtime Directory selected by the Gateway Coordination Environment."
 
 Developer: "How do client commands find the Gateway Owner?"
 

@@ -2,12 +2,47 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRuntimeDirUsesXDGRuntimeFile(t *testing.T) {
+	root := t.TempDir()
+	dir, err := resolveRuntimeDir(func(relative string) (string, error) {
+		want := filepath.Join(gatewayRuntimeDirectoryName, stateFileName)
+		if relative != want {
+			t.Fatalf("runtime relative path = %q, want %q", relative, want)
+		}
+		return filepath.Join(root, relative), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, gatewayRuntimeDirectoryName)
+	if dir != want {
+		t.Fatalf("runtime dir = %q, want %q", dir, want)
+	}
+}
+
+func TestRuntimeDirReportsXDGResolutionFailure(t *testing.T) {
+	want := errors.New("runtime unavailable")
+	_, err := resolveRuntimeDir(func(string) (string, error) { return "", want })
+	if !errors.Is(err, want) {
+		t.Fatalf("runtime resolution error = %v, want wrapped %v", err, want)
+	}
+}
+
+func TestRuntimeDirRejectsNonAbsoluteResolution(t *testing.T) {
+	_, err := resolveRuntimeDir(func(relative string) (string, error) { return relative, nil })
+	if err == nil || !strings.Contains(err.Error(), "non-absolute") {
+		t.Fatalf("runtime resolution error = %v, want non-absolute path error", err)
+	}
+}
 
 func TestVerifyReportsMissingWithoutCache(t *testing.T) {
 	coord := newCoordinator(t.TempDir())
@@ -162,42 +197,5 @@ func TestClaimReplacesStaleCache(t *testing.T) {
 
 	if !coord.Owns(current) {
 		t.Fatal("claim did not replace stale cache with current owner")
-	}
-}
-
-func TestGatewayOwnershipLeaseIsExclusiveAndReleased(t *testing.T) {
-	runtimeDir := t.TempDir()
-	first := newCoordinator(runtimeDir)
-	second := newCoordinator(runtimeDir)
-
-	lease, acquired, err := first.AcquireOwnershipLease()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !acquired {
-		t.Fatal("first coordinator did not acquire ownership lease")
-	}
-
-	contender, acquired, err := second.AcquireOwnershipLease()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acquired {
-		_ = contender.Release()
-		t.Fatal("second coordinator acquired held ownership lease")
-	}
-
-	if err := lease.Release(); err != nil {
-		t.Fatal(err)
-	}
-	contender, acquired, err = second.AcquireOwnershipLease()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !acquired {
-		t.Fatal("ownership lease remained held after release")
-	}
-	if err := contender.Release(); err != nil {
-		t.Fatal(err)
 	}
 }

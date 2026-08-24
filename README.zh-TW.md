@@ -90,6 +90,19 @@ gateway 仍會繼續處理 HTTP。
 
 使用完畢後，按下 `Ctrl+C` 停止服務；seamless-cors 也會一併移除它設定的 PAC。
 
+## 儲存位置
+
+| 用途                              | 位置                    |
+| --------------------------------- | ----------------------- |
+| Global Upstream List              | XDG 設定目錄             |
+| Installed UserCA material         | XDG state 目錄           |
+| Gateway lock 與 discovery state   | XDG runtime 目錄         |
+| Directory Upstream List           | Start 工作目錄           |
+
+若從使用 `~/.seamless-cors/runtime` 的舊版本升級，請先停止舊 gateway。新版不會
+讀取該目錄，也不會搬移其中的 lock 或 discovery 檔案；舊程序停止後，可手動移除
+殘留的舊檔案。請勿同時執行新舊版本，因為兩者使用不同 lock 路徑，可能繞過互斥保護。
+
 ## 支援平台
 
 目前會自動設定系統代理的版本以 macOS 與 Windows 為主。

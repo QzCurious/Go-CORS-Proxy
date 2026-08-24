@@ -19,8 +19,8 @@ func StartRouterHosted(ctx context.Context, request StartRequest) (StartResult, 
 	return target.client.Start(ctx, request)
 }
 
-// Stop discovers and stops the live owner, or cleans durable gateway state
-// locally when no owner can be reached.
+// Stop discovers and stops the live owner, or cleans the ownerless Gateway
+// Footprint locally when no owner can be reached.
 func Stop(ctx context.Context) (StopResult, error) {
 	return stop(ctx, openSystemManagedPAC())
 }
@@ -53,7 +53,7 @@ func stop(ctx context.Context, pac managedPACModule) (StopResult, error) {
 }
 
 // GatewayStatus returns live owner status when available and otherwise
-// inspects local durable state.
+// inspects local Gateway coordination and OS-managed state.
 func Status(ctx context.Context) (StatusResult, error) {
 	return status(ctx, openSystemManagedPAC(), nil)
 }
@@ -73,7 +73,7 @@ func status(ctx context.Context, pac managedPACModule, ca userCAModule) (StatusR
 	if err != nil {
 		return StatusResult{}, err
 	}
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		return StatusResult{}, err
 	}
@@ -87,7 +87,7 @@ func status(ctx context.Context, pac managedPACModule, ca userCAModule) (StatusR
 		}
 		return StatusResult{Kind: StatusResultOwnerTransition}, nil
 	}
-	defer lease.Release()
+	defer lock.Release()
 	lifecycle, err := newLifecycle(pac, ca, coord, "")
 	if err != nil {
 		return StatusResult{}, err
@@ -168,7 +168,7 @@ func runTransient[T any](
 	if err != nil {
 		return result, nil, err
 	}
-	lease, acquired, err := coord.AcquireOwnershipLease()
+	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
 		return result, nil, err
 	}
@@ -182,18 +182,18 @@ func runTransient[T any](
 		}
 		return result, nil, fmt.Errorf("%w; retry command", errOwnerTransition)
 	}
-	releaseLease := true
+	releaseLock := true
 	defer func() {
-		if releaseLease {
-			err = errors.Join(err, lease.Release())
+		if releaseLock {
+			err = errors.Join(err, lock.Release())
 		}
 	}()
 	owner, err := newTransientOwnerWithCoordinator(openSystemManagedPAC(), ca, coord)
 	if err != nil {
 		return result, nil, err
 	}
-	owner.lease = lease
-	releaseLease = false
+	owner.lock = lock
+	releaseLock = false
 	owner.lifecycle.mu.Lock()
 	owner.lifecycle.transientOwner = true
 	owner.lifecycle.caMutating = true
@@ -203,8 +203,8 @@ func runTransient[T any](
 	go func() { routerErr <- owner.router.Serve(owner.listener) }()
 	if err := coord.Claim(owner.cache); err != nil {
 		_ = owner.router.Close(context.Background())
-		_ = lease.Release()
-		owner.lease = nil
+		_ = lock.Release()
+		owner.lock = nil
 		return result, nil, err
 	}
 
@@ -215,11 +215,11 @@ func runTransient[T any](
 	owner.lifecycle.mu.Unlock()
 	closeErr := owner.router.Close(context.Background())
 	removeErr := coord.RemoveOwned(owner.cache)
-	leaseErr := lease.Release()
-	owner.lease = nil
+	lockErr := lock.Release()
+	owner.lock = nil
 	serveErr := <-routerErr
 	if serveErr != nil && serveErr != http.ErrServerClosed {
 		closeErr = errors.Join(closeErr, serveErr)
 	}
-	return result, nil, errors.Join(operationErr, closeErr, removeErr, leaseErr)
+	return result, nil, errors.Join(operationErr, closeErr, removeErr, lockErr)
 }
