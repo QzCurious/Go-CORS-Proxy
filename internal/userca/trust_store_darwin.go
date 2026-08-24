@@ -19,16 +19,6 @@ type darwinTrustStore struct {
 	keychainPath string
 }
 
-type commandRunner interface {
-	run(ctx context.Context, name string, args ...string) ([]byte, error)
-}
-
-type execRunner struct{}
-
-func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
-}
-
 func newTrustStore() trustStore {
 	return &darwinTrustStore{runner: execRunner{}}
 }
@@ -57,7 +47,7 @@ func (s *darwinTrustStore) Trust(ctx context.Context, certificatePEM []byte) err
 }
 
 func (s *darwinTrustStore) TrustedCertificates(ctx context.Context) ([]trustedCertificate, error) {
-	out, err := s.security(ctx, "find-certificate", "-a", "-c", commonName, "-p", "-Z", s.keychain())
+	out, err := s.security(ctx, "find-certificate", "-a", "-c", ownedCACommonName, "-p", "-Z", s.keychain())
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "could not be found") ||
 			strings.Contains(strings.ToLower(string(out)), "could not be found") {
@@ -149,4 +139,14 @@ func isTrustApprovalDenied(err error) bool {
 		strings.Contains(text, "authorization has been denied") ||
 		strings.Contains(text, "user canceled") ||
 		strings.Contains(text, "user cancelled")
+}
+
+type commandRunner interface {
+	run(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+type execRunner struct{}
+
+func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }

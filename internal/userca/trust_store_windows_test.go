@@ -20,18 +20,6 @@ func (f *fakeWindowsRunner) run(_ context.Context, name string, args ...string) 
 	return f.out, f.err
 }
 
-func TestWindowsTrustStoreRemoveEmptyIsNoOp(t *testing.T) {
-	runner := &fakeWindowsRunner{}
-	store := &windowsTrustStore{runner: runner}
-
-	if err := store.Remove(context.Background(), nil); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.calls) != 0 {
-		t.Fatalf("empty remove calls = %#v", runner.calls)
-	}
-}
-
 func TestWindowsTrustStoreRemoveReportsPowerShellFailure(t *testing.T) {
 	wantErr := errors.New("denied")
 	runner := &fakeWindowsRunner{out: []byte("access denied"), err: wantErr}

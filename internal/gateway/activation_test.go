@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testing.T) {
@@ -314,7 +313,7 @@ func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ca := &fakeUserCA{
-		installResult: userca.NewMutationResult(testUserCAState(t, time.Now().Add(24*time.Hour), false), true),
+		installState: testUserCAState(t, time.Now().Add(24*time.Hour), false),
 	}
 	lifecycle, err := newLifecycle(
 		&lifecycleTestSystemSettings{},
@@ -350,9 +349,9 @@ func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(engine)
-	engine.SetInitialHTTPSAssessment(userca.CurrentState{}, nil)
+	engine.SetInitialHTTPSAssessment(userCAState{}, nil)
 	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
-	ca := &fakeUserCA{installResult: userca.NewMutationResult(installed, true)}
+	ca := &fakeUserCA{installState: installed}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -381,9 +380,9 @@ func TestInstallWithdrawsHTTPSBeforeUserCAMutation(t *testing.T) {
 	var inactiveDuringInstall bool
 	ca := &fakeUserCA{
 		state: installed,
-		install: func(context.Context) (userca.MutationResult, error) {
+		install: func(context.Context) (userCAState, error) {
 			inactiveDuringInstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
-			return userca.NewMutationResult(installed, false), nil
+			return installed, nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -397,7 +396,7 @@ func TestInstallWithdrawsHTTPSBeforeUserCAMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != InstallResultAlreadyUsable || !inactiveDuringInstall || pipelineReadiness(engine.snapshot().HTTPSPipeline) != HTTPSReadinessReady {
+	if result.Kind != InstallResultInstalled || !inactiveDuringInstall || pipelineReadiness(engine.snapshot().HTTPSPipeline) != HTTPSReadinessReady {
 		t.Fatalf("install = %#v inactive during mutation %t runtime = %#v", result, inactiveDuringInstall, engine.snapshot())
 	}
 }
@@ -549,11 +548,11 @@ func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
 	}
 	var inspectCalls atomic.Int32
 	ca := &fakeUserCA{
-		inspect: func(context.Context) (userca.CurrentState, error) {
+		inspect: func(context.Context) (userCAState, error) {
 			if inspectCalls.Add(1) == 1 {
 				return assessment, nil
 			}
-			return userca.CurrentState{}, nil
+			return userCAState{}, nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -583,13 +582,13 @@ func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userca.MutationResult, error) {
+		install: func(ctx context.Context) (userCAState, error) {
 			if ctx.Err() != nil {
-				return userca.MutationResult{}, ctx.Err()
+				return userCAState{}, ctx.Err()
 			}
 			close(entered)
 			<-release
-			return userca.NewMutationResult(userca.CurrentState{}, true), nil
+			return userCAState{}, nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -649,10 +648,10 @@ func TestAdmittedCAOperationIgnoresRequestCancellation(t *testing.T) {
 	requestCtx, cancel := context.WithCancel(context.Background())
 	observed := make(chan error, 1)
 	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userca.MutationResult, error) {
+		install: func(ctx context.Context) (userCAState, error) {
 			cancel()
 			observed <- ctx.Err()
-			return userca.MutationResult{}, nil
+			return userCAState{}, nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -680,9 +679,9 @@ func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) 
 	var inactiveDuringUninstall bool
 	ca := &fakeUserCA{
 		state: installed,
-		uninstall: func(context.Context) (userca.MutationResult, error) {
+		uninstall: func(context.Context) error {
 			inactiveDuringUninstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
-			return userca.NewMutationResult(userca.CurrentState{}, true), nil
+			return nil
 		},
 	}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
@@ -782,22 +781,21 @@ func pipelineReadiness(pipeline *HTTPSPipelineDetail) HTTPSReadinessStatus {
 }
 
 type fakeUserCA struct {
-	mu              sync.Mutex
-	state           userca.CurrentState
-	inspectErr      error
-	inspect         func(context.Context) (userca.CurrentState, error)
-	installResult   userca.MutationResult
-	installErr      error
-	uninstallResult userca.MutationResult
-	uninstallErr    error
-	install         func(context.Context) (userca.MutationResult, error)
-	uninstall       func(context.Context) (userca.MutationResult, error)
-	inspectCalls    int
-	installCalls    int
-	uninstallCalls  int
+	mu             sync.Mutex
+	state          userCAState
+	inspectErr     error
+	inspect        func(context.Context) (userCAState, error)
+	installState   userCAState
+	installErr     error
+	uninstallErr   error
+	install        func(context.Context) (userCAState, error)
+	uninstall      func(context.Context) error
+	inspectCalls   int
+	installCalls   int
+	uninstallCalls int
 }
 
-func (f *fakeUserCA) Inspect(ctx context.Context) (userca.CurrentState, error) {
+func (f *fakeUserCA) Inspect(ctx context.Context) (userCAState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inspectCalls++
@@ -807,40 +805,40 @@ func (f *fakeUserCA) Inspect(ctx context.Context) (userca.CurrentState, error) {
 	return f.state, f.inspectErr
 }
 
-func (f *fakeUserCA) Install(ctx context.Context) (userca.MutationResult, error) {
+func (f *fakeUserCA) Install(ctx context.Context) (userCAState, error) {
 	f.mu.Lock()
 	f.installCalls++
 	operation := f.install
-	result, err := f.installResult, f.installErr
+	state, err := f.installState, f.installErr
 	f.mu.Unlock()
 	if operation != nil {
 		return operation(ctx)
 	}
-	return result, err
+	return state, err
 }
 
-func (f *fakeUserCA) Uninstall(ctx context.Context) (userca.MutationResult, error) {
+func (f *fakeUserCA) Uninstall(ctx context.Context) error {
 	f.mu.Lock()
 	f.uninstallCalls++
 	operation := f.uninstall
-	result, err := f.uninstallResult, f.uninstallErr
+	err := f.uninstallErr
 	f.mu.Unlock()
 	if operation != nil {
 		return operation(ctx)
 	}
-	return result, err
+	return err
 }
 
 type emptyTestUserCA struct{}
 
-func (emptyTestUserCA) Inspect(context.Context) (userca.CurrentState, error) {
-	return userca.CurrentState{}, nil
+func (emptyTestUserCA) Inspect(context.Context) (userCAState, error) {
+	return userCAState{}, nil
 }
-func (emptyTestUserCA) Install(context.Context) (userca.MutationResult, error) {
-	return userca.MutationResult{}, nil
+func (emptyTestUserCA) Install(context.Context) (userCAState, error) {
+	return userCAState{}, nil
 }
-func (emptyTestUserCA) Uninstall(context.Context) (userca.MutationResult, error) {
-	return userca.MutationResult{}, nil
+func (emptyTestUserCA) Uninstall(context.Context) error {
+	return nil
 }
 
 type lifecycleTestSystemSettings struct {
@@ -869,7 +867,7 @@ func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, servi
 		return *f.installResult, f.installErr
 	}
 	return managedpac.NewInstallResult(
-		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), managedpac.PACURL(pacListen, 1)),
+		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), "http://"+pacListen+"/seamless-cors.pac?v=1"),
 		sortedUniqueServiceNames(services),
 		nil,
 	), f.installErr

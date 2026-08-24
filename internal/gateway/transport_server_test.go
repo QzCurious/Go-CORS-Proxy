@@ -267,9 +267,9 @@ func (f *fakeCommandHandler) Status(context.Context, bool) (StatusResult, error)
 }
 
 func (f *fakeCommandHandler) Install(context.Context) (InstallResult, error) {
-	return InstallResult{Kind: InstallResultAlreadyUsable}, nil
+	return InstallResult{Kind: InstallResultInstalled}, nil
 }
 
 func (f *fakeCommandHandler) UninstallWithConsent(context.Context, string) (UninstallResult, error) {
-	return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
+	return UninstallResult{Kind: UninstallResultUninstalled}, nil
 }

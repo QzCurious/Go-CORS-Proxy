@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
@@ -40,10 +39,10 @@ func TestOwnerlessInstallPublishesTransientOwnerAndFailsCompetingWorkFast(t *tes
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	ca := &fakeUserCA{
-		install: func(context.Context) (userca.MutationResult, error) {
+		install: func(context.Context) (userCAState, error) {
 			close(entered)
 			<-release
-			return userca.NewMutationResult(userca.CurrentState{}, true), nil
+			return userCAState{}, nil
 		},
 	}
 	done := make(chan error, 1)

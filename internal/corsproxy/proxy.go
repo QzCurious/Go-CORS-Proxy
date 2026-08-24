@@ -15,8 +15,8 @@ import (
 
 const certificateCacheCapacity = 128
 
-// New forms one immutable proxy generation. Gateway owns publication and
-// lifecycle; the returned handler owns only request behavior.
+// New constructs one immutable proxy handler. Gateway owns handler generation
+// publication and lifecycle; the returned handler owns only request behavior.
 func New(
 	transport *http.Transport,
 	certificate *tls.Certificate,

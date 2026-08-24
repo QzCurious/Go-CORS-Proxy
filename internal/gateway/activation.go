@@ -7,7 +7,6 @@ import (
 	"slices"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 var errStartCAMutating = errors.New("UserCA is mutating during HTTPS pipeline admission")
@@ -107,7 +106,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 
 	publishRuntime := func() error {
 		state := engine.snapshot()
-		var assessment userca.CurrentState
+		var assessment userCAState
 		var assessmentErr error
 		if state.HTTPSPipeline != nil {
 			// Only an intent-admitted pipeline inspects UserCA for runtime use.

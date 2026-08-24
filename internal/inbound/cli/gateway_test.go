@@ -412,20 +412,20 @@ func TestStatusRendersOwnerEndingGuidance(t *testing.T) {
 func TestInstallAndUninstallCommandsRenderResults(t *testing.T) {
 	var out bytes.Buffer
 	if err := installCAWithCommand(context.Background(), &out, func(context.Context) (gateway.InstallResult, error) {
-		return gateway.InstallResult{Kind: gateway.InstallResultAlreadyUsable}, nil
+		return gateway.InstallResult{Kind: gateway.InstallResultInstalled}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "already usable") || strings.Contains(out.String(), "https-readiness:") {
+	if !strings.Contains(out.String(), "User CA is installed.") || strings.Contains(out.String(), "https-readiness:") {
 		t.Fatalf("install output = %q", out.String())
 	}
 	out.Reset()
 	if err := uninstallCAWithCommand(context.Background(), strings.NewReader(""), &out, func(context.Context, gateway.UninstallRequest) (gateway.UninstallResult, error) {
-		return gateway.UninstallResult{Kind: gateway.UninstallResultAlreadyAbsent}, nil
+		return gateway.UninstallResult{Kind: gateway.UninstallResultUninstalled}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "already absent") {
+	if !strings.Contains(out.String(), "User CA is uninstalled.") {
 		t.Fatalf("uninstall output = %q", out.String())
 	}
 }
@@ -462,7 +462,7 @@ func TestUninstallConfirmsOnlyWhenHTTPSIsActive(t *testing.T) {
 		t.Fatalf("uninstall requests = %#v", calls)
 	}
 	if !strings.Contains(out.String(), "HTTPS interception is active") ||
-		!strings.Contains(out.String(), "Installed User CA uninstalled") {
+		!strings.Contains(out.String(), "User CA is uninstalled.") {
 		t.Fatalf("uninstall output = %q", out.String())
 	}
 }

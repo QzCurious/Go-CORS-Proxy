@@ -169,8 +169,8 @@ A CA lifecycle rule where valid UserCA material is reused, its missing trust or 
 _Avoid_: overlapping roots, proxy-failure-triggered replacement, trusting invalid material, start-time repair, UserCA-owned HTTPS coordination
 
 **UserCA Installation**:
-The explicit UserCA operation that installs, repairs, or renews the current user's seamless-cors authority and requests platform approval only when trust must be added or replaced. It is independent of the Upstream List; when a live Gateway has an active HTTPS Pipeline, Gateway settles the resulting HTTPS Pipeline Detail before returning it separately from the fulfilled CA mutation outcome, while install without HTTPS Intent has no runtime HTTPS consequence.
-_Avoid_: start-time CA installation, activation-owned CA setup, asynchronous live-install reconciliation, list-bound install result, repeated trust prompt, implicit trust repair
+The explicit UserCA operation that ensures the current user's seamless-cors authority is usable by reusing, repairing, or renewing it and requests platform approval only when trust must be added or replaced. Its fulfilled outcome reports that postcondition without exposing which reconciliation path occurred; when a live Gateway has an active HTTPS Pipeline, Gateway settles and returns the resulting HTTPS Pipeline Detail separately, while install without HTTPS Intent has no runtime HTTPS consequence.
+_Avoid_: start-time CA installation, activation-owned CA setup, asynchronous live-install reconciliation, list-bound install result, mutation-reporting install outcome, repeated trust prompt, implicit trust repair
 
 **Owner-Owned CA Mutation**:
 An admitted install or uninstall belongs to the Gateway Owner and settles independently of request cancellation or client disconnection. Owner Stop waits for it, while process interruption leaves an assessable single-pair footprint that the next install or uninstall reconciles.
@@ -197,15 +197,15 @@ An owner-coordinated startup boundary used only when initial HTTPS Intent admits
 _Avoid_: runtime boot from mutating CA state, marker polling, UserCA-owned runtime coordination
 
 **Installed UserCA Pair**:
-The one seamless-cors-owned certificate and matching private key represented in current-user OS trust and local authority storage. A usable state has exactly one matching trusted identity; replacement does not preserve an overlapping old authority.
-_Avoid_: authority generation set, active marker, permanent multiple UserCAs, overlapping trusted identities
+The one seamless-cors-owned certificate and matching private key represented in current-user OS trust and local authority storage. A usable state has exactly one matching trusted identity; replacement does not preserve an overlapping old authority. UserCA exposes only current facts and retains no version, generation, or authority history.
+_Avoid_: authority history, active marker, permanent multiple UserCAs, overlapping trusted identities
 
 **UserCA Signing Material**:
 The immutable Installed UserCA Pair certificate and matching private signer that always accompanies a usable UserCA Current State. An active HTTPS Pipeline retains this material when HTTPS Readiness is ready and supplies it to CORS Proxy; without HTTPS Intent, Gateway Runtime does not inspect or retain it, while goproxy owns per-host leaf generation and its connection-local failures.
 _Avoid_: HTTPS Certificate Provider, HTTPS Provider Source, list-bounded signer, selector certificate set, Gateway leaf generator
 
 **MITM Proxy Generation**:
-An immutable goproxy handler bound to one UserCA Signing Material generation. Gateway atomically replaces the handler behind its stable Proxy Listener; admitted connections may retain the previous generation, while PAC changes only when HTTPS routes change.
+An immutable goproxy handler bound to one UserCA Signing Material instance. Gateway atomically replaces the handler behind its stable Proxy Listener; admitted connections may retain the previous proxy generation, while PAC changes only when HTTPS routes change.
 _Avoid_: mutable in-place CA swap, proxy-listener rotation, CA-rotation PAC rewrite
 
 **CA Material Integrity**:
@@ -317,7 +317,7 @@ A host-local general proxy endpoint that accepts traffic independently of PAC Ro
 _Avoid_: Upstream-gated proxy, PAC-only proxy, per-host interception gate, LAN-exposed proxy, gatewayListen
 
 **CORS Proxy**:
-The traffic-behavior module that forms immutable proxy generations owning CORS repair, Local Preflight Answer, Response Repair, and Trusted HTTPS Interception behavior for traffic reaching the Proxy Listener. Gateway Runtime owns generation publication and lifecycle.
+The traffic-behavior module that constructs immutable proxy handlers owning CORS repair, Local Preflight Answer, Response Repair, and Trusted HTTPS Interception behavior for traffic reaching the Proxy Listener. Gateway Runtime owns proxy generation publication and lifecycle.
 _Avoid_: active-generation owner, lifecycle manager, Upstream List admission module, PAC Routing module, generic proxy
 
 **CORS Repair Scope**:
@@ -533,7 +533,7 @@ A confirmation required before UserCA uninstall disables active Trusted HTTPS In
 _Avoid_: certificate-bound consent, active-runtime uninstall block, unconditional uninstall prompt, partial UserCA removal, implicit consent
 
 **Live UserCA Uninstall**:
-A confirmed UserCA uninstall behavior where Gateway first adopts and serves the no-HTTPS PAC Projection, then atomically installs direct-tunnel CONNECT behavior and cancels its deadline timer before UserCA removes owned CA material and OS trust. Gateway does not wait for asynchronous Managed PAC Reconciliation before deactivating the proxy. Successful removal adopts the returned not-usable snapshot; failed or incomplete removal leaves HTTPS not-ready without restoring the previous signing material, and recovery requires explicit install or an uninstall retry.
+A confirmed UserCA uninstall behavior where Gateway first adopts and serves the no-HTTPS PAC Projection, then atomically installs direct-tunnel CONNECT behavior and cancels its deadline timer before UserCA removes owned CA material and OS trust. Gateway does not wait for asynchronous Managed PAC Reconciliation before deactivating the proxy. Successful verified removal establishes the absent UserCA state; failed or incomplete removal leaves HTTPS not-ready without restoring the previous signing material, and recovery requires explicit install or an uninstall retry.
 _Avoid_: trust removal before proxy deactivation, automatic signing-material restoration, partial-failure HTTPS recovery, uninstall-owned PAC coordination
 
 **Upstream-Independent CA Uninstall**:
@@ -541,8 +541,8 @@ A CA lifecycle command boundary where removing the Installed User CA does not mo
 _Avoid_: uninstall editing HTTPS Intent, config-coupled removal
 
 **Idempotent CA Uninstall**:
-A CA lifecycle command behavior where uninstalling reports already-absent seamless-cors-owned CA trust and local CA material as success without changing configuration or requiring repair.
-_Avoid_: missing-CA uninstall failure, forced repair before removal, noisy no-op uninstall
+A CA lifecycle command behavior where uninstalling reports the absent postcondition as one fulfilled outcome whether or not seamless-cors-owned CA trust or local CA material was present. It does not change configuration or require repair.
+_Avoid_: already-absent result kind, mutation-reporting uninstall outcome, missing-CA uninstall failure, forced repair before removal, noisy no-op uninstall
 
 **Complete CA Uninstall**:
 A CA lifecycle invariant where uninstall removes all seamless-cors-owned current-user CA trust and the complete Installed UserCA Pair, then reports success only after those facts are absent from the selected UserCA Storage Environment. Material in another or legacy storage environment is outside the command's discovery and cleanup scope.

@@ -89,7 +89,7 @@ func (s *windowsSystemSettings) DisableOwned(ctx context.Context, serviceNames [
 	if err != nil {
 		return err
 	}
-	if len(snapshots) != 1 || !IsOwnedURL(snapshots[0].PACURL) {
+	if len(snapshots) != 1 || !isOwnedURL(snapshots[0].PACURL) {
 		return nil
 	}
 	script := fmt.Sprintf(`

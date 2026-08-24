@@ -4,33 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
-	"runtime"
 )
-
-func writeDurableFile(path string, data []byte, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return errors.Join(file.Sync(), file.Close())
-}
-
-var syncDirectory = syncDirectoryPlatform
-
-func syncDirectoryPlatform(path string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	return errors.Join(dir.Sync(), dir.Close())
-}
 
 func hasOwnedMaterial(dir string) (bool, error) {
 	if _, err := os.Stat(dir); err == nil {

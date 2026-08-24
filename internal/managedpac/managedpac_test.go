@@ -82,7 +82,7 @@ func (f *fakeSettings) DisableOwned(_ context.Context, serviceNames []string) er
 	selected := stringSet(serviceNames)
 	for index := range f.states {
 		state := &f.states[index]
-		if _, ok := selected[state.ServiceName]; ok && state.Enabled && IsOwnedURL(state.PACURL) {
+		if _, ok := selected[state.ServiceName]; ok && state.Enabled && isOwnedURL(state.PACURL) {
 			state.Enabled = false
 		}
 	}
@@ -175,8 +175,8 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 		"http://proxy.example.test/seamless-cors.pac":    false,
 	}
 	for raw, want := range tests {
-		if got := IsOwnedURL(raw); got != want {
-			t.Fatalf("IsOwnedURL(%q) = %t, want %t", raw, got, want)
+		if got := isOwnedURL(raw); got != want {
+			t.Fatalf("isOwnedURL(%q) = %t, want %t", raw, got, want)
 		}
 	}
 }
@@ -190,7 +190,7 @@ func TestProjectionInstallsCompletePAC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := module.PublicationGeneration(); got != 1 {
+	if got := publicationGeneration(module); got != 1 {
 		t.Fatalf("initial publication generation = %d, want 1", got)
 	}
 	settings.mu.Lock()
@@ -210,7 +210,7 @@ func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	}
 	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
 	waitForWrite(t, settings, "v=2")
-	if got := module.PublicationGeneration(); got != 2 {
+	if got := publicationGeneration(module); got != 2 {
 		t.Fatalf("publication generation = %d, want 2", got)
 	}
 }
@@ -289,7 +289,7 @@ func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *t
 	if len(writes) < 2 {
 		t.Fatalf("writes after retry = %v", writes)
 	}
-	if got := module.PublicationGeneration(); got < 3 {
+	if got := publicationGeneration(module); got < 3 {
 		t.Fatalf("retry did not consume a new generation: %d", got)
 	}
 }
@@ -381,10 +381,16 @@ func waitForGeneration(t *testing.T, module *ManagedPAC, want uint64) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if module.PublicationGeneration() >= want {
+		if publicationGeneration(module) >= want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("publication generation did not reach %d", want)
+}
+
+func publicationGeneration(module *ManagedPAC) uint64 {
+	module.mu.Lock()
+	defer module.mu.Unlock()
+	return module.publicationGeneration
 }

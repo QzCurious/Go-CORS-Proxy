@@ -84,7 +84,6 @@ type stopFailureDetails struct {
 }
 
 type installSuccessBody struct {
-	Changed            bool                 `json:"changed"`
 	InstalledCAExpires time.Time            `json:"installedCAExpires"`
 	HTTPSPipeline      *HTTPSPipelineDetail `json:"httpsPipeline,omitempty"`
 }
@@ -94,9 +93,7 @@ type installFailureDetails struct {
 	HTTPSPipeline      *HTTPSPipelineDetail `json:"httpsPipeline,omitempty"`
 }
 
-type uninstallSuccessBody struct {
-	Changed bool `json:"changed"`
-}
+type uninstallSuccessBody struct{}
 
 type uninstallFailureDetails struct {
 	ConsentFingerprint string              `json:"consentFingerprint,omitempty"`
@@ -203,15 +200,11 @@ func (dto stopFailureDetails) semantic(kind StopResultKind) StopResult {
 }
 
 func installSuccessBodyFrom(result InstallResult) installSuccessBody {
-	return installSuccessBody{Changed: result.Kind == InstallResultInstalled, InstalledCAExpires: result.InstalledCAExpires, HTTPSPipeline: result.HTTPSPipeline}
+	return installSuccessBody{InstalledCAExpires: result.InstalledCAExpires, HTTPSPipeline: result.HTTPSPipeline}
 }
 
 func (dto installSuccessBody) semantic() InstallResult {
-	kind := InstallResultAlreadyUsable
-	if dto.Changed {
-		kind = InstallResultInstalled
-	}
-	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires, HTTPSPipeline: dto.HTTPSPipeline}
+	return InstallResult{Kind: InstallResultInstalled, InstalledCAExpires: dto.InstalledCAExpires, HTTPSPipeline: dto.HTTPSPipeline}
 }
 
 func installFailureDetailsFrom(result InstallResult) installFailureDetails {
@@ -223,15 +216,11 @@ func (dto installFailureDetails) semantic(kind InstallResultKind) InstallResult 
 }
 
 func uninstallSuccessBodyFrom(result UninstallResult) uninstallSuccessBody {
-	return uninstallSuccessBody{Changed: result.Kind == UninstallResultUninstalled}
+	return uninstallSuccessBody{}
 }
 
 func (dto uninstallSuccessBody) semantic() UninstallResult {
-	kind := UninstallResultAlreadyAbsent
-	if dto.Changed {
-		kind = UninstallResultUninstalled
-	}
-	return UninstallResult{Kind: kind}
+	return UninstallResult{Kind: UninstallResultUninstalled}
 }
 
 func uninstallFailureDetailsFrom(result UninstallResult) uninstallFailureDetails {

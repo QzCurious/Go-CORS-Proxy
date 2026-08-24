@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
@@ -339,7 +338,7 @@ func TestInstalledUserCASettlesActivePipelineAndPublishesHTTPSPACInput(t *testin
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	runtime.SetInitialHTTPSAssessment(userca.CurrentState{}, nil)
+	runtime.SetInitialHTTPSAssessment(userCAState{}, nil)
 	pipeline := runtime.AdoptInstalledUserCA(testUserCAState(t, time.Now().Add(24*time.Hour), false))
 	state := runtime.snapshot()
 	if pipeline == nil || pipeline.Readiness != HTTPSReadinessReady || !runtime.interceptionActive() {
@@ -397,15 +396,15 @@ func TestDeadlineMovesCurrentReadyPipelineBackToAssessing(t *testing.T) {
 
 func TestHTTPSPipelineDetailsPreserveTheirSource(t *testing.T) {
 	expiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
-	notUsable := settledHTTPSPipeline(userca.CurrentState{}, nil)
+	notUsable := settledHTTPSPipeline(userCAState{}, nil)
 	if notUsable.UnmetIntent == nil || notUsable.UserCAAssessmentIssue != nil {
 		t.Fatalf("not-usable detail = %#v", notUsable)
 	}
-	assessmentIssue := settledHTTPSPipeline(userca.CurrentState{}, context.DeadlineExceeded)
+	assessmentIssue := settledHTTPSPipeline(userCAState{}, context.DeadlineExceeded)
 	if assessmentIssue.UserCAAssessmentIssue == nil || assessmentIssue.UnmetIntent != nil {
 		t.Fatalf("assessment issue = %#v", assessmentIssue)
 	}
-	invalidUsable := settledHTTPSPipeline(userca.CurrentState{Usable: true, ExpiresAt: expiry}, nil)
+	invalidUsable := settledHTTPSPipeline(userCAState{Usable: true, ExpiresAt: expiry}, nil)
 	if invalidUsable.Readiness == HTTPSReadinessReady || invalidUsable.UnmetIntent == nil {
 		t.Fatalf("usable state without signing material = %#v", invalidUsable)
 	}
@@ -550,13 +549,17 @@ func (c *closeTrackingConn) Close() error {
 	return c.Conn.Close()
 }
 
-func testUserCAState(t *testing.T, expiresAt time.Time, renewalDue bool) userca.CurrentState {
+func testUserCAState(t *testing.T, expiresAt time.Time, renewalDue bool) userCAState {
 	t.Helper()
-	current, err := userca.NewCurrentState(expiresAt, renewalDue, &tls.Certificate{})
-	if err != nil {
-		t.Fatal(err)
+	if expiresAt.IsZero() {
+		t.Fatal("test UserCA state requires expiry")
 	}
-	return current
+	return userCAState{
+		Usable:          true,
+		ExpiresAt:       expiresAt,
+		RenewalDue:      renewalDue,
+		signingMaterial: &tls.Certificate{},
+	}
 }
 
 func closeTrafficTestRuntime(runtime *trafficRuntime) {

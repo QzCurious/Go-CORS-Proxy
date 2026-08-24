@@ -2,13 +2,18 @@ package userca
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"os"
+	"time"
 )
 
-// inspectedState carries private reconciliation facts alongside CurrentState.
+const renewalWindow = 90 * 24 * time.Hour
+
+// inspectedState carries private reconciliation facts alongside State.
 type inspectedState struct {
-	current        CurrentState
+	current        State
 	authority      *authority
 	trusted        bool
 	ownedFacts     bool
@@ -16,15 +21,8 @@ type inspectedState struct {
 	authorityValid bool
 }
 
-// Inspect freshly derives one coherent CurrentState from the local pair and
-// current-user OS trust.
-func (u *CA) Inspect(ctx context.Context) (CurrentState, error) {
-	state, err := u.inspect(ctx)
-	return state.current, err
-}
-
 func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
-	// Phase 1: discover every owned trust and storage fact.
+	// Discover every owned trust and storage fact.
 	records, err := u.store.TrustedCertificates(ctx)
 	if err != nil {
 		return inspectedState{}, err
@@ -35,7 +33,7 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	}
 	state := inspectedState{ownedFacts: localFacts || len(records) > 0}
 
-	// Phase 2: load the one locally published authority pair.
+	// Load the one locally published authority pair.
 	active, err := loadAuthority(u.dir)
 	if err != nil {
 		if os.IsNotExist(err) || errors.Is(err, errInvalidAuthority) {
@@ -49,7 +47,7 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	}
 	state.ownedFacts = true
 
-	// Phase 3: establish validity, trust, and renewal facts.
+	// Establish validity, trust, and renewal facts.
 	state.authority = active
 	state.trusted = containsFingerprint(records, fingerprint)
 	state.renewalDue = !u.now().Add(renewalWindow).Before(active.cert.NotAfter)
@@ -66,10 +64,25 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 		return state, nil
 	}
 
-	// Phase 4: publish one coherent usable current state.
-	state.current, err = NewCurrentState(active.cert.NotAfter, state.renewalDue, material)
+	// Publish one coherent usable current state.
+	state.current, err = newState(active.cert.NotAfter, state.renewalDue, material)
 	if err != nil {
 		return inspectedState{}, err
 	}
 	return state, nil
+}
+
+func newState(expiresAt time.Time, renewalDue bool, signingMaterial *tls.Certificate) (State, error) {
+	if expiresAt.IsZero() {
+		return State{}, fmt.Errorf("usable UserCA current state requires expiry")
+	}
+	if signingMaterial == nil {
+		return State{}, fmt.Errorf("usable UserCA current state requires signing material")
+	}
+	return State{
+		Usable:          true,
+		ExpiresAt:       expiresAt,
+		RenewalDue:      renewalDue,
+		SigningMaterial: signingMaterial,
+	}, nil
 }

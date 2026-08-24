@@ -3,11 +3,10 @@ package userca
 import (
 	"context"
 	"crypto/x509"
-	"errors"
 	"time"
 )
 
-var ErrApprovalDenied = errors.New("certificate trust approval denied")
+const ownedCACommonName = "seamless-cors Local CA"
 
 type trustedCertificate struct {
 	Fingerprint    string
@@ -16,13 +15,16 @@ type trustedCertificate struct {
 }
 
 type trustStore interface {
+	// Returns trusted certificates matching the seamless-cors ownership footprint.
 	TrustedCertificates(ctx context.Context) ([]trustedCertificate, error)
+	// Adds a PEM certificate as a trusted root for the current user.
 	Trust(ctx context.Context, certificatePEM []byte) error
+	// Deletes trusted certificates by fingerprint from the current user's store.
 	Remove(ctx context.Context, fingerprints []string) error
 }
 
 func isStrictFootprint(cert *x509.Certificate) bool {
-	if cert.Subject.CommonName != commonName {
+	if cert.Subject.CommonName != ownedCACommonName {
 		return false
 	}
 	if !cert.IsCA || !cert.BasicConstraintsValid {

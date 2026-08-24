@@ -14,7 +14,6 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 type trafficRuntime struct {
@@ -221,7 +220,7 @@ func defaultProxyTransport() *http.Transport {
 
 // SetInitialHTTPSAssessment settles the pipeline admitted by the initial
 // Upstream List. Start skips UserCA inspection entirely when no pipeline exists.
-func (r *trafficRuntime) SetInitialHTTPSAssessment(current userca.CurrentState, assessmentErr error) bool {
+func (r *trafficRuntime) SetInitialHTTPSAssessment(current userCAState, assessmentErr error) bool {
 	r.mu.RLock()
 	generation := r.httpsGeneration
 	r.mu.RUnlock()
@@ -232,7 +231,7 @@ func (r *trafficRuntime) SetInitialHTTPSAssessment(current userca.CurrentState, 
 // AdoptInstalledUserCA invalidates any in-flight pipeline assessment and
 // settles the current pipeline from an explicit install result. Without HTTPS
 // Intent it has no runtime consequence.
-func (r *trafficRuntime) AdoptInstalledUserCA(current userca.CurrentState) *HTTPSPipelineDetail {
+func (r *trafficRuntime) AdoptInstalledUserCA(current userCAState) *HTTPSPipelineDetail {
 	r.httpsMu.Lock()
 	defer r.httpsMu.Unlock()
 	r.mu.Lock()
@@ -250,7 +249,7 @@ func (r *trafficRuntime) AdoptInstalledUserCA(current userca.CurrentState) *HTTP
 // DeactivateHTTPS is the live-uninstall linearization companion. It removes
 // HTTPS routes before publishing a direct generation. Without an admitted
 // pipeline the UserCA operation has no runtime HTTPS consequence.
-func (r *trafficRuntime) DeactivateHTTPS(current userca.CurrentState, assessmentErr error) {
+func (r *trafficRuntime) DeactivateHTTPS(current userCAState, assessmentErr error) {
 	r.httpsMu.Lock()
 	defer r.httpsMu.Unlock()
 	r.mu.Lock()
@@ -274,13 +273,13 @@ func (r *trafficRuntime) DeactivateHTTPS(current userca.CurrentState, assessment
 	}
 }
 
-func (r *trafficRuntime) settleHTTPSAssessment(generation uint64, current userca.CurrentState, assessmentErr error) (bool, bool) {
+func (r *trafficRuntime) settleHTTPSAssessment(generation uint64, current userCAState, assessmentErr error) (bool, bool) {
 	r.httpsMu.Lock()
 	defer r.httpsMu.Unlock()
 	return r.settleHTTPSAssessmentLocked(generation, current, assessmentErr)
 }
 
-func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, current userca.CurrentState, assessmentErr error) (bool, bool) {
+func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, current userCAState, assessmentErr error) (bool, bool) {
 	r.mu.Lock()
 	if r.httpsPipeline == nil || r.httpsGeneration != generation {
 		r.mu.Unlock()
@@ -703,7 +702,7 @@ func (r *trafficRuntime) httpsReadyLocked() bool {
 		r.httpsPipeline.Readiness == HTTPSReadinessReady
 }
 
-func settledHTTPSPipeline(current userca.CurrentState, assessmentErr error) *HTTPSPipelineDetail {
+func settledHTTPSPipeline(current userCAState, assessmentErr error) *HTTPSPipelineDetail {
 	detail := &HTTPSPipelineDetail{
 		Phase:     HTTPSPipelineSettled,
 		Readiness: HTTPSReadinessNotReady,

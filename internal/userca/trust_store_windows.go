@@ -23,16 +23,6 @@ type windowsTrustStore struct {
 	runner commandRunner
 }
 
-type commandRunner interface {
-	run(ctx context.Context, name string, args ...string) ([]byte, error)
-}
-
-type execRunner struct{}
-
-func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
-}
-
 func newTrustStore() trustStore {
 	return &windowsTrustStore{runner: execRunner{}}
 }
@@ -74,7 +64,7 @@ $records = @(
 		}
 )
 ConvertTo-Json -Compress -InputObject $records
-`, psQuote("CN="+commonName))
+`, psQuote("CN="+ownedCACommonName))
 	out, err := s.powershell(ctx, script)
 	if err != nil {
 		return nil, err
@@ -167,4 +157,14 @@ func parseExpiresAt(raw string, fallback time.Time) (time.Time, error) {
 
 func psQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+type commandRunner interface {
+	run(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+type execRunner struct{}
+
+func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }

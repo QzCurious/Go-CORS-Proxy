@@ -472,9 +472,7 @@ func renderStopResult(stdout io.Writer, result gateway.StopResult) {
 func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	switch result.Kind {
 	case gateway.InstallResultInstalled:
-		fmt.Fprintln(stdout, "Installed User CA installed.")
-	case gateway.InstallResultAlreadyUsable:
-		fmt.Fprintln(stdout, "Installed User CA is already usable.")
+		fmt.Fprintln(stdout, "User CA is installed.")
 	}
 	if result.HTTPSPipeline != nil {
 		fmt.Fprintf(stdout, "https-readiness: %s\n", result.HTTPSPipeline.Readiness)
@@ -488,9 +486,7 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 func renderUninstallResult(stdout io.Writer, result gateway.UninstallResult) {
 	switch result.Kind {
 	case gateway.UninstallResultUninstalled:
-		fmt.Fprintln(stdout, "Installed User CA uninstalled.")
-	case gateway.UninstallResultAlreadyAbsent:
-		fmt.Fprintln(stdout, "Installed User CA is already absent.")
+		fmt.Fprintln(stdout, "User CA is uninstalled.")
 	case gateway.UninstallResultConsentRequired:
 		fmt.Fprintln(stdout, "Installed User CA uninstall requires confirmation.")
 	case gateway.UninstallResultIncomplete:

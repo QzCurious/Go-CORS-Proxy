@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -16,6 +17,14 @@ import (
 	"strings"
 	"time"
 )
+
+const (
+	certFileName = "certificate.pem"
+	keyFileName  = "private-key.pem"
+	validity     = 5 * 365 * 24 * time.Hour
+)
+
+var errInvalidAuthority = errors.New("UserCA authority material is invalid")
 
 // authority is the one locally persisted certificate and private-key pair.
 type authority struct {
@@ -32,10 +41,11 @@ func createAuthority(dir string, now func() time.Time) (*authority, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	createdAt := now()
 	template := &x509.Certificate{
 		SerialNumber:          big.NewInt(createdAt.UnixNano()),
-		Subject:               pkix.Name{CommonName: commonName},
+		Subject:               pkix.Name{CommonName: ownedCACommonName},
 		NotBefore:             createdAt.Add(-time.Minute),
 		NotAfter:              createdAt.Add(validity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
@@ -48,41 +58,28 @@ func createAuthority(dir string, now func() time.Time) (*authority, error) {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	// Publish the complete pair with one directory rename. Callers establish an
-	// absent precondition before creation, so no generation marker is needed.
+
+	// Persist directly into the final directory. Callers establish an absent
+	// precondition, and a later explicit install reconciles interrupted writes.
 	parent := filepath.Dir(dir)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, err
 	}
-	tempDir, err := os.MkdirTemp(parent, ".userca-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tempDir)
-	if err := os.Chmod(tempDir, 0o700); err != nil {
-		return nil, err
-	}
-	tempCertPath := filepath.Join(tempDir, certFileName)
-	tempKeyPath := filepath.Join(tempDir, keyFileName)
-	if err := writeDurableFile(tempCertPath, certPEM, 0o600); err != nil {
-		return nil, err
-	}
-	if err := writeDurableFile(tempKeyPath, keyPEM, 0o600); err != nil {
-		return nil, err
-	}
-	if err := syncDirectory(tempDir); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tempDir, dir); err != nil {
-		return nil, err
-	}
-	if err := syncDirectory(parent); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		return nil, err
 	}
 	certPath := filepath.Join(dir, certFileName)
 	keyPath := filepath.Join(dir, keyFileName)
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return nil, err
+	}
 	return &authority{certPath: certPath, keyPath: keyPath, certPEM: certPEM, keyPEM: keyPEM, cert: template}, nil
 }
+
+var readFile = os.ReadFile
 
 func loadAuthority(dir string) (*authority, error) {
 	certPath := filepath.Join(dir, certFileName)
@@ -119,7 +116,7 @@ func parseAuthority(certPath, keyPath string, certPEM, keyPEM []byte) (*authorit
 	if err != nil {
 		return nil, err
 	}
-	if cert.Subject.CommonName != commonName || !cert.IsCA || !cert.BasicConstraintsValid {
+	if cert.Subject.CommonName != ownedCACommonName || !cert.IsCA || !cert.BasicConstraintsValid {
 		return nil, fmt.Errorf("CA certificate identity is invalid")
 	}
 	certKey, ok := cert.PublicKey.(*rsa.PublicKey)

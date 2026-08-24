@@ -6,6 +6,6 @@ An admitted pipeline assesses coherent UserCA facts asynchronously and is either
 
 When intent disappears or readiness is lost, Gateway first serves and enqueues the PAC Projection without HTTPS routes, then publishes a direct CORS Proxy generation and discards retained signing material. Pipeline work is generation-scoped so results from cancelled, removed, or replaced assessments are ignored, and Gateway schedules expiry reassessment only for an active ready pipeline.
 
-CORS Proxy owns immutable direct and goproxy MITM handler generations. Gateway owns the stable listener, server, outbound transport, atomic generation publication, and lifecycle; goproxy owns per-host leaf generation, connection-local signing and handshake failures do not change Gateway state, and generation replacement does not drain admitted or established connections.
+CORS Proxy constructs immutable direct and goproxy MITM handlers. Gateway owns the stable listener, server, outbound transport, handler generation ordering and atomic publication, and lifecycle; goproxy owns per-host leaf generation, connection-local signing and handshake failures do not change Gateway state, and handler generation replacement does not drain admitted or established connections.
 
 CA Lifecycle Commands remain independent of HTTPS Intent. Install has a runtime consequence only when a pipeline exists, while uninstall removes HTTPS PAC routes and publishes direct behavior before deleting trust and material.

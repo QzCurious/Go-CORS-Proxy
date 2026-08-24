@@ -267,7 +267,7 @@ func ownershipForURL(raw string) Ownership {
 	if raw == "" || raw == "(null)" {
 		return OwnershipEmpty
 	}
-	if IsOwnedURL(raw) {
+	if isOwnedURL(raw) {
 		return OwnershipOwned
 	}
 	return OwnershipForeign
@@ -298,7 +298,7 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	m.publicationGeneration++
 	generation := m.publicationGeneration
 	m.mu.Unlock()
-	pacURL := PACURL(pacListen, generation)
+	pacURL := pacURL(pacListen, generation)
 
 	installed, warnings, publicationErr := m.attemptPublication(ctx, selected, pacURL)
 	state := NewRuntimeState(selected, "")
@@ -360,14 +360,6 @@ func (m *ManagedPAC) PublishProjection(projection string) {
 	workerDone, workerStop := m.startProjectionWorkerLocked()
 	m.mu.Unlock()
 	go m.runProjectionReconciliation(workerDone, workerStop)
-}
-
-// PublicationGeneration returns the last generation allocated for a PAC
-// publication attempt. Failed attempts intentionally consume generations.
-func (m *ManagedPAC) PublicationGeneration() uint64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.publicationGeneration
 }
 
 func (m *ManagedPAC) startProjectionWorkerLocked() (chan struct{}, chan struct{}) {
@@ -451,7 +443,7 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 	generation := m.publicationGeneration
 	m.activeCancel = cancel
 	m.mu.Unlock()
-	pacURL := PACURL(pacListen, generation)
+	pacURL := pacURL(pacListen, generation)
 	_, warnings, err := m.attemptPublication(ctx, serviceNames, pacURL)
 	cancel()
 

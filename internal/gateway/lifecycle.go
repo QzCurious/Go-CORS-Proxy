@@ -383,7 +383,6 @@ type InstallResultKind string
 
 const (
 	InstallResultInstalled       InstallResultKind = "installed"
-	InstallResultAlreadyUsable   InstallResultKind = "already-usable"
 	InstallResultApprovalDenied  InstallResultKind = "approval-denied"
 	InstallResultAlreadyMutating InstallResultKind = "already-mutating"
 	InstallResultOwnerEnding     InstallResultKind = "owner-ending"
@@ -397,7 +396,7 @@ type InstallResult struct {
 }
 
 func (r InstallResult) Fulfillment() CommandFulfillment {
-	if r.Kind == InstallResultInstalled || r.Kind == InstallResultAlreadyUsable {
+	if r.Kind == InstallResultInstalled {
 		return CommandFulfilled
 	}
 	return CommandUnfulfilled
@@ -407,7 +406,6 @@ type UninstallResultKind string
 
 const (
 	UninstallResultUninstalled     UninstallResultKind = "uninstalled"
-	UninstallResultAlreadyAbsent   UninstallResultKind = "already-absent"
 	UninstallResultConsentRequired UninstallResultKind = "consent-required"
 	UninstallResultAlreadyMutating UninstallResultKind = "already-mutating"
 	UninstallResultOwnerEnding     UninstallResultKind = "owner-ending"
@@ -422,7 +420,7 @@ type UninstallResult struct {
 }
 
 func (r UninstallResult) Fulfillment() CommandFulfillment {
-	if r.Kind == UninstallResultUninstalled || r.Kind == UninstallResultAlreadyAbsent {
+	if r.Kind == UninstallResultUninstalled {
 		return CommandFulfilled
 	}
 	return CommandUnfulfilled
@@ -574,7 +572,7 @@ type lifecycle struct {
 	caAdmissionMu          sync.Mutex
 	managedPAC             managedPACModule
 	userCA                 userCAModule
-	userCAState            userca.CurrentState
+	userCAState            userCAState
 	userCAAssessmentErr    error
 	coord                  *coordinator
 	runtimeDir             string
@@ -648,7 +646,7 @@ func newLifecycleState(
 	if pac == nil {
 		pac = openSystemManagedPAC()
 	}
-	var initial userca.CurrentState
+	var initial userCAState
 	var assessmentErr error
 	if inspectUserCA {
 		initial, assessmentErr = ca.Inspect(context.Background())
@@ -708,7 +706,7 @@ func (f *lifecycle) takeStartCleanupComplete() bool {
 	return complete
 }
 
-func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, current userca.CurrentState) {
+func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, current userCAState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.runtime != active {
@@ -717,7 +715,7 @@ func (f *lifecycle) scheduleHTTPSDeadline(active *activeRuntime, current userca.
 	f.scheduleHTTPSDeadlineLocked(active, current)
 }
 
-func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, current userca.CurrentState) {
+func (f *lifecycle) scheduleHTTPSDeadlineLocked(active *activeRuntime, current userCAState) {
 	if !current.Usable {
 		return
 	}
@@ -1084,19 +1082,19 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	// before UserCA can repair or replace trust and local signing material; a
 	// successful result below publishes one matching replacement capability.
 	if active != nil {
-		active.engine.DeactivateHTTPS(userca.CurrentState{}, nil)
+		active.engine.DeactivateHTTPS(userCAState{}, nil)
 		f.cancelHTTPSDeadline(active)
 	}
 	// Once admitted, CA work belongs to the owner rather than the request.
-	result, err := f.userCA.Install(context.Background())
+	current, err := f.userCA.Install(context.Background())
 	if err != nil {
 		var pipeline *HTTPSPipelineDetail
 		if active != nil {
-			active.engine.DeactivateHTTPS(userca.CurrentState{}, err)
+			active.engine.DeactivateHTTPS(userCAState{}, err)
 			pipeline = active.engine.snapshot().HTTPSPipeline
 		}
 		f.mu.Lock()
-		f.userCAState = userca.CurrentState{}
+		f.userCAState = userCAState{}
 		f.userCAAssessmentErr = err
 		f.mu.Unlock()
 		if errors.Is(err, userca.ErrApprovalDenied) {
@@ -1104,7 +1102,6 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 		}
 		return InstallResult{}, err
 	}
-	current := result.Current()
 	f.mu.Lock()
 	stillLive := f.runtime == active && active != nil
 	f.mu.Unlock()
@@ -1125,12 +1122,8 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	f.userCAAssessmentErr = nil
 	f.userCACleanupIssue = nil
 	f.mu.Unlock()
-	kind := InstallResultAlreadyUsable
-	if result.Changed() {
-		kind = InstallResultInstalled
-	}
 	return InstallResult{
-		Kind:               kind,
+		Kind:               InstallResultInstalled,
 		InstalledCAExpires: current.ExpiresAt,
 		HTTPSPipeline:      pipeline,
 	}, nil
@@ -1173,17 +1166,17 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 	f.mu.Unlock()
 	defer f.finishCAMutation(active)
 	if active != nil {
-		active.engine.DeactivateHTTPS(userca.CurrentState{}, nil)
+		active.engine.DeactivateHTTPS(userCAState{}, nil)
 		f.cancelHTTPSDeadline(active)
 	}
-	result, err := f.userCA.Uninstall(context.Background())
+	err := f.userCA.Uninstall(context.Background())
 	if err != nil {
 		cleanupIssue := &UserCACleanupIssue{
 			Cause:  err.Error(),
 			Action: "Run `seamless-cors uninstall` again.",
 		}
 		f.mu.Lock()
-		f.userCAState = userca.CurrentState{}
+		f.userCAState = userCAState{}
 		f.userCAAssessmentErr = err
 		f.userCACleanupIssue = cleanupIssue
 		f.mu.Unlock()
@@ -1192,15 +1185,11 @@ func (f *lifecycle) UninstallWithConsent(ctx context.Context, consentFingerprint
 			CleanupIssue: cleanupIssue,
 		}, nil
 	}
-	current := result.Current()
 	f.mu.Lock()
-	f.userCAState = current
+	f.userCAState = userCAState{}
 	f.userCAAssessmentErr = nil
 	f.userCACleanupIssue = nil
 	f.mu.Unlock()
-	if !result.Changed() {
-		return UninstallResult{Kind: UninstallResultAlreadyAbsent}, nil
-	}
 	return UninstallResult{Kind: UninstallResultUninstalled}, nil
 }
 
@@ -1340,7 +1329,7 @@ func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive
 	return inspectGatewayFootprint(ctx, f.managedPAC, f.coord, stale, runtimeActive, ownerCache)
 }
 
-func installedCAStatus(current userca.CurrentState, assessmentErr error, mutating bool, cleanupIssue *UserCACleanupIssue) InstalledCAStatusDetail {
+func installedCAStatus(current userCAState, assessmentErr error, mutating bool, cleanupIssue *UserCACleanupIssue) InstalledCAStatusDetail {
 	if mutating {
 		return InstalledCAStatusDetail{Health: CAHealthMutating, CleanupIssue: cleanupIssue}
 	}
