@@ -2,11 +2,16 @@ package userca
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,15 +32,23 @@ func TestInstallRecoversPartialAuthorityFootprints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	certificatePEM, err := os.ReadFile(fixture.certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(fixture.keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := map[string]func(*testing.T, string){
 		"empty directory": func(t *testing.T, _ string) {},
 		"certificate only": func(t *testing.T, dir string) {
-			if err := os.WriteFile(filepath.Join(dir, certFileName), fixture.certPEM, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, certFileName), certificatePEM, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		},
 		"private key only": func(t *testing.T, dir string) {
-			if err := os.WriteFile(filepath.Join(dir, keyFileName), fixture.keyPEM, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, keyFileName), keyPEM, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -86,10 +99,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstFingerprint, err := firstAuthority.fingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	firstFingerprint := firstAuthority.fingerprint()
 
 	_, err = ca.Install(context.Background())
 	if err != nil {
@@ -99,10 +109,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondFingerprint, err := secondAuthority.fingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	secondFingerprint := secondAuthority.fingerprint()
 	if secondFingerprint != firstFingerprint {
 		t.Fatal("idempotent install replaced the authority")
 	}
@@ -115,14 +122,14 @@ func TestInstallRepairsTrustWithoutReplacingPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := loadAuthority(ca.dir)
-	wantFingerprint, _ := before.fingerprint()
+	wantFingerprint := before.fingerprint()
 	store.records = nil
 	_, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	after, _ := loadAuthority(ca.dir)
-	gotFingerprint, _ := after.fingerprint()
+	gotFingerprint := after.fingerprint()
 	if gotFingerprint != wantFingerprint || len(store.records) != 1 {
 		t.Fatal("trust repair did not reuse the valid local pair")
 	}
@@ -151,7 +158,7 @@ func TestInstallRepairsPermissionsWithoutReplacingPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := loadAuthority(ca.dir)
-	wantFingerprint, _ := before.fingerprint()
+	wantFingerprint := before.fingerprint()
 	if err := os.Chmod(before.keyPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +167,7 @@ func TestInstallRepairsPermissionsWithoutReplacingPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := loadAuthority(ca.dir)
-	gotFingerprint, _ := after.fingerprint()
+	gotFingerprint := after.fingerprint()
 	info, err := os.Stat(after.keyPath)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +186,7 @@ func TestInspectReportsRenewalDueAndInstallReplacesWithoutOverlap(t *testing.T) 
 		t.Fatal(err)
 	}
 	before, _ := loadAuthority(ca.dir)
-	firstFingerprint, _ := before.fingerprint()
+	firstFingerprint := before.fingerprint()
 	now = first.ExpiresAt.Add(-renewalWindow)
 	due, err := ca.Inspect(context.Background())
 	if err != nil {
@@ -193,7 +200,7 @@ func TestInspectReportsRenewalDueAndInstallReplacesWithoutOverlap(t *testing.T) 
 		t.Fatal(err)
 	}
 	after, _ := loadAuthority(ca.dir)
-	renewedFingerprint, _ := after.fingerprint()
+	renewedFingerprint := after.fingerprint()
 	if renewedFingerprint == firstFingerprint {
 		t.Fatal("explicit renewal did not replace the authority")
 	}
@@ -322,18 +329,22 @@ type fakeTrustStore struct {
 	ignoreTrust bool
 }
 
-func (s *fakeTrustStore) TrustedCertificates(context.Context) ([]trustedCertificate, error) {
+func (s *fakeTrustStore) trustedCertificates(context.Context) ([]trustedCertificate, error) {
 	return append([]trustedCertificate(nil), s.records...), nil
 }
 
-func (s *fakeTrustStore) Trust(_ context.Context, certificatePEM []byte) error {
+func (s *fakeTrustStore) trust(_ context.Context, certificatePath string) error {
 	if s.trustErr != nil {
 		return s.trustErr
 	}
 	if s.ignoreTrust {
 		return nil
 	}
-	fingerprint, err := sha1Fingerprint(certificatePEM)
+	certificatePEM, err := os.ReadFile(certificatePath)
+	if err != nil {
+		return err
+	}
+	fingerprint, err := testCertificateFingerprint(certificatePEM)
 	if err != nil {
 		return err
 	}
@@ -346,7 +357,16 @@ func (s *fakeTrustStore) Trust(_ context.Context, certificatePEM []byte) error {
 	return nil
 }
 
-func (s *fakeTrustStore) Remove(_ context.Context, fingerprints []string) error {
+func testCertificateFingerprint(certificatePEM []byte) (string, error) {
+	block, _ := pem.Decode(certificatePEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("CA certificate PEM is invalid")
+	}
+	sum := sha1.Sum(block.Bytes)
+	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
+}
+
+func (s *fakeTrustStore) remove(_ context.Context, fingerprints []string) error {
 	if s.removeErr != nil {
 		return s.removeErr
 	}

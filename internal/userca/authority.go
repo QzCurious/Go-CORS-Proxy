@@ -1,6 +1,7 @@
 package userca
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -18,21 +19,12 @@ import (
 	"time"
 )
 
-const (
-	certFileName = "certificate.pem"
-	keyFileName  = "private-key.pem"
-	validity     = 5 * 365 * 24 * time.Hour
-)
-
-var errInvalidAuthority = errors.New("UserCA authority material is invalid")
-
 // authority is the one locally persisted certificate and private-key pair.
 type authority struct {
 	certPath string
 	keyPath  string
-	certPEM  []byte
-	keyPEM   []byte
 	cert     *x509.Certificate
+	key      crypto.PrivateKey
 }
 
 func createAuthority(dir string, now func() time.Time) (*authority, error) {
@@ -56,8 +48,16 @@ func createAuthority(dir string, now func() time.Time) (*authority, error) {
 	if err != nil {
 		return nil, err
 	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 
 	// Persist directly into the final directory. Callers establish an absent
 	// precondition, and a later explicit install reconciles interrupted writes.
@@ -76,14 +76,15 @@ func createAuthority(dir string, now func() time.Time) (*authority, error) {
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		return nil, err
 	}
-	return &authority{certPath: certPath, keyPath: keyPath, certPEM: certPEM, keyPEM: keyPEM, cert: template}, nil
+	return &authority{certPath: certPath, keyPath: keyPath, cert: cert, key: key}, nil
 }
-
-var readFile = os.ReadFile
 
 func loadAuthority(dir string) (*authority, error) {
 	certPath := filepath.Join(dir, certFileName)
 	keyPath := filepath.Join(dir, keyFileName)
+
+	// Read the persisted pair before interpreting either file so filesystem
+	// failures remain distinct from invalid authority material.
 	certPEM, err := readFile(certPath)
 	if err != nil {
 		return nil, err
@@ -92,64 +93,55 @@ func loadAuthority(dir string) (*authority, error) {
 	if err != nil {
 		return nil, err
 	}
-	active, err := parseAuthority(certPath, keyPath, certPEM, keyPEM)
+
+	// Parse and validate the complete pair so no partial semantic authority
+	// escapes this load phase.
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errInvalidAuthority, err)
 	}
-	return active, nil
+	return &authority{certPath: certPath, keyPath: keyPath, cert: pair.Leaf, key: pair.PrivateKey}, nil
 }
 
-func parseAuthority(certPath, keyPath string, certPEM, keyPEM []byte) (*authority, error) {
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("CA certificate PEM is invalid")
-	}
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil || keyBlock.Type != "RSA PRIVATE KEY" {
-		return nil, fmt.Errorf("CA key PEM is invalid")
-	}
-	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	if cert.Subject.CommonName != ownedCACommonName || !cert.IsCA || !cert.BasicConstraintsValid {
-		return nil, fmt.Errorf("CA certificate identity is invalid")
-	}
-	certKey, ok := cert.PublicKey.(*rsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("CA certificate public key is not RSA")
-	}
-	if certKey.N.Cmp(key.PublicKey.N) != 0 || certKey.E != key.PublicKey.E {
-		return nil, fmt.Errorf("CA certificate and key do not match")
-	}
-	return &authority{certPath: certPath, keyPath: keyPath, certPEM: certPEM, keyPEM: keyPEM, cert: cert}, nil
+func (a *authority) fingerprint() string {
+	sum := sha1.Sum(a.cert.Raw)
+	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }
 
-func (a *authority) fingerprint() (string, error) {
-	return sha1Fingerprint(a.certPEM)
+func (a *authority) tlsCertificate() tls.Certificate {
+	return tls.Certificate{
+		Certificate: [][]byte{a.cert.Raw},
+		PrivateKey:  a.key,
+		Leaf:        a.cert,
+	}
 }
 
-func (a *authority) tlsCertificate() (tls.Certificate, error) {
-	certificate, err := tls.X509KeyPair(a.certPEM, a.keyPEM)
-	if err != nil {
-		return tls.Certificate{}, err
+func isOwnedAuthorityCertificate(cert *x509.Certificate) bool {
+	if cert.Subject.CommonName != ownedCACommonName {
+		return false
 	}
-	certificate.Leaf, err = x509.ParseCertificate(certificate.Certificate[0])
-	if err != nil {
-		return tls.Certificate{}, err
+	if !cert.IsCA || !cert.BasicConstraintsValid {
+		return false
 	}
-	return certificate, nil
+	if cert.KeyUsage&x509.KeyUsageCertSign == 0 || cert.KeyUsage&x509.KeyUsageCRLSign == 0 {
+		return false
+	}
+	return cert.CheckSignatureFrom(cert) == nil
 }
 
-func sha1Fingerprint(certPEM []byte) (string, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return "", fmt.Errorf("CA certificate PEM is invalid")
-	}
-	sum := sha1.Sum(block.Bytes)
-	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
+func isAuthorityUsable(cert *x509.Certificate, now time.Time) bool {
+	return isOwnedAuthorityCertificate(cert) &&
+		!now.Before(cert.NotBefore) &&
+		now.Before(cert.NotAfter)
 }
+
+const (
+	ownedCACommonName = "seamless-cors Local CA"
+	certFileName      = "certificate.pem"
+	keyFileName       = "private-key.pem"
+	validity          = 5 * 365 * 24 * time.Hour
+)
+
+var errInvalidAuthority = errors.New("UserCA authority material is invalid")
+
+var readFile = os.ReadFile

@@ -19,34 +19,21 @@ type darwinTrustStore struct {
 	keychainPath string
 }
 
-func newTrustStore() trustStore {
+func newPlatformTrustStore() trustStore {
 	return &darwinTrustStore{runner: execRunner{}}
 }
 
 var _ trustStore = (*darwinTrustStore)(nil)
 
-func (s *darwinTrustStore) Trust(ctx context.Context, certificatePEM []byte) error {
-	block, _ := pem.Decode(certificatePEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return fmt.Errorf("CA certificate PEM is invalid")
-	}
-	dir, err := os.MkdirTemp("", "seamless-cors-ca-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	certificatePath := filepath.Join(dir, "root-ca.pem")
-	if err := os.WriteFile(certificatePath, certificatePEM, 0o600); err != nil {
-		return err
-	}
-	_, err = s.security(ctx, "add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", s.keychain(), certificatePath)
+func (s *darwinTrustStore) trust(ctx context.Context, certificatePath string) error {
+	_, err := s.security(ctx, "add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", s.keychain(), certificatePath)
 	if isTrustApprovalDenied(err) {
 		return fmt.Errorf("%w: %w", ErrApprovalDenied, err)
 	}
 	return err
 }
 
-func (s *darwinTrustStore) TrustedCertificates(ctx context.Context) ([]trustedCertificate, error) {
+func (s *darwinTrustStore) trustedCertificates(ctx context.Context) ([]trustedCertificate, error) {
 	out, err := s.security(ctx, "find-certificate", "-a", "-c", ownedCACommonName, "-p", "-Z", s.keychain())
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "could not be found") ||
@@ -58,7 +45,7 @@ func (s *darwinTrustStore) TrustedCertificates(ctx context.Context) ([]trustedCe
 	return strictFootprintCertificates(out), nil
 }
 
-func (s *darwinTrustStore) Remove(ctx context.Context, fingerprints []string) error {
+func (s *darwinTrustStore) remove(ctx context.Context, fingerprints []string) error {
 	var firstErr error
 	for _, fingerprint := range fingerprints {
 		if _, err := s.security(ctx, "delete-certificate", "-Z", fingerprint, s.keychain()); err != nil && firstErr == nil {
@@ -100,7 +87,7 @@ func trustedCertificateFromPEM(fingerprint string, pemLines []string) (trustedCe
 		return trustedCertificate{}, false
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil || !isStrictFootprint(cert) {
+	if err != nil || !isOwnedAuthorityCertificate(cert) {
 		return trustedCertificate{}, false
 	}
 	return trustedCertificate{

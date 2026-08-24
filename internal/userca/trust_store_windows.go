@@ -12,9 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -23,34 +21,21 @@ type windowsTrustStore struct {
 	runner commandRunner
 }
 
-func newTrustStore() trustStore {
+func newPlatformTrustStore() trustStore {
 	return &windowsTrustStore{runner: execRunner{}}
 }
 
 var _ trustStore = (*windowsTrustStore)(nil)
 
-func (s *windowsTrustStore) Trust(ctx context.Context, certificatePEM []byte) error {
-	block, _ := pem.Decode(certificatePEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return fmt.Errorf("CA certificate PEM is invalid")
-	}
-	dir, err := os.MkdirTemp("", "seamless-cors-ca-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	certificatePath := filepath.Join(dir, "root-ca.pem")
-	if err := os.WriteFile(certificatePath, certificatePEM, 0o600); err != nil {
-		return err
-	}
+func (s *windowsTrustStore) trust(ctx context.Context, certificatePath string) error {
 	script := fmt.Sprintf(`
 Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
 `, psQuote(certificatePath))
-	_, err = s.powershell(ctx, script)
+	_, err := s.powershell(ctx, script)
 	return err
 }
 
-func (s *windowsTrustStore) TrustedCertificates(ctx context.Context) ([]trustedCertificate, error) {
+func (s *windowsTrustStore) trustedCertificates(ctx context.Context) ([]trustedCertificate, error) {
 	script := fmt.Sprintf(`
 $records = @(
 	Get-ChildItem -Path Cert:\CurrentUser\Root |
@@ -72,7 +57,7 @@ ConvertTo-Json -Compress -InputObject $records
 	return windowsTrustedCertificatesFromJSON(out)
 }
 
-func (s *windowsTrustStore) Remove(ctx context.Context, fingerprints []string) error {
+func (s *windowsTrustStore) remove(ctx context.Context, fingerprints []string) error {
 	var firstErr error
 	for _, fingerprint := range fingerprints {
 		script := fmt.Sprintf(`
@@ -123,7 +108,7 @@ func windowsTrustedCertificatesFromJSON(out []byte) ([]trustedCertificate, error
 		if err != nil {
 			return nil, fmt.Errorf("parse Windows trusted certificate: %w", err)
 		}
-		if !isStrictFootprint(cert) {
+		if !isOwnedAuthorityCertificate(cert) {
 			continue
 		}
 		expiresAt, err := parseExpiresAt(item.ExpiresAt, cert.NotAfter)

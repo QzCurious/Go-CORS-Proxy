@@ -16,11 +16,11 @@ func hasOwnedMaterial(dir string) (bool, error) {
 }
 
 func uninstallAll(ctx context.Context, dir string, store trustStore) error {
-	records, trustErr := store.TrustedCertificates(ctx)
+	records, trustErr := store.trustedCertificates(ctx)
 	var removeErr error
 	if trustErr == nil {
 		if owned := fingerprints(records); len(owned) > 0 {
-			removeErr = store.Remove(ctx, owned)
+			removeErr = store.remove(ctx, owned)
 		}
 	}
 	return errors.Join(trustErr, removeErr, os.RemoveAll(dir))

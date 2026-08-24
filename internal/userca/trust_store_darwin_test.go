@@ -60,13 +60,13 @@ func TestDarwinCATrustMutationsObserveCancellation(t *testing.T) {
 		{
 			name: "trust",
 			run: func(ctx context.Context, adapter *darwinTrustStore) error {
-				return adapter.Trust(ctx, testCertificate(t, ownedCACommonName, true))
+				return adapter.trust(ctx, "/tmp/certificate.pem")
 			},
 		},
 		{
 			name: "remove",
 			run: func(ctx context.Context, adapter *darwinTrustStore) error {
-				return adapter.Remove(ctx, []string{"ABCDEF"})
+				return adapter.remove(ctx, []string{"ABCDEF"})
 			},
 		},
 	} {
@@ -101,19 +101,7 @@ func TestDarwinTrustStoreMapsTrustApprovalCancellation(t *testing.T) {
 		err: errors.New("exit status 1"),
 	}
 	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
-	certPEM := []byte(`-----BEGIN CERTIFICATE-----
-MIIBhTCCASugAwIBAgIBATAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlkZXYtdGVz
-dDAeFw0yNjAxMDEwMDAwMDBaFw0yNjAxMDIwMDAwMDBaMBQxEjAQBgNVBAMTCWRl
-di10ZXN0MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVm7vdnHl4ppQq91cHjbB
-BiYUDhmY3ar6+P0gq0LrFs5vKiRbP+RlYoDx6K6P4iW22JwdAC3PeEGGhIOZLaNN
-MEswDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wKAYDVR0RBCEwH4IJ
-ZGV2LXRlc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYIKoZIzj0EAwIDSAAw
-RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
-3EpP1QovunMjInSJ/ksZrQPrLEpe7g==
------END CERTIFICATE-----
-`)
-
-	if err := adapter.Trust(context.Background(), certPEM); !errors.Is(err, ErrApprovalDenied) {
+	if err := adapter.trust(context.Background(), "/tmp/certificate.pem"); !errors.Is(err, ErrApprovalDenied) {
 		t.Fatalf("trust error = %v", err)
 	}
 }
@@ -121,32 +109,20 @@ RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
 func TestDarwinTrustStoreTrustsAndRemovesInstalledCAInUserKeychain(t *testing.T) {
 	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, ownedCACommonName, true))}
 	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
-	certPEM := []byte(`-----BEGIN CERTIFICATE-----
-MIIBhTCCASugAwIBAgIBATAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlkZXYtdGVz
-dDAeFw0yNjAxMDEwMDAwMDBaFw0yNjAxMDIwMDAwMDBaMBQxEjAQBgNVBAMTCWRl
-di10ZXN0MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVm7vdnHl4ppQq91cHjbB
-BiYUDhmY3ar6+P0gq0LrFs5vKiRbP+RlYoDx6K6P4iW22JwdAC3PeEGGhIOZLaNN
-MEswDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wKAYDVR0RBCEwH4IJ
-ZGV2LXRlc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwCgYIKoZIzj0EAwIDSAAw
-RQIhAOoa4X7HjCOTEOEdPAQRxIhH3WETktsEOl3ZK9otm64jAiBEfd+WY1KcU6RC
-3EpP1QovunMjInSJ/ksZrQPrLEpe7g==
------END CERTIFICATE-----
-`)
-
-	if err := adapter.Trust(context.Background(), certPEM); err != nil {
+	if err := adapter.trust(context.Background(), "/tmp/certificate.pem"); err != nil {
 		t.Fatal(err)
 	}
-	certificates, err := adapter.TrustedCertificates(context.Background())
+	certificates, err := adapter.trustedCertificates(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Remove(context.Background(), []string{certificates[0].Fingerprint}); err != nil {
+	if err := adapter.remove(context.Background(), []string{certificates[0].Fingerprint}); err != nil {
 		t.Fatal(err)
 	}
 
 	joined := strings.Join(runner.calls, "\n")
 	for _, want := range []string{
-		"security add-trusted-cert -r trustRoot -p ssl -k /tmp/login.keychain-db",
+		"security add-trusted-cert -r trustRoot -p ssl -k /tmp/login.keychain-db /tmp/certificate.pem",
 		"security delete-certificate -Z",
 	} {
 		if !strings.Contains(joined, want) {
@@ -162,7 +138,7 @@ func TestDarwinTrustStoreDoesNotRemoveSameNameNonCAFootprint(t *testing.T) {
 	runner := &fakeRunner{findCertOut: testFindCertificateOutput(testCertificate(t, ownedCACommonName, false))}
 	adapter := &darwinTrustStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 
-	certificates, err := adapter.TrustedCertificates(context.Background())
+	certificates, err := adapter.trustedCertificates(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

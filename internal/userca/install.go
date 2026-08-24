@@ -38,7 +38,7 @@ func (u *CA) install(ctx context.Context) (State, error) {
 	}
 
 	// A failed trust mutation must not leave an untrusted local pair behind.
-	if err := u.store.Trust(ctx, authority.certPEM); err != nil {
+	if err := u.store.trust(ctx, authority.certPath); err != nil {
 		cleanupErr := uninstallAll(context.Background(), u.dir, u.store)
 		return State{}, errors.Join(err, cleanupErr)
 	}
@@ -55,7 +55,7 @@ func (u *CA) install(ctx context.Context) (State, error) {
 
 func (u *CA) reuseAuthority(ctx context.Context, before inspectedState) (State, error) {
 	if !before.trusted {
-		if err := u.store.Trust(ctx, before.authority.certPEM); err != nil {
+		if err := u.store.trust(ctx, before.authority.certPath); err != nil {
 			return State{}, err
 		}
 	}

@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"time"
 )
 
@@ -23,7 +23,7 @@ type inspectedState struct {
 
 func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	// Discover every owned trust and storage fact.
-	records, err := u.store.TrustedCertificates(ctx)
+	records, err := u.store.trustedCertificates(ctx)
 	if err != nil {
 		return inspectedState{}, err
 	}
@@ -36,27 +36,19 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	// Load the one locally published authority pair.
 	active, err := loadAuthority(u.dir)
 	if err != nil {
-		if os.IsNotExist(err) || errors.Is(err, errInvalidAuthority) {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errInvalidAuthority) {
 			return state, nil
 		}
 		return inspectedState{}, err
 	}
-	fingerprint, err := active.fingerprint()
-	if err != nil {
-		return state, nil
-	}
+	fingerprint := active.fingerprint()
 	state.ownedFacts = true
 
 	// Establish validity, trust, and renewal facts.
 	state.authority = active
 	state.trusted = containsFingerprint(records, fingerprint)
 	state.renewalDue = !u.now().Add(renewalWindow).Before(active.cert.NotAfter)
-	certificate, err := active.tlsCertificate()
-	if err != nil {
-		return state, nil
-	}
-	material, err := validateSigningMaterial(certificate, u.now())
-	if err != nil {
+	if !isAuthorityUsable(active.cert, u.now()) {
 		return state, nil
 	}
 	state.authorityValid = true
@@ -65,7 +57,8 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	}
 
 	// Publish one coherent usable current state.
-	state.current, err = newState(active.cert.NotAfter, state.renewalDue, material)
+	material := active.tlsCertificate()
+	state.current, err = newState(active.cert.NotAfter, state.renewalDue, &material)
 	if err != nil {
 		return inspectedState{}, err
 	}
