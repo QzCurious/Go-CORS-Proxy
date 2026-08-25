@@ -4,18 +4,15 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -108,11 +105,6 @@ func createAuthority(dir string, now func() time.Time) (*authority, error) {
 		return nil, err
 	}
 	return &authority{certPath: certPath, keyPath: keyPath, cert: cert, key: key}, nil
-}
-
-func (a *authority) fingerprint() string {
-	sum := sha1.Sum(a.cert.Raw)
-	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }
 
 func (a *authority) tlsCertificate() tls.Certificate {

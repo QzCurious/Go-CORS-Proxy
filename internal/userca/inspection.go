@@ -14,6 +14,7 @@ type inspectedState struct {
 	current        State
 	authority      *authority
 	trusted        bool
+	ownedTrust     bool
 	ownedFacts     bool
 	renewalDue     bool
 	authorityValid bool
@@ -21,15 +22,16 @@ type inspectedState struct {
 
 func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	// Discover every owned trust and storage fact.
-	records, err := u.trustStore.trustedCertificates(ctx)
+	records, err := u.trustStore.List(ctx)
 	if err != nil {
 		return inspectedState{}, err
 	}
+	owned := ownedCertificates(records)
 	localFacts, err := hasOwnedMaterial(u.dir)
 	if err != nil {
 		return inspectedState{}, err
 	}
-	state := inspectedState{ownedFacts: localFacts || len(records) > 0}
+	state := inspectedState{ownedTrust: len(owned) > 0, ownedFacts: localFacts || len(owned) > 0}
 
 	// Load the one locally published authority pair.
 	active, err := loadAuthority(u.dir)
@@ -39,7 +41,6 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 		}
 		return inspectedState{}, err
 	}
-	fingerprint := active.fingerprint()
 	state.ownedFacts = true
 
 	// Validate ownership and the validity period before deriving usability facts.
@@ -51,7 +52,7 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	}
 	state.authority = active
 	state.authorityValid = true
-	state.trusted = containsFingerprint(records, fingerprint)
+	state.trusted = len(owned) == 1 && owned[0].X509.Equal(active.cert)
 	state.renewalDue = !now.Add(renewalWindow).Before(active.cert.NotAfter)
 	if !state.trusted {
 		return state, nil

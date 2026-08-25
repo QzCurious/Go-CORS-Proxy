@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+
+	"github.com/QzCurious/seamless-cors/internal/lib/truststore"
 )
 
 func hasOwnedMaterial(dir string) (bool, error) {
@@ -16,26 +18,27 @@ func hasOwnedMaterial(dir string) (bool, error) {
 }
 
 func uninstallAll(ctx context.Context, dir string, store trustStore) error {
-	records, trustErr := store.trustedCertificates(ctx)
+	records, trustErr := store.List(ctx)
 	var removeErr error
 	if trustErr == nil {
-		if owned := fingerprints(records); len(owned) > 0 {
-			removeErr = store.remove(ctx, owned)
+		if owned := fingerprints(ownedCertificates(records)); len(owned) > 0 {
+			removeErr = store.Remove(ctx, owned)
 		}
 	}
 	return errors.Join(trustErr, removeErr, os.RemoveAll(dir))
 }
 
-func containsFingerprint(records []trustedCertificate, fingerprint string) bool {
+func ownedCertificates(records []truststore.Certificate) []truststore.Certificate {
+	owned := make([]truststore.Certificate, 0, len(records))
 	for _, record := range records {
-		if record.Fingerprint == fingerprint {
-			return true
+		if record.X509 != nil && isOwnedAuthorityCertificate(record.X509) {
+			owned = append(owned, record)
 		}
 	}
-	return false
+	return owned
 }
 
-func fingerprints(records []trustedCertificate) []string {
+func fingerprints(records []truststore.Certificate) []string {
 	out := make([]string, 0, len(records))
 	for _, record := range records {
 		out = append(out, record.Fingerprint)

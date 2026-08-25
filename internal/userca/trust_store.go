@@ -2,24 +2,27 @@ package userca
 
 import (
 	"context"
-	"time"
+	"errors"
+	"fmt"
+
+	"github.com/QzCurious/seamless-cors/internal/lib/truststore"
 )
 
-type trustedCertificate struct {
-	Fingerprint    string
-	CertificatePEM []byte
-	ExpiresAt      time.Time
-}
-
 type trustStore interface {
-	// Returns trusted certificates matching the seamless-cors ownership footprint.
-	trustedCertificates(ctx context.Context) ([]trustedCertificate, error)
-	// Adds a certificate file as a trusted root for the current user.
-	trust(ctx context.Context, certificatePath string) error
-	// Deletes trusted certificates by fingerprint from the current user's store.
-	remove(ctx context.Context, fingerprints []string) error
+	List(ctx context.Context) ([]truststore.Certificate, error)
+	Add(ctx context.Context, certificatePath string) error
+	Remove(ctx context.Context, fingerprints []string) error
 }
 
-func newTrustStore() trustStore {
-	return newPlatformTrustStore()
+var _ trustStore = (*truststore.Store)(nil)
+
+func userCAAddError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var denied *truststore.ApprovalDeniedError
+	if errors.As(err, &denied) {
+		return fmt.Errorf("%w: %w", ErrApprovalDenied, err)
+	}
+	return err
 }

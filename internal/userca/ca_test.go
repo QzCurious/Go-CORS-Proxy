@@ -3,6 +3,8 @@ package userca
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/QzCurious/seamless-cors/internal/lib/truststore"
 )
 
 func TestInspectMissingIsNotUsable(t *testing.T) {
@@ -99,7 +103,6 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstFingerprint := firstAuthority.fingerprint()
 
 	_, err = ca.Install(context.Background())
 	if err != nil {
@@ -109,8 +112,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondFingerprint := secondAuthority.fingerprint()
-	if secondFingerprint != firstFingerprint {
+	if !secondAuthority.cert.Equal(firstAuthority.cert) {
 		t.Fatal("idempotent install replaced the authority")
 	}
 }
@@ -122,15 +124,13 @@ func TestInstallRepairsTrustWithoutReplacingPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := loadAuthority(ca.dir)
-	wantFingerprint := before.fingerprint()
 	store.records = nil
 	_, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	after, _ := loadAuthority(ca.dir)
-	gotFingerprint := after.fingerprint()
-	if gotFingerprint != wantFingerprint || len(store.records) != 1 {
+	if !after.cert.Equal(before.cert) || len(store.records) != 1 {
 		t.Fatal("trust repair did not reuse the valid local pair")
 	}
 }
@@ -158,7 +158,6 @@ func TestInstallRepairsPermissionsWithoutReplacingPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := loadAuthority(ca.dir)
-	wantFingerprint := before.fingerprint()
 	if err := os.Chmod(before.keyPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -167,12 +166,11 @@ func TestInstallRepairsPermissionsWithoutReplacingPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := loadAuthority(ca.dir)
-	gotFingerprint := after.fingerprint()
 	info, err := os.Stat(after.keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotFingerprint != wantFingerprint || info.Mode().Perm() != 0o600 {
+	if !after.cert.Equal(before.cert) || info.Mode().Perm() != 0o600 {
 		t.Fatal("permission repair did not preserve and secure the valid pair")
 	}
 }
@@ -186,7 +184,6 @@ func TestInspectReportsRenewalDueAndInstallReplacesWithoutOverlap(t *testing.T) 
 		t.Fatal(err)
 	}
 	before, _ := loadAuthority(ca.dir)
-	firstFingerprint := before.fingerprint()
 	now = first.ExpiresAt.Add(-renewalWindow)
 	due, err := ca.Inspect(context.Background())
 	if err != nil {
@@ -200,8 +197,7 @@ func TestInspectReportsRenewalDueAndInstallReplacesWithoutOverlap(t *testing.T) 
 		t.Fatal(err)
 	}
 	after, _ := loadAuthority(ca.dir)
-	renewedFingerprint := after.fingerprint()
-	if renewedFingerprint == firstFingerprint {
+	if after.cert.Equal(before.cert) {
 		t.Fatal("explicit renewal did not replace the authority")
 	}
 	if renewed.RenewalDue || len(store.records) != 1 {
@@ -253,6 +249,65 @@ func TestInstallClearsInvalidMaterialAndOwnedTrustBeforeReplacement(t *testing.T
 	}
 }
 
+func TestInstallReplacesAmbiguousOwnedTrust(t *testing.T) {
+	store := &fakeTrustStore{}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
+	if _, err := ca.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before, err := loadAuthority(ca.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	extra, err := createAuthority(filepath.Join(t.TempDir(), "extra"), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(context.Background(), extra.certPath); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.records) != 2 {
+		t.Fatalf("trusted roots = %d, want ambiguous pair", len(store.records))
+	}
+	current, err := ca.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Usable {
+		t.Fatal("ambiguous owned trust reported usable")
+	}
+
+	replaced, err := ca.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := loadAuthority(ca.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replaced.Usable || len(store.records) != 1 || after.cert.Equal(before.cert) {
+		t.Fatal("ambiguous owned trust was not replaced with one usable authority")
+	}
+}
+
+func TestInspectRejectsDuplicateOwnedTrust(t *testing.T) {
+	store := &fakeTrustStore{}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
+	if _, err := ca.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store.records = append(store.records, store.records[0])
+
+	current, err := ca.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Usable {
+		t.Fatal("duplicate owned trust reported usable")
+	}
+}
+
 func TestInstallDoesNotDestroyStateWhenInspectionCannotReadPair(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "userca")
 	store := &fakeTrustStore{}
@@ -279,7 +334,7 @@ func TestInstallDoesNotDestroyStateWhenInspectionCannotReadPair(t *testing.T) {
 }
 
 func TestInstallCleansLocalPairWhenTrustFails(t *testing.T) {
-	store := &fakeTrustStore{trustErr: ErrApprovalDenied}
+	store := &fakeTrustStore{trustErr: &truststore.ApprovalDeniedError{Cause: errors.New("user cancelled")}}
 	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); !errors.Is(err, ErrApprovalDenied) {
 		t.Fatalf("install error = %v, want ErrApprovalDenied", err)
@@ -310,6 +365,25 @@ func TestUninstallRemovesEveryOwnedFactAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestUninstallLeavesUnownedTrustUntouched(t *testing.T) {
+	record := truststore.Certificate{
+		Fingerprint: "UNRELATED",
+		X509: &x509.Certificate{
+			Subject:               pkix.Name{CommonName: ownedCACommonName},
+			BasicConstraintsValid: true,
+		},
+	}
+	store := &fakeTrustStore{records: []truststore.Certificate{record}}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
+
+	if err := ca.Uninstall(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.records) != 1 || store.records[0].Fingerprint != record.Fingerprint {
+		t.Fatal("uninstall removed trust outside the seamless-cors ownership footprint")
+	}
+}
+
 func TestUninstallReportsIncompleteTrustRemoval(t *testing.T) {
 	store := &fakeTrustStore{}
 	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
@@ -323,17 +397,17 @@ func TestUninstallReportsIncompleteTrustRemoval(t *testing.T) {
 }
 
 type fakeTrustStore struct {
-	records     []trustedCertificate
+	records     []truststore.Certificate
 	trustErr    error
 	removeErr   error
 	ignoreTrust bool
 }
 
-func (s *fakeTrustStore) trustedCertificates(context.Context) ([]trustedCertificate, error) {
-	return append([]trustedCertificate(nil), s.records...), nil
+func (s *fakeTrustStore) List(context.Context) ([]truststore.Certificate, error) {
+	return s.records, nil
 }
 
-func (s *fakeTrustStore) trust(_ context.Context, certificatePath string) error {
+func (s *fakeTrustStore) Add(_ context.Context, certificatePath string) error {
 	if s.trustErr != nil {
 		return s.trustErr
 	}
@@ -344,29 +418,36 @@ func (s *fakeTrustStore) trust(_ context.Context, certificatePath string) error 
 	if err != nil {
 		return err
 	}
-	fingerprint, err := testCertificateFingerprint(certificatePEM)
+	added, err := testTrustStoreCertificate(certificatePEM)
 	if err != nil {
 		return err
 	}
 	for _, record := range s.records {
-		if record.Fingerprint == fingerprint {
+		if record.Fingerprint == added.Fingerprint {
 			return nil
 		}
 	}
-	s.records = append(s.records, trustedCertificate{Fingerprint: fingerprint, CertificatePEM: append([]byte(nil), certificatePEM...)})
+	s.records = append(s.records, added)
 	return nil
 }
 
-func testCertificateFingerprint(certificatePEM []byte) (string, error) {
+func testTrustStoreCertificate(certificatePEM []byte) (truststore.Certificate, error) {
 	block, _ := pem.Decode(certificatePEM)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return "", fmt.Errorf("CA certificate PEM is invalid")
+		return truststore.Certificate{}, fmt.Errorf("CA certificate PEM is invalid")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return truststore.Certificate{}, err
 	}
 	sum := sha1.Sum(block.Bytes)
-	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
+	return truststore.Certificate{
+		Fingerprint: strings.ToUpper(hex.EncodeToString(sum[:])),
+		X509:        cert,
+	}, nil
 }
 
-func (s *fakeTrustStore) remove(_ context.Context, fingerprints []string) error {
+func (s *fakeTrustStore) Remove(_ context.Context, fingerprints []string) error {
 	if s.removeErr != nil {
 		return s.removeErr
 	}

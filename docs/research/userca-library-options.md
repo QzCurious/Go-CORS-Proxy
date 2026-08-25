@@ -49,6 +49,6 @@ Smallstep `certinfo` exports certificate/CSR text rendering functions ([API sour
 
 ## Recommendation
 
-Retain `crypto/rsa`, `crypto/x509`, `crypto/tls`, and the project-owned durable publication logic for authority material. Retain the macOS `security` and Windows PowerShell adapters because they encode product semantics—not generic certificate plumbing—especially current-user scope, strict footprint discovery, fingerprint removal, context handling, and `ErrApprovalDenied`.
+Retain `crypto/rsa`, `crypto/x509`, `crypto/tls`, and the project-owned durable publication logic for authority material. Retain the custom macOS `security` and Windows PowerShell adapters in a cohesive Trust Store module because they hide current-user root-store listing, addition, fingerprint removal, context handling, and platform approval-denial interpretation. UserCA, not Trust Store, applies the strict seamless-cors ownership footprint and classifies approval denial into its caller-owned semantic error.
 
 If the scope later changes to **system-wide** trust and removal by supplied certificate (rather than enumeration/fingerprint reconciliation), reassess `smallstep/truststore`. Under the current requirements, it would be useful mainly as reference source, not as an imported abstraction.

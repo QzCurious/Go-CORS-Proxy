@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/lib/truststore"
 	"github.com/adrg/xdg"
 )
 
@@ -35,7 +36,7 @@ type State struct {
 func New() *CA {
 	return &CA{
 		dir:        filepath.Join(xdg.StateHome, "seamless-cors", "userca"),
-		trustStore: newTrustStore(),
+		trustStore: truststore.New(),
 		now:        time.Now,
 	}
 }

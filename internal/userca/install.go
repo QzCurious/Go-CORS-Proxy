@@ -15,7 +15,7 @@ func (u *CA) install(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 
-	if before.authorityValid && !before.renewalDue {
+	if before.authorityValid && !before.renewalDue && (before.trusted || !before.ownedTrust) {
 		return u.reuseAuthority(ctx, before)
 	}
 
@@ -38,7 +38,7 @@ func (u *CA) install(ctx context.Context) (State, error) {
 	}
 
 	// A failed trust mutation must not leave an untrusted local pair behind.
-	if err := u.trustStore.trust(ctx, authority.certPath); err != nil {
+	if err := userCAAddError(u.trustStore.Add(ctx, authority.certPath)); err != nil {
 		cleanupErr := uninstallAll(context.Background(), u.dir, u.trustStore)
 		return State{}, errors.Join(err, cleanupErr)
 	}
@@ -55,7 +55,7 @@ func (u *CA) install(ctx context.Context) (State, error) {
 
 func (u *CA) reuseAuthority(ctx context.Context, before inspectedState) (State, error) {
 	if !before.trusted {
-		if err := u.trustStore.trust(ctx, before.authority.certPath); err != nil {
+		if err := userCAAddError(u.trustStore.Add(ctx, before.authority.certPath)); err != nil {
 			return State{}, err
 		}
 	}
