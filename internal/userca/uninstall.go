@@ -10,7 +10,7 @@ func (u *CA) uninstall(ctx context.Context) error {
 		return err
 	}
 
-	if err := uninstallAll(ctx, u.dir, u.store); err != nil {
+	if err := uninstallAll(ctx, u.dir, u.trustStore); err != nil {
 		return err
 	}
 

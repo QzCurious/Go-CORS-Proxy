@@ -19,12 +19,43 @@ import (
 	"time"
 )
 
+const (
+	ownedCACommonName = "seamless-cors Local CA"
+	certFileName      = "certificate.pem"
+	keyFileName       = "private-key.pem"
+	validity          = 5 * 365 * 24 * time.Hour
+)
+
 // authority is the one locally persisted certificate and private-key pair.
 type authority struct {
 	certPath string
 	keyPath  string
 	cert     *x509.Certificate
 	key      crypto.PrivateKey
+}
+
+func loadAuthority(dir string) (*authority, error) {
+	certPath := filepath.Join(dir, certFileName)
+	keyPath := filepath.Join(dir, keyFileName)
+
+	// Read the persisted pair before interpreting either file so filesystem
+	// failures remain distinct from invalid authority material.
+	certPEM, err := readFile(certPath)
+	if err != nil {
+		return nil, err
+	}
+	keyPEM, err := readFile(keyPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse and validate the complete pair so no partial semantic authority
+	// escapes this load phase.
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidAuthority, err)
+	}
+	return &authority{certPath: certPath, keyPath: keyPath, cert: pair.Leaf, key: pair.PrivateKey}, nil
 }
 
 func createAuthority(dir string, now func() time.Time) (*authority, error) {
@@ -79,30 +110,6 @@ func createAuthority(dir string, now func() time.Time) (*authority, error) {
 	return &authority{certPath: certPath, keyPath: keyPath, cert: cert, key: key}, nil
 }
 
-func loadAuthority(dir string) (*authority, error) {
-	certPath := filepath.Join(dir, certFileName)
-	keyPath := filepath.Join(dir, keyFileName)
-
-	// Read the persisted pair before interpreting either file so filesystem
-	// failures remain distinct from invalid authority material.
-	certPEM, err := readFile(certPath)
-	if err != nil {
-		return nil, err
-	}
-	keyPEM, err := readFile(keyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse and validate the complete pair so no partial semantic authority
-	// escapes this load phase.
-	pair, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errInvalidAuthority, err)
-	}
-	return &authority{certPath: certPath, keyPath: keyPath, cert: pair.Leaf, key: pair.PrivateKey}, nil
-}
-
 func (a *authority) fingerprint() string {
 	sum := sha1.Sum(a.cert.Raw)
 	return strings.ToUpper(hex.EncodeToString(sum[:]))
@@ -128,19 +135,6 @@ func isOwnedAuthorityCertificate(cert *x509.Certificate) bool {
 	}
 	return cert.CheckSignatureFrom(cert) == nil
 }
-
-func isAuthorityUsable(cert *x509.Certificate, now time.Time) bool {
-	return isOwnedAuthorityCertificate(cert) &&
-		!now.Before(cert.NotBefore) &&
-		now.Before(cert.NotAfter)
-}
-
-const (
-	ownedCACommonName = "seamless-cors Local CA"
-	certFileName      = "certificate.pem"
-	keyFileName       = "private-key.pem"
-	validity          = 5 * 365 * 24 * time.Hour
-)
 
 var errInvalidAuthority = errors.New("UserCA authority material is invalid")
 

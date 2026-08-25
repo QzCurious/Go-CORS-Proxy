@@ -17,7 +17,7 @@ import (
 )
 
 func TestInspectMissingIsNotUsable(t *testing.T) {
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: &fakeTrustStore{}, now: time.Now}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: &fakeTrustStore{}, now: time.Now}
 	current, err := ca.Inspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestInstallRecoversPartialAuthorityFootprints(t *testing.T) {
 			}
 			arrange(t, dir)
 			store := &fakeTrustStore{}
-			ca := &CA{dir: dir, store: store, now: time.Now}
+			ca := &CA{dir: dir, trustStore: store, now: time.Now}
 
 			before, err := ca.Inspect(context.Background())
 			if err != nil {
@@ -87,7 +87,7 @@ func TestInstallRecoversPartialAuthorityFootprints(t *testing.T) {
 
 func TestInstallIsIdempotent(t *testing.T) {
 	store := &fakeTrustStore{}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: store, now: time.Now}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
 	first, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 
 func TestInstallRepairsTrustWithoutReplacingPair(t *testing.T) {
 	store := &fakeTrustStore{}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: store, now: time.Now}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestInstallRepairsTrustWithoutReplacingPair(t *testing.T) {
 
 func TestInstallVerifiesRepairedTrustBeforeReturningUsable(t *testing.T) {
 	store := &fakeTrustStore{}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: store, now: time.Now}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestInstallRepairsPermissionsWithoutReplacingPair(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows permission bits do not model the UserCA ACL")
 	}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: &fakeTrustStore{}, now: time.Now}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: &fakeTrustStore{}, now: time.Now}
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestInstallRepairsPermissionsWithoutReplacingPair(t *testing.T) {
 func TestInspectReportsRenewalDueAndInstallReplacesWithoutOverlap(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeTrustStore{}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: store, now: func() time.Time { return now }}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: func() time.Time { return now }}
 	first, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestInspectReportsRenewalDueAndInstallReplacesWithoutOverlap(t *testing.T) 
 func TestInstallReplacesExpiredAuthority(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeTrustStore{}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: store, now: func() time.Time { return now }}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: func() time.Time { return now }}
 	first, err := ca.Install(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestInstallReplacesExpiredAuthority(t *testing.T) {
 func TestInstallClearsInvalidMaterialAndOwnedTrustBeforeReplacement(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "userca")
 	store := &fakeTrustStore{}
-	ca := &CA{dir: dir, store: store, now: time.Now}
+	ca := &CA{dir: dir, trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestInstallClearsInvalidMaterialAndOwnedTrustBeforeReplacement(t *testing.T
 func TestInstallDoesNotDestroyStateWhenInspectionCannotReadPair(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "userca")
 	store := &fakeTrustStore{}
-	ca := &CA{dir: dir, store: store, now: time.Now}
+	ca := &CA{dir: dir, trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestInstallDoesNotDestroyStateWhenInspectionCannotReadPair(t *testing.T) {
 
 func TestInstallCleansLocalPairWhenTrustFails(t *testing.T) {
 	store := &fakeTrustStore{trustErr: ErrApprovalDenied}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: store, now: time.Now}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); !errors.Is(err, ErrApprovalDenied) {
 		t.Fatalf("install error = %v, want ErrApprovalDenied", err)
 	}
@@ -292,7 +292,7 @@ func TestInstallCleansLocalPairWhenTrustFails(t *testing.T) {
 func TestUninstallRemovesEveryOwnedFactAndIsIdempotent(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "userca")
 	store := &fakeTrustStore{}
-	ca := &CA{dir: dir, store: store, now: time.Now}
+	ca := &CA{dir: dir, trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestUninstallRemovesEveryOwnedFactAndIsIdempotent(t *testing.T) {
 
 func TestUninstallReportsIncompleteTrustRemoval(t *testing.T) {
 	store := &fakeTrustStore{}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), store: store, now: time.Now}
+	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
 	if _, err := ca.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}

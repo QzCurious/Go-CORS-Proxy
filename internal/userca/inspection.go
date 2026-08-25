@@ -2,9 +2,7 @@ package userca
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
-	"fmt"
 	"io/fs"
 	"time"
 )
@@ -23,7 +21,7 @@ type inspectedState struct {
 
 func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	// Discover every owned trust and storage fact.
-	records, err := u.store.trustedCertificates(ctx)
+	records, err := u.trustStore.trustedCertificates(ctx)
 	if err != nil {
 		return inspectedState{}, err
 	}
@@ -44,38 +42,28 @@ func (u *CA) inspect(ctx context.Context) (inspectedState, error) {
 	fingerprint := active.fingerprint()
 	state.ownedFacts = true
 
-	// Establish validity, trust, and renewal facts.
-	state.authority = active
-	state.trusted = containsFingerprint(records, fingerprint)
-	state.renewalDue = !u.now().Add(renewalWindow).Before(active.cert.NotAfter)
-	if !isAuthorityUsable(active.cert, u.now()) {
+	// Validate ownership and the validity period before deriving usability facts.
+	now := u.now()
+	if !isOwnedAuthorityCertificate(active.cert) ||
+		now.Before(active.cert.NotBefore) ||
+		!now.Before(active.cert.NotAfter) {
 		return state, nil
 	}
+	state.authority = active
 	state.authorityValid = true
+	state.trusted = containsFingerprint(records, fingerprint)
+	state.renewalDue = !now.Add(renewalWindow).Before(active.cert.NotAfter)
 	if !state.trusted {
 		return state, nil
 	}
 
 	// Publish one coherent usable current state.
 	material := active.tlsCertificate()
-	state.current, err = newState(active.cert.NotAfter, state.renewalDue, &material)
-	if err != nil {
-		return inspectedState{}, err
+	state.current = State{
+		Usable:          true,
+		ExpiresAt:       active.cert.NotAfter,
+		RenewalDue:      state.renewalDue,
+		SigningMaterial: &material,
 	}
 	return state, nil
-}
-
-func newState(expiresAt time.Time, renewalDue bool, signingMaterial *tls.Certificate) (State, error) {
-	if expiresAt.IsZero() {
-		return State{}, fmt.Errorf("usable UserCA current state requires expiry")
-	}
-	if signingMaterial == nil {
-		return State{}, fmt.Errorf("usable UserCA current state requires signing material")
-	}
-	return State{
-		Usable:          true,
-		ExpiresAt:       expiresAt,
-		RenewalDue:      renewalDue,
-		SigningMaterial: signingMaterial,
-	}, nil
 }

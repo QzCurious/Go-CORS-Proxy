@@ -16,9 +16,9 @@ var ErrApprovalDenied = errors.New("certificate trust approval denied")
 // CA maintains the current user's seamless-cors development authority as one
 // coherent capability. It does not cache assessment results.
 type CA struct {
-	dir   string
-	store trustStore
-	now   func() time.Time
+	dir        string
+	trustStore trustStore
+	now        func() time.Time
 }
 
 // State is one coherent observation of UserCA facts and, exactly when
@@ -34,9 +34,9 @@ type State struct {
 // inspecting or mutating either.
 func New() *CA {
 	return &CA{
-		dir:   filepath.Join(xdg.StateHome, "seamless-cors", "userca"),
-		store: newTrustStore(),
-		now:   time.Now,
+		dir:        filepath.Join(xdg.StateHome, "seamless-cors", "userca"),
+		trustStore: newTrustStore(),
+		now:        time.Now,
 	}
 }
 

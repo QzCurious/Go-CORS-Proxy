@@ -21,7 +21,7 @@ func (u *CA) install(ctx context.Context) (State, error) {
 
 	// Replacement deliberately accepts a short explicit-install interruption
 	// instead of maintaining overlapping authorities.
-	if err := uninstallAll(ctx, u.dir, u.store); err != nil {
+	if err := uninstallAll(ctx, u.dir, u.trustStore); err != nil {
 		return State{}, err
 	}
 	clean, err := u.inspect(ctx)
@@ -38,8 +38,8 @@ func (u *CA) install(ctx context.Context) (State, error) {
 	}
 
 	// A failed trust mutation must not leave an untrusted local pair behind.
-	if err := u.store.trust(ctx, authority.certPath); err != nil {
-		cleanupErr := uninstallAll(context.Background(), u.dir, u.store)
+	if err := u.trustStore.trust(ctx, authority.certPath); err != nil {
+		cleanupErr := uninstallAll(context.Background(), u.dir, u.trustStore)
 		return State{}, errors.Join(err, cleanupErr)
 	}
 
@@ -55,7 +55,7 @@ func (u *CA) install(ctx context.Context) (State, error) {
 
 func (u *CA) reuseAuthority(ctx context.Context, before inspectedState) (State, error) {
 	if !before.trusted {
-		if err := u.store.trust(ctx, before.authority.certPath); err != nil {
+		if err := u.trustStore.trust(ctx, before.authority.certPath); err != nil {
 			return State{}, err
 		}
 	}
