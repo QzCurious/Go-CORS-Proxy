@@ -21,7 +21,7 @@ type fakeWindowsRunner struct {
 func (f *fakeWindowsRunner) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
 	script := args[len(args)-1]
-	if strings.Contains(script, "Get-ChildItem") {
+	if strings.Contains(script, "ConvertTo-Json") {
 		return f.listOut, nil
 	}
 	if strings.Contains(script, "Remove-Item") && f.err == nil {
@@ -92,7 +92,7 @@ func TestWindowsListReturnsEveryParseableCertificate(t *testing.T) {
 	}
 }
 
-func TestWindowsRemoveDeletesPresentFingerprintsAndVerifiesAbsence(t *testing.T) {
+func TestWindowsRemoveDeletesEachFingerprintWithoutListing(t *testing.T) {
 	certificate := mustParsePEM(t, testCertificatePEM(t, "CA", true))
 	out, err := json.Marshal(map[string]string{"DER": base64.StdEncoding.EncodeToString(certificate.Raw)})
 	if err != nil {
@@ -104,8 +104,18 @@ func TestWindowsRemoveDeletesPresentFingerprintsAndVerifiesAbsence(t *testing.T)
 		t.Fatal(err)
 	}
 	joined := strings.Join(runner.calls, "\n")
-	if strings.Count(joined, "Remove-Item") != 1 {
+	if strings.Count(joined, "Remove-Item") != 2 {
 		t.Fatalf("remove calls:\n%s", joined)
+	}
+	if !strings.Contains(joined, `'ABCDEF'`) ||
+		!strings.Contains(joined, `'`+certificateFingerprint(certificate)+`'`) {
+		t.Fatalf("remove calls do not contain every fingerprint:\n%s", joined)
+	}
+	if strings.Count(joined, "Where-Object { $_.Thumbprint -eq $thumbprint }") != 2 {
+		t.Fatalf("remove calls do not match certificates by thumbprint:\n%s", joined)
+	}
+	if strings.Contains(joined, "ConvertTo-Json") {
+		t.Fatalf("removal listed certificates:\n%s", joined)
 	}
 }
 

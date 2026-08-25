@@ -174,39 +174,47 @@ func TestDarwinListDoesNotTreatCommandFailureAsAnEmptyStore(t *testing.T) {
 	}
 }
 
-func TestDarwinRemoveIsCompleteAndIdempotent(t *testing.T) {
+func TestDarwinRemoveUsesFingerprintAndCurrentUserTrustSettings(t *testing.T) {
 	certificatePEM := testCertificatePEM(t, "duplicate", true)
-	listed := append(append([]byte(nil), certificatePEM...), certificatePEM...)
+	fingerprint := certificateFingerprint(mustParsePEM(t, certificatePEM))
 	deleteCalls := 0
 	runner := &fakeDarwinRunner{runFunc: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		switch args[0] {
-		case "find-certificate":
-			return listed, nil
-		case "delete-certificate":
+		if args[0] == "delete-certificate" {
 			deleteCalls++
-			listed = nil
-			return nil, nil
-		default:
-			return nil, nil
 		}
+		return nil, nil
 	}}
 	store := testDarwinStore(runner)
-	fingerprint := certificateFingerprint(mustParsePEM(t, certificatePEM))
-	if err := store.Remove(context.Background(), []string{fingerprint, fingerprint}); err != nil {
+	if err := store.Remove(context.Background(), []string{fingerprint}); err != nil {
 		t.Fatal(err)
 	}
 	if deleteCalls != 1 {
-		t.Fatalf("delete calls = %d, want one per fingerprint", deleteCalls)
+		t.Fatalf("delete calls = %d, want 1", deleteCalls)
 	}
 	joined := strings.Join(runner.calls, "\n")
 	if !strings.Contains(joined, "delete-certificate -Z "+fingerprint+" -t /tmp/login.keychain-db") {
 		t.Fatalf("removal did not include user trust settings:\n%s", joined)
 	}
-	if err := store.Remove(context.Background(), []string{fingerprint}); err != nil {
-		t.Fatal(err)
+	if strings.Contains(joined, "find-certificate") {
+		t.Fatalf("removal listed certificates:\n%s", joined)
 	}
-	if deleteCalls != 1 {
-		t.Fatal("idempotent removal attempted an absent fingerprint")
+}
+
+func TestDarwinRemoveReportsCommandFailure(t *testing.T) {
+	certificatePEM := testCertificatePEM(t, "certificate", true)
+	wantErr := errors.New("denied")
+	runner := &fakeDarwinRunner{runFunc: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if args[0] == "delete-certificate" {
+			return []byte("authorization denied"), wantErr
+		}
+		return certificatePEM, nil
+	}}
+	store := testDarwinStore(runner)
+	fingerprint := certificateFingerprint(mustParsePEM(t, certificatePEM))
+
+	err := store.Remove(context.Background(), []string{fingerprint})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Remove() error = %v, want wrapped command error", err)
 	}
 }
 

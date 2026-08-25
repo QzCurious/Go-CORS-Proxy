@@ -51,8 +51,11 @@ Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root -Error
 
 func (s *windowsStore) remove(ctx context.Context, fingerprint string) error {
 	script := fmt.Sprintf(`
-Remove-Item -Path %s -ErrorAction SilentlyContinue
-`, psQuote(`Cert:\CurrentUser\Root\`+fingerprint))
+$thumbprint = %s
+Get-ChildItem -LiteralPath Cert:\CurrentUser\Root -ErrorAction Stop |
+	Where-Object { $_.Thumbprint -eq $thumbprint } |
+	Remove-Item -ErrorAction Stop
+`, psQuote(fingerprint))
 	_, err := s.powershell(ctx, script)
 	return err
 }

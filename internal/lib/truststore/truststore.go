@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -51,37 +50,13 @@ func (s *Store) Add(ctx context.Context, certificatePath string) error {
 }
 
 // Remove removes every trust-store entry matching any supplied fingerprint.
-// Missing fingerprints are successful.
+// Fingerprints use Certificate.Fingerprint format.
 func (s *Store) Remove(ctx context.Context, fingerprints []string) error {
-	targets := removalTargets(fingerprints)
-	if len(targets) == 0 {
-		return nil
-	}
-	before, err := s.List(ctx)
-	if err != nil {
-		return err
-	}
-	present := make(map[string]struct{}, len(targets))
-	for _, certificate := range before {
-		if _, ok := targets[certificate.Fingerprint]; ok {
-			present[certificate.Fingerprint] = struct{}{}
-		}
-	}
-	if len(present) == 0 {
-		return nil
-	}
-
 	var errs []error
-	for fingerprint := range present {
+	for _, fingerprint := range fingerprints {
 		if err := s.platform.remove(ctx, fingerprint); err != nil {
 			errs = append(errs, err)
 		}
-	}
-	after, err := s.List(ctx)
-	if err != nil {
-		errs = append(errs, err)
-	} else if err := remainingRemovalError(after, targets); err != nil {
-		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
@@ -89,26 +64,6 @@ func (s *Store) Remove(ctx context.Context, fingerprints []string) error {
 func certificateFingerprint(cert *x509.Certificate) string {
 	sum := sha1.Sum(cert.Raw)
 	return strings.ToUpper(hex.EncodeToString(sum[:]))
-}
-
-func removalTargets(fingerprints []string) map[string]struct{} {
-	targets := make(map[string]struct{}, len(fingerprints))
-	for _, fingerprint := range fingerprints {
-		fingerprint = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(fingerprint), " ", ""))
-		if fingerprint != "" {
-			targets[fingerprint] = struct{}{}
-		}
-	}
-	return targets
-}
-
-func remainingRemovalError(certificates []Certificate, targets map[string]struct{}) error {
-	for _, certificate := range certificates {
-		if _, ok := targets[certificate.Fingerprint]; ok {
-			return fmt.Errorf("remove certificate %s: trust store still contains a matching entry", certificate.Fingerprint)
-		}
-	}
-	return nil
 }
 
 type commandRunner interface {
