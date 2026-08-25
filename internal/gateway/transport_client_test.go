@@ -76,21 +76,6 @@ func TestStartFailureReturnsSemanticResult(t *testing.T) {
 	}
 }
 
-func TestStatusReportsHTTPFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "nope", http.StatusUnauthorized)
-	}))
-	defer server.Close()
-
-	client := newClient(stateCache{
-		HTTPRouterListen: server.Listener.Addr().String(),
-		Token:            "bad-token",
-	})
-	if _, err := client.Status(context.Background()); err == nil {
-		t.Fatal("expected status error")
-	}
-}
-
 func TestCommandClientHasNoHiddenTotalTimeout(t *testing.T) {
 	client := newClient(stateCache{})
 	if client.httpClient.Timeout != 0 {

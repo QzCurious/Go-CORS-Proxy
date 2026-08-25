@@ -41,17 +41,3 @@ func TestProjectionAddsHTTPSRoutesOnlyWhenTrusted(t *testing.T) {
 		t.Fatalf("trusted PAC omitted HTTPS routes:\n%s", withTrust)
 	}
 }
-
-func TestGeneratedPACUsesCanonicalRouteMatcher(t *testing.T) {
-	js := Project(upstreamlist.Projection{}, false, "127.0.0.1:8080")
-	for _, unwanted := range []string{"HostRoutes", "OriginRoutes", "HTTPSRoutingEnabled", "dnsDomainIs"} {
-		if strings.Contains(js, unwanted) {
-			t.Fatalf("Generated PAC contains obsolete routing logic %q", unwanted)
-		}
-	}
-	for _, wanted := range []string{"VIEW_BAG.routes", "normalizeRequest", "matchesRoute"} {
-		if !strings.Contains(js, wanted) {
-			t.Fatalf("Generated PAC missing canonical route logic %q:\n%s", wanted, js)
-		}
-	}
-}

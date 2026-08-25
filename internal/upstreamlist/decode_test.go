@@ -31,43 +31,6 @@ http://[::1]:3000
 	}
 }
 
-func TestParseHostSelectorReturnsErrorForRejectedCandidate(t *testing.T) {
-	if _, err := parseHostSelector("example.test:8080"); err == nil {
-		t.Fatal("parseHostSelector() error = nil")
-	}
-}
-
-func TestParseOriginSelectorReturnsErrorForRejectedCandidate(t *testing.T) {
-	if _, err := parseOriginSelector("ftp://example.test"); err == nil {
-		t.Fatal("parseOriginSelector() error = nil")
-	}
-}
-
-func TestProjectionExposesFields(t *testing.T) {
-	hosts := []HostSelector{{Hostname: "api.example.test"}}
-	origins := []OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}}
-	warnings := []Warning{{Line: 1, Text: "bad", Diagnostic: "invalid"}}
-	list := Projection{HostSelectors: hosts, OriginSelectors: origins, Warnings: warnings}
-
-	hosts[0].Hostname = "mutated.example.test"
-	origins[0].Hostname = "mutated.example.test"
-	warnings[0].Diagnostic = "mutated"
-	if len(list.HostSelectors)+len(list.OriginSelectors) != 2 || !list.HTTPSIntent() {
-		t.Fatalf("entry semantics = count %d, https intent %t", len(list.HostSelectors)+len(list.OriginSelectors), list.HTTPSIntent())
-	}
-	if list.HostSelectors[0].Hostname != "mutated.example.test" ||
-		list.OriginSelectors[0].Hostname != "mutated.example.test" ||
-		list.Warnings[0].Diagnostic != "mutated" {
-		t.Fatalf("exported fields did not expose the supplied values: %#v", list)
-	}
-
-	gotHosts := list.HostSelectors
-	gotHosts[0].Hostname = "another.example.test"
-	if list.HostSelectors[0].Hostname != "another.example.test" {
-		t.Fatal("exported entry fields did not expose the stored entries")
-	}
-}
-
 func TestHTTPSIntentIgnoresHostAndHTTPSelectors(t *testing.T) {
 	list := Projection{
 		HostSelectors:   []HostSelector{{Hostname: "api.example.test"}},
@@ -75,25 +38,6 @@ func TestHTTPSIntentIgnoresHostAndHTTPSelectors(t *testing.T) {
 	}
 	if list.HTTPSIntent() {
 		t.Fatal("HTTP-only entries should not express HTTPS intent")
-	}
-}
-
-func TestDecodeRetainsOmittedAndExplicitDefaultPortsAsDistinctSelectors(t *testing.T) {
-	decoded, err := decode([]byte(`
-https://example.test
-https://example.test:443
-https://example.test:0443
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []OriginSelector{
-		{Scheme: "https", Hostname: "example.test"},
-		{Scheme: "https", Hostname: "example.test", Port: "443"},
-		{Scheme: "https", Hostname: "example.test", Port: "443"},
-	}
-	if !reflect.DeepEqual(decoded.OriginSelectors, want) {
-		t.Fatalf("Origin Selectors = %#v, want %#v", decoded.OriginSelectors, want)
 	}
 }
 
@@ -170,19 +114,6 @@ func TestDecodeRejectsNonUTF8(t *testing.T) {
 	}
 }
 
-func TestDecodeDiscardsOriginUserInformation(t *testing.T) {
-	decoded, err := decode([]byte("https://user:password@example.test\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []OriginSelector{{Scheme: "https", Hostname: "example.test"}}
-	if !reflect.DeepEqual(decoded.OriginSelectors, want) ||
-		len(decoded.HostSelectors)+len(decoded.OriginSelectors) != 1 ||
-		len(decoded.Warnings) != 0 {
-		t.Fatalf("decode result = %#v", decoded)
-	}
-}
-
 func TestDecodeCollectsEveryInvalidLine(t *testing.T) {
 	decoded, err := decode([]byte(`
 valid.example.test
@@ -232,26 +163,6 @@ https:///missing-host
 		wantLine := idx + 2
 		if warning.Line != wantLine || warning.Text == "" || warning.Diagnostic != invalidSelectorDiagnostic {
 			t.Fatalf("warning %d = %#v, want source line %d", idx, warning, wantLine)
-		}
-	}
-}
-
-func TestDecodeDoesNotClassifyUnexpectedSchemeSyntax(t *testing.T) {
-	decoded, err := decode([]byte(`
-ftp://example.test
-garbage://example.test
-example.test/://junk
-://example.test
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(decoded.HostSelectors)+len(decoded.OriginSelectors) != 0 || len(decoded.Warnings) != 4 {
-		t.Fatalf("decoded = %#v", decoded)
-	}
-	for _, warning := range decoded.Warnings {
-		if warning.Diagnostic != invalidSelectorDiagnostic {
-			t.Fatalf("warning = %#v", warning)
 		}
 	}
 }

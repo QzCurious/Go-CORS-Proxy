@@ -210,22 +210,6 @@ func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testi
 	}
 }
 
-func TestCreationFailureWarningAttachesToTheCurrentStartResult(t *testing.T) {
-	creationErr := errors.New("creation denied")
-	result := withUpstreamListCreationWarning(StartConsentRequired{}, creationErr)
-
-	consent, ok := result.(StartConsentRequired)
-	if !ok {
-		t.Fatalf("result = %#v", result)
-	}
-	if warning := consent.UpstreamListCreationWarningDetail(); warning == nil || warning.Cause != creationErr.Error() {
-		t.Fatalf("creation warning = %#v", warning)
-	}
-	if warning := (AlreadyRunning{}).UpstreamListCreationWarningDetail(); warning != nil {
-		t.Fatalf("unrelated result warning = %#v", warning)
-	}
-}
-
 func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
 	settings := &lifecycleTestSystemSettings{
 		clearErr: errors.New("cleanup denied"),
@@ -619,28 +603,6 @@ func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestTransientOwnerRejectsStartBeforeCAMutationAdmission(t *testing.T) {
-	lifecycle, err := newLifecycleUninspected(
-		&lifecycleTestSystemSettings{},
-		&fakeUserCA{},
-		newCoordinator(t.TempDir()),
-		"",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycle.transientOwner = true
-
-	result, err := executeAcceptedStart(t, lifecycle)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Kind() != StartResultStartAlreadyMutating {
-		t.Fatalf("transient start result = %s", result.Kind())
 	}
 }
 

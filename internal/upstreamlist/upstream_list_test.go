@@ -44,6 +44,20 @@ func TestProjectKeepsExactAndWildcardHostSelectorsDistinct(t *testing.T) {
 	}
 }
 
+func TestProjectKeepsOmittedAndExplicitDefaultPortsDistinct(t *testing.T) {
+	projection, err := upstreamlist.Project([]byte("https://example.test\nhttps://example.test:443\nhttps://example.test:0443\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []upstreamlist.OriginSelector{
+		{Scheme: "https", Hostname: "example.test"},
+		{Scheme: "https", Hostname: "example.test", Port: "443"},
+	}
+	if !reflect.DeepEqual(projection.OriginSelectors, want) {
+		t.Fatalf("Origin Selectors = %#v, want %#v", projection.OriginSelectors, want)
+	}
+}
+
 func TestProjectReturnsConcreteWholeDocumentError(t *testing.T) {
 	projection, err := upstreamlist.Project([]byte{0xff})
 	var encodingErr *upstreamlist.InvalidEncodingError

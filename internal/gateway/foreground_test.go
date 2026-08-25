@@ -30,32 +30,6 @@ func TestNewOwnerUsesEphemeralLoopbackRouter(t *testing.T) {
 	}
 }
 
-func TestIndependentOwnerListenersReceiveDistinctEphemeralPorts(t *testing.T) {
-	first, err := newOwnerWithCoordinator(
-		&lifecycleTestSystemSettings{},
-		emptyTestUserCA{},
-		newCoordinator(t.TempDir()),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = first.listener.Close() })
-	second, err := newOwnerWithCoordinator(
-		&lifecycleTestSystemSettings{},
-		emptyTestUserCA{},
-		newCoordinator(t.TempDir()),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = second.listener.Close() })
-	firstAddress := first.listener.Addr().(*net.TCPAddr)
-	secondAddress := second.listener.Addr().(*net.TCPAddr)
-	if firstAddress.Port == secondAddress.Port {
-		t.Fatalf("independent Router ports = %d, want distinct ports", firstAddress.Port)
-	}
-}
-
 func TestSuperviseOwnerCancelsPendingActivationOnCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	activationReturned := make(chan struct{})

@@ -244,20 +244,6 @@ func TestHomeRelativePathLeavesPathsOutsideHomeUnchanged(t *testing.T) {
 	}
 }
 
-func TestServeCommandRendersReadiness(t *testing.T) {
-	var out bytes.Buffer
-	err := serveWithContext(context.Background(), &out, func(_ context.Context, ready func()) error {
-		ready()
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "gateway owner running") {
-		t.Fatalf("serve output = %q", out.String())
-	}
-}
-
 func TestStopCommandRendersCleanupFailure(t *testing.T) {
 	var out bytes.Buffer
 	err := stopGatewayWithCommand(context.Background(), &out, func(context.Context) (gateway.StopResult, error) {

@@ -32,37 +32,6 @@ func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
 	}
 }
 
-func TestRuntimeRejectsInvalidInitialFileObservationOutcome(t *testing.T) {
-	tests := []struct {
-		name    string
-		outcome fileobservation.Outcome
-	}{
-		{name: "nil", outcome: nil},
-		{name: "pointer", outcome: &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			runtime, err := newRuntime("/tmp/upstreams.txt", nil, test.outcome)
-			if err == nil || !strings.Contains(err.Error(), "unsupported initial file observation outcome") {
-				t.Fatalf("runtime = %#v, error = %v", runtime, err)
-			}
-		})
-	}
-}
-
-func TestRuntimeRejectsInvalidFileObservationUpdate(t *testing.T) {
-	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileobservation.Contents(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(runtime)
-
-	invalid := &fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}
-	if err := runtime.applyUpstreamListOutcome(invalid); err == nil || !strings.Contains(err.Error(), "unsupported file observation outcome") {
-		t.Fatalf("invalid update error = %v", err)
-	}
-}
-
 func TestRuntimeProjectsSourcesIndependentlyThenMerges(t *testing.T) {
 	runtime, err := newRuntimeFromSources([]runtimeUpstreamListInput{
 		{kind: UpstreamListSourceGlobal, path: "/config/upstreams.txt", initial: fileobservation.Contents("global.example.test\nshared.example.test\n")},

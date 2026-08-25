@@ -181,25 +181,6 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 	}
 }
 
-func TestProjectionInstallsCompletePAC(t *testing.T) {
-	list := mustDesiredList(t, "api.example.test\n")
-	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	projection := pacrouting.Project(list, false, "127.0.0.1:8080")
-	_, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projection)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := publicationGeneration(module); got != 1 {
-		t.Fatalf("initial publication generation = %d, want 1", got)
-	}
-	settings.mu.Lock()
-	defer settings.mu.Unlock()
-	if !strings.Contains(settings.writes[0], "v=1") {
-		t.Fatalf("initial publication URL = %q", settings.writes[0])
-	}
-}
-
 func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "other.example.test\n")

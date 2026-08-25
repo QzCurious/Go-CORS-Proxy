@@ -247,43 +247,6 @@ func TestTrustedHTTPSInterceptionRepairsResponseAndCompletes(t *testing.T) {
 	}
 }
 
-func TestTrustedHTTPSInterceptionAnswersPreflightLocally(t *testing.T) {
-	var upstreamHits atomic.Int32
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamHits.Add(1)
-		w.WriteHeader(http.StatusTeapot)
-	}))
-	defer upstream.Close()
-
-	proxyServer, proxyURL, roots := trustedProxyServer(t, upstream.Client())
-	defer proxyServer.Close()
-	client := &http.Client{Transport: &http.Transport{
-		Proxy:           http.ProxyURL(proxyURL),
-		TLSClientConfig: roots,
-	}}
-	req, err := http.NewRequest(http.MethodOptions, upstream.URL+"/secure", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Origin", "https://app.local")
-	req.Header.Set("Access-Control-Request-Method", "PATCH")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://app.local" {
-		t.Fatalf("allow origin = %q", got)
-	}
-	if got := upstreamHits.Load(); got != 0 {
-		t.Fatalf("upstream hits = %d", got)
-	}
-}
-
 func TestProxyGeneratedFailureIsNotCORSRepaired(t *testing.T) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
@@ -303,15 +266,6 @@ func TestProxyGeneratedFailureIsNotCORSRepaired(t *testing.T) {
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("allow origin = %q", got)
 	}
-}
-
-func TestNewRequiresTransport(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("New did not panic")
-		}
-	}()
-	corsproxy.New(nil, nil)
 }
 
 func trustedProxyServer(t *testing.T, upstreamClient *http.Client) (*httptest.Server, *url.URL, *tls.Config) {

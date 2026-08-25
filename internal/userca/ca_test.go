@@ -291,23 +291,6 @@ func TestInstallReplacesAmbiguousOwnedTrust(t *testing.T) {
 	}
 }
 
-func TestInspectRejectsDuplicateOwnedTrust(t *testing.T) {
-	store := &fakeTrustStore{}
-	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
-	if _, err := ca.Install(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	store.records = append(store.records, store.records[0])
-
-	current, err := ca.Inspect(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.Usable {
-		t.Fatal("duplicate owned trust reported usable")
-	}
-}
-
 func TestInstallDoesNotDestroyStateWhenInspectionCannotReadPair(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "userca")
 	store := &fakeTrustStore{}

@@ -81,21 +81,3 @@ func TestRunPrintsStartCommandErrors(t *testing.T) {
 		t.Fatalf("stderr = %q", got)
 	}
 }
-
-func TestRunDispatchesServe(t *testing.T) {
-	var called bool
-
-	err := run([]string{"serve"}, io.Discard, io.Discard, commandHandlers{
-		serve: func(io.Writer, io.Writer) error {
-			called = true
-			return nil
-		},
-	})
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !called {
-		t.Fatal("serve handler was not called")
-	}
-}

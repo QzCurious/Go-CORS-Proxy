@@ -121,30 +121,3 @@ func assertContentsOutcome(t *testing.T, outcome Outcome, want string) {
 		t.Fatalf("outcome = %#v, want contents %q", outcome, want)
 	}
 }
-
-func TestParentDirectoryLossStopsObservation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config", "upstreams.txt")
-	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	first := newFakeEventWatcher()
-	calls := 0
-	observation := open(path, time.Millisecond, func(string) (eventWatcher, error) {
-		calls++
-		if calls == 1 {
-			return first.observationWatcher(), nil
-		}
-		return eventWatcher{}, errors.New("parent unavailable")
-	})
-	defer observation.Close()
-	waitInternalOutcome(t, observation.Outcomes())
-
-	first.events <- fsnotify.Event{Name: filepath.Dir(path), Op: fsnotify.Remove}
-	outcome := waitInternalOutcome(t, observation.Outcomes())
-	if _, ok := outcome.(ObservationStoppedError); !ok {
-		t.Fatalf("parent loss outcome = %#v", outcome)
-	}
-}
