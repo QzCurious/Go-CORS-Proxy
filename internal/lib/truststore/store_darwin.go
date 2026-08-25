@@ -31,12 +31,12 @@ func newPlatformStore() (platformStore, error) {
 }
 
 func (s *darwinStore) list(ctx context.Context) ([]Certificate, error) {
-	out, err := s.runner.run(ctx, "security", "find-certificate", "-a", "-p", "-Z", s.keychainPath)
+	out, err := s.runner.run(ctx, "security", "find-certificate", "-a", "-p", s.keychainPath)
 	if err != nil {
 		return nil, fmt.Errorf("list trusted certificates: %s: %w", bytes.TrimSpace(out), err)
 	}
 
-	// Decode the mixed hash-and-PEM stream emitted by security.
+	// Decode the PEM stream emitted by security.
 	var encodedCertificates [][]byte
 	for len(out) > 0 {
 		block, rest := pem.Decode(out)

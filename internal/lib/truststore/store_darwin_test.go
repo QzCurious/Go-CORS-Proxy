@@ -134,7 +134,7 @@ func TestDarwinAddUsesCurrentUserKeychain(t *testing.T) {
 func TestDarwinListReturnsEveryParseableCertificate(t *testing.T) {
 	caPEM := testCertificatePEM(t, "owned-looking CA", true)
 	leafPEM := testCertificatePEM(t, "unrelated leaf", false)
-	runner := &fakeDarwinRunner{out: append(append([]byte("SHA-1 hash: ignored\n"), caPEM...), leafPEM...)}
+	runner := &fakeDarwinRunner{out: append(caPEM, leafPEM...)}
 	store := testDarwinStore(runner)
 
 	certificates, err := store.List(context.Background())
@@ -146,6 +146,9 @@ func TestDarwinListReturnsEveryParseableCertificate(t *testing.T) {
 	}
 	if joined := strings.Join(runner.calls, "\n"); strings.Contains(joined, " -c ") {
 		t.Fatalf("List applied a product-specific certificate-name filter:\n%s", joined)
+	}
+	if joined := strings.Join(runner.calls, "\n"); strings.Contains(joined, " -Z ") {
+		t.Fatalf("List requested platform-computed certificate hashes:\n%s", joined)
 	}
 	if certificates[0].X509.Subject.CommonName != "owned-looking CA" || certificates[1].X509.Subject.CommonName != "unrelated leaf" {
 		t.Fatalf("listed certificates = %#v", certificates)
