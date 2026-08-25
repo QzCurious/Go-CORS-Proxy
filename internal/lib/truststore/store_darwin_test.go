@@ -64,9 +64,9 @@ func TestDarwinMutationsObserveCancellation(t *testing.T) {
 	})
 	t.Run("remove", func(t *testing.T) {
 		certificatePEM := testCertificatePEM(t, "example", true)
-		certificate := certificatesFromPEMOutput(certificatePEM)[0]
+		certificate := mustParsePEM(t, certificatePEM)
 		assertDarwinMutationCancellation(t, func(ctx context.Context, store *Store) error {
-			return store.Remove(ctx, []string{certificate.Fingerprint})
+			return store.Remove(ctx, []string{certificateFingerprint(certificate)})
 		}, certificatePEM)
 	})
 }
@@ -98,15 +98,20 @@ func assertDarwinMutationCancellation(t *testing.T, mutate func(context.Context,
 	}
 }
 
-func TestDarwinAddMapsApprovalCancellation(t *testing.T) {
+func TestDarwinAddWrapsCommandFailureAndDiagnostic(t *testing.T) {
+	commandErr := errors.New("exit status 1")
 	runner := &fakeDarwinRunner{
-		out: []byte("SecTrustSettingsSetTrustSettings: The authorization was canceled by the user."),
-		err: errors.New("exit status 1"),
+		out: []byte("trust settings update failed"),
+		err: commandErr,
 	}
 	store := testDarwinStore(runner)
-	var denied *ApprovalDeniedError
-	if err := store.Add(context.Background(), "/tmp/certificate.pem"); !errors.As(err, &denied) {
-		t.Fatalf("add error = %v, want ApprovalDeniedError", err)
+
+	err := store.Add(context.Background(), "/tmp/certificate.pem")
+	if !errors.Is(err, commandErr) {
+		t.Fatalf("Add() error = %v, want wrapped command error", err)
+	}
+	if !strings.Contains(err.Error(), "trust settings update failed") {
+		t.Fatalf("Add() error = %v, want command diagnostic", err)
 	}
 }
 
@@ -152,6 +157,23 @@ func TestDarwinListReturnsEveryParseableCertificate(t *testing.T) {
 	}
 }
 
+func TestDarwinListDoesNotTreatCommandFailureAsAnEmptyStore(t *testing.T) {
+	commandErr := errors.New("exit status 44")
+	runner := &fakeDarwinRunner{
+		out: []byte("security: The specified item could not be found in the keychain."),
+		err: commandErr,
+	}
+	store := testDarwinStore(runner)
+
+	certificates, err := store.List(context.Background())
+	if !errors.Is(err, commandErr) {
+		t.Fatalf("List() error = %v, want wrapped command error", err)
+	}
+	if certificates != nil {
+		t.Fatalf("List() certificates = %#v, want nil", certificates)
+	}
+}
+
 func TestDarwinRemoveIsCompleteAndIdempotent(t *testing.T) {
 	certificatePEM := testCertificatePEM(t, "duplicate", true)
 	listed := append(append([]byte(nil), certificatePEM...), certificatePEM...)
@@ -169,18 +191,18 @@ func TestDarwinRemoveIsCompleteAndIdempotent(t *testing.T) {
 		}
 	}}
 	store := testDarwinStore(runner)
-	certificate := certificatesFromPEMOutput(certificatePEM)[0]
-	if err := store.Remove(context.Background(), []string{certificate.Fingerprint, certificate.Fingerprint}); err != nil {
+	fingerprint := certificateFingerprint(mustParsePEM(t, certificatePEM))
+	if err := store.Remove(context.Background(), []string{fingerprint, fingerprint}); err != nil {
 		t.Fatal(err)
 	}
 	if deleteCalls != 1 {
 		t.Fatalf("delete calls = %d, want one per fingerprint", deleteCalls)
 	}
 	joined := strings.Join(runner.calls, "\n")
-	if !strings.Contains(joined, "delete-certificate -Z "+certificate.Fingerprint+" -t /tmp/login.keychain-db") {
+	if !strings.Contains(joined, "delete-certificate -Z "+fingerprint+" -t /tmp/login.keychain-db") {
 		t.Fatalf("removal did not include user trust settings:\n%s", joined)
 	}
-	if err := store.Remove(context.Background(), []string{certificate.Fingerprint}); err != nil {
+	if err := store.Remove(context.Background(), []string{fingerprint}); err != nil {
 		t.Fatal(err)
 	}
 	if deleteCalls != 1 {

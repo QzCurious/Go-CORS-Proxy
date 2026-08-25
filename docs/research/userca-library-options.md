@@ -7,8 +7,9 @@ Keep the current small, project-owned authority and trust-store adapters. No mat
 - one locally persisted self-signed CA pair with project-specific validation and atomic publication;
 - the **current user's** root store on both macOS and Windows;
 - enumeration of all certificates matching the ownership footprint;
-- exact removal by SHA-1 fingerprint; and
-- caller-visible classification of a denied/cancelled macOS trust prompt.
+- exact removal by SHA-1 fingerprint.
+
+macOS trust installation continues to use `/usr/bin/security`, but every `add-trusted-cert` failure is treated as a generic installation error. Apple's CLI collapses `SecTrustSettingsSetTrustSettings` failures to exit code `1`, so cancellation cannot be classified without parsing unstable human-readable output ([Apple source](https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/trusted_cert_add.c#L525-L536)). Windows likewise treats every `Import-Certificate` failure as a generic installation error and uses terminating PowerShell error behavior so failures reach the caller.
 
 `github.com/smallstep/truststore` is the closest reusable trust-store package, but adopting it would replace only part of install/remove while losing required behavior. The standard-library authority implementation is already narrower than the abstractions offered by CA-server or automatic-TLS libraries.
 
@@ -31,7 +32,7 @@ The public API accepts an `*x509.Certificate` or certificate filename and offers
 
 On Windows it does use the native current-user `ROOT` store, but uninstall enumerates certificates and deletes every certificate with the same serial number ([Windows source](https://github.com/smallstep/truststore/blob/v0.13.0/truststore_windows.go)). Microsoft documents that `CertOpenSystemStore` accesses only current-user certificates ([Microsoft API](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certopensystemstorea)). Seamless-cors deliberately discovers a strict self-signed ownership footprint and removes exact SHA-1 fingerprints, so adapting the package would still require retaining custom enumeration and removal.
 
-The package's typed command error preserves command output, but its exported errors do not identify user denial or cancellation ([error source](https://github.com/smallstep/truststore/blob/v0.13.0/errors.go)). The project would still need platform-specific interpretation to produce `ErrApprovalDenied`.
+The package's typed command error preserves command output, but its exported errors do not identify user denial or cancellation ([error source](https://github.com/smallstep/truststore/blob/v0.13.0/errors.go)). Seamless-cors likewise leaves these failures generic rather than inferring semantics from command output.
 
 ### mkcert and its library forks
 
@@ -49,6 +50,6 @@ Smallstep `certinfo` exports certificate/CSR text rendering functions ([API sour
 
 ## Recommendation
 
-Retain `crypto/rsa`, `crypto/x509`, `crypto/tls`, and the project-owned durable publication logic for authority material. Retain the custom macOS `security` and Windows PowerShell adapters in a cohesive Trust Store module because they hide current-user root-store listing, addition, fingerprint removal, context handling, and platform approval-denial interpretation. UserCA, not Trust Store, applies the strict seamless-cors ownership footprint and classifies approval denial into its caller-owned semantic error.
+Retain `crypto/rsa`, `crypto/x509`, `crypto/tls`, and the project-owned durable publication logic for authority material. Retain the custom macOS `security` and Windows PowerShell adapters in a cohesive Trust Store module because they hide current-user root-store listing, addition, fingerprint removal, and context handling. UserCA applies the strict seamless-cors ownership footprint while trust-installation command failures remain generic.
 
 If the scope later changes to **system-wide** trust and removal by supplied certificate (rather than enumeration/fingerprint reconciliation), reassess `smallstep/truststore`. Under the current requirements, it would be useful mainly as reference source, not as an imported abstraction.

@@ -36,3 +36,13 @@ func testCertificatePEM(t *testing.T, commonName string, isCA bool) []byte {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+func mustParsePEM(t *testing.T, certificatePEM []byte) *x509.Certificate {
+	t.Helper()
+	block, _ := pem.Decode(certificatePEM)
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate
+}

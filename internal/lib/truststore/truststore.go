@@ -86,21 +86,6 @@ func (s *Store) Remove(ctx context.Context, fingerprints []string) error {
 	return errors.Join(errs...)
 }
 
-// ApprovalDeniedError reports that the current user declined an operating-
-// system approval request while adding trust.
-type ApprovalDeniedError struct {
-	Cause error
-}
-
-func (e *ApprovalDeniedError) Error() string {
-	if e.Cause == nil {
-		return "trust approval denied"
-	}
-	return fmt.Sprintf("trust approval denied: %v", e.Cause)
-}
-
-func (e *ApprovalDeniedError) Unwrap() error { return e.Cause }
-
 func certificateFingerprint(cert *x509.Certificate) string {
 	sum := sha1.Sum(cert.Raw)
 	return strings.ToUpper(hex.EncodeToString(sum[:]))

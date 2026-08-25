@@ -2,8 +2,6 @@ package userca
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/truststore"
 )
@@ -15,14 +13,3 @@ type trustStore interface {
 }
 
 var _ trustStore = (*truststore.Store)(nil)
-
-func userCAAddError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var denied *truststore.ApprovalDeniedError
-	if errors.As(err, &denied) {
-		return fmt.Errorf("%w: %w", ErrApprovalDenied, err)
-	}
-	return err
-}

@@ -43,7 +43,7 @@ ConvertTo-Json -Compress -InputObject $records
 
 func (s *windowsStore) add(ctx context.Context, certificatePath string) error {
 	script := fmt.Sprintf(`
-Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop | Out-Null
 `, psQuote(certificatePath))
 	_, err := s.powershell(ctx, script)
 	return err

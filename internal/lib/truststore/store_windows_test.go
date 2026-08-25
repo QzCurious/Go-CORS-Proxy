@@ -4,10 +4,8 @@ package truststore
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"strings"
 	"testing"
@@ -16,6 +14,7 @@ import (
 type fakeWindowsRunner struct {
 	calls   []string
 	listOut []byte
+	out     []byte
 	err     error
 }
 
@@ -28,7 +27,7 @@ func (f *fakeWindowsRunner) run(_ context.Context, name string, args ...string) 
 	if strings.Contains(script, "Remove-Item") && f.err == nil {
 		f.listOut = []byte("[]")
 	}
-	return nil, f.err
+	return f.out, f.err
 }
 
 func TestWindowsAddUsesCertificatePath(t *testing.T) {
@@ -41,6 +40,26 @@ func TestWindowsAddUsesCertificatePath(t *testing.T) {
 	joined := strings.Join(runner.calls, "\n")
 	if !strings.Contains(joined, `Import-Certificate -FilePath 'C:\Users\dev\certificate.pem'`) {
 		t.Fatalf("certificate path was not passed to Import-Certificate:\n%s", joined)
+	}
+	if !strings.Contains(joined, "-ErrorAction Stop") {
+		t.Fatalf("Import-Certificate failures are not terminating:\n%s", joined)
+	}
+}
+
+func TestWindowsAddWrapsCommandFailureAndDiagnostic(t *testing.T) {
+	commandErr := errors.New("exit status 1")
+	runner := &fakeWindowsRunner{
+		out: []byte("Import-Certificate: access denied"),
+		err: commandErr,
+	}
+	store := testWindowsStore(runner)
+
+	err := store.Add(context.Background(), `C:\Users\dev\certificate.pem`)
+	if !errors.Is(err, commandErr) {
+		t.Fatalf("Add() error = %v, want wrapped command error", err)
+	}
+	if !strings.Contains(err.Error(), "Import-Certificate: access denied") {
+		t.Fatalf("Add() error = %v, want command diagnostic", err)
 	}
 }
 
@@ -104,16 +123,6 @@ func TestWindowsRemoveReportsPowerShellFailure(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("remove error = %v", err)
 	}
-}
-
-func mustParsePEM(t *testing.T, certificatePEM []byte) *x509.Certificate {
-	t.Helper()
-	block, _ := pem.Decode(certificatePEM)
-	certificate, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return certificate
 }
 
 func testWindowsStore(runner commandRunner) *Store {

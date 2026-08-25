@@ -10,7 +10,6 @@ import (
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
-	"github.com/QzCurious/seamless-cors/internal/userca"
 )
 
 var (
@@ -383,7 +382,6 @@ type InstallResultKind string
 
 const (
 	InstallResultInstalled       InstallResultKind = "installed"
-	InstallResultApprovalDenied  InstallResultKind = "approval-denied"
 	InstallResultAlreadyMutating InstallResultKind = "already-mutating"
 	InstallResultOwnerEnding     InstallResultKind = "owner-ending"
 	InstallResultOwnerTransition InstallResultKind = "owner-transition"
@@ -1092,18 +1090,13 @@ func (f *lifecycle) Install(ctx context.Context) (InstallResult, error) {
 	// Once admitted, CA work belongs to the owner rather than the request.
 	current, err := f.userCA.Install(context.Background())
 	if err != nil {
-		var pipeline *HTTPSPipelineDetail
 		if active != nil {
 			active.engine.DeactivateHTTPS(userCAState{}, err)
-			pipeline = active.engine.snapshot().HTTPSPipeline
 		}
 		f.mu.Lock()
 		f.userCAState = userCAState{}
 		f.userCAAssessmentErr = err
 		f.mu.Unlock()
-		if errors.Is(err, userca.ErrApprovalDenied) {
-			return InstallResult{Kind: InstallResultApprovalDenied, HTTPSPipeline: pipeline}, nil
-		}
 		return InstallResult{}, err
 	}
 	f.mu.Lock()

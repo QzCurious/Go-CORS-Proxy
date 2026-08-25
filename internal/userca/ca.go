@@ -3,7 +3,6 @@ package userca
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -11,9 +10,6 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/lib/truststore"
 	"github.com/adrg/xdg"
 )
-
-// ErrApprovalDenied reports that the current user declined OS trust mutation.
-var ErrApprovalDenied = errors.New("certificate trust approval denied")
 
 // CA maintains the current user's seamless-cors development authority as one
 // coherent capability. It does not cache assessment results.

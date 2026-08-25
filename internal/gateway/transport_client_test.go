@@ -91,24 +91,6 @@ func TestStatusReportsHTTPFailure(t *testing.T) {
 	}
 }
 
-func TestInstallDecodesApprovalDenialResult(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_, _ = w.Write([]byte(`{"error":{"code":"approval-denied","message":"Certificate trust approval was denied."}}`))
-	}))
-	defer server.Close()
-	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
-
-	result, err := client.Install(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Kind != InstallResultApprovalDenied || result.Fulfillment() != CommandUnfulfilled {
-		t.Fatalf("install result = %#v", result)
-	}
-}
-
 func TestCommandClientHasNoHiddenTotalTimeout(t *testing.T) {
 	client := newClient(stateCache{})
 	if client.httpClient.Timeout != 0 {

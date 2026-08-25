@@ -217,10 +217,6 @@ func installCAWithCommand(ctx context.Context, stdout io.Writer, command install
 		return nil
 	}
 	switch result.Kind {
-	case gateway.InstallResultApprovalDenied:
-		fmt.Fprintln(stdout, "Certificate trust was not approved.")
-		fmt.Fprintln(stdout, "Run the command again and approve the system prompt.")
-		return fmt.Errorf("certificate trust approval denied")
 	case gateway.InstallResultAlreadyMutating:
 		return fmt.Errorf("certificate operation in progress; retry install")
 	case gateway.InstallResultOwnerEnding:

@@ -215,21 +215,6 @@ func TestStartCommandReportsManagedPACInstallationWarnings(t *testing.T) {
 	}
 }
 
-func TestInstallReportsGatewayClassifiedApprovalDenial(t *testing.T) {
-	var out bytes.Buffer
-	err := installCAWithCommand(context.Background(), &out, func(context.Context) (gateway.InstallResult, error) {
-		return gateway.InstallResult{Kind: gateway.InstallResultApprovalDenied}, nil
-	})
-	if err == nil {
-		t.Fatalf("install error = %v", err)
-	}
-	for _, want := range []string{"Certificate trust was not approved.", "approve the system prompt"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("install output missing %q: %s", want, out.String())
-		}
-	}
-}
-
 func TestStartCommandRendersBothUpstreamListPaths(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{

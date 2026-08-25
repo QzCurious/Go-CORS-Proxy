@@ -334,10 +334,11 @@ func TestInstallDoesNotDestroyStateWhenInspectionCannotReadPair(t *testing.T) {
 }
 
 func TestInstallCleansLocalPairWhenTrustFails(t *testing.T) {
-	store := &fakeTrustStore{trustErr: &truststore.ApprovalDeniedError{Cause: errors.New("user cancelled")}}
+	trustErr := errors.New("trust installation failed")
+	store := &fakeTrustStore{trustErr: trustErr}
 	ca := &CA{dir: filepath.Join(t.TempDir(), "userca"), trustStore: store, now: time.Now}
-	if _, err := ca.Install(context.Background()); !errors.Is(err, ErrApprovalDenied) {
-		t.Fatalf("install error = %v, want ErrApprovalDenied", err)
+	if _, err := ca.Install(context.Background()); !errors.Is(err, trustErr) {
+		t.Fatalf("install error = %v, want trust installation failure", err)
 	}
 	if _, err := os.Stat(ca.dir); !os.IsNotExist(err) {
 		t.Fatalf("failed install retained local material: %v", err)

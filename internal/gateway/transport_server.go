@@ -263,8 +263,6 @@ func startFailureRepresentation(kind StartKind) failureRepresentation {
 
 func installFailureRepresentation(kind InstallResultKind) failureRepresentation {
 	switch kind {
-	case InstallResultApprovalDenied:
-		return failureRepresentation{http.StatusUnprocessableEntity, "Certificate trust approval was denied."}
 	case InstallResultOwnerTransition:
 		return failureRepresentation{http.StatusServiceUnavailable, "Gateway ownership is transitioning; retry Install."}
 	case InstallResultAlreadyMutating:
