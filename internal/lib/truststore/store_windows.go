@@ -69,13 +69,7 @@ func certificatesFromJSON(out []byte) ([]Certificate, error) {
 		DER string
 	}
 	var raw []rawCertificate
-	if bytes.HasPrefix(trimmed, []byte("{")) {
-		var single rawCertificate
-		if err := json.Unmarshal(trimmed, &single); err != nil {
-			return nil, fmt.Errorf("parse Windows trusted certificate: %w", err)
-		}
-		raw = []rawCertificate{single}
-	} else if err := json.Unmarshal(trimmed, &raw); err != nil {
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return nil, fmt.Errorf("parse Windows trusted certificates: %w", err)
 	}
 

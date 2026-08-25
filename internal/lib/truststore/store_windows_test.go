@@ -92,6 +92,41 @@ func TestWindowsListReturnsEveryParseableCertificate(t *testing.T) {
 	}
 }
 
+func TestWindowsListAcceptsSingleCertificateArray(t *testing.T) {
+	certificate := mustParsePEM(t, testCertificatePEM(t, "CA", true))
+	out, err := json.Marshal([]map[string]string{{
+		"DER": base64.StdEncoding.EncodeToString(certificate.Raw),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := testWindowsStore(&fakeWindowsRunner{listOut: out})
+
+	certificates, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certificates) != 1 {
+		t.Fatalf("listed certificates = %d, want 1", len(certificates))
+	}
+}
+
+func TestWindowsListRejectsSingleCertificateObject(t *testing.T) {
+	certificate := mustParsePEM(t, testCertificatePEM(t, "CA", true))
+	out, err := json.Marshal(map[string]string{
+		"DER": base64.StdEncoding.EncodeToString(certificate.Raw),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := testWindowsStore(&fakeWindowsRunner{listOut: out})
+
+	_, err = store.List(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "parse Windows trusted certificates") {
+		t.Fatalf("List() error = %v, want array parse error", err)
+	}
+}
+
 func TestWindowsRemoveDeletesEachFingerprintWithoutListing(t *testing.T) {
 	certificate := mustParsePEM(t, testCertificatePEM(t, "CA", true))
 	out, err := json.Marshal(map[string]string{"DER": base64.StdEncoding.EncodeToString(certificate.Raw)})

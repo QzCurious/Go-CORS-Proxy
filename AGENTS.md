@@ -12,6 +12,10 @@ The repo uses the default five-label triage vocabulary. See `docs/agents/triage-
 
 This is a single-context repo using root-level `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
 
+### Tests
+
+When adding, reviewing, or pruning tests, apply the regression-signal policy in `docs/agents/testing.md`.
+
 ---
 
 The project is still in development, we prefer a clean break over adding fallbacks or preserving backward compatibility.
