@@ -55,6 +55,10 @@ func adaptUserCAState(current userca.State) userCAState {
 	}
 }
 
-func openSystemUserCA() userCAModule {
-	return systemUserCA{ca: userca.New()}
+func openSystemUserCA() (userCAModule, error) {
+	ca, err := userca.New()
+	if err != nil {
+		return nil, err
+	}
+	return systemUserCA{ca: ca}, nil
 }

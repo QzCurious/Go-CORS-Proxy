@@ -67,7 +67,10 @@ func status(ctx context.Context, pac managedPACModule, ca userCAModule) (StatusR
 		return target.client.Status(ctx)
 	}
 	if ca == nil {
-		ca = openSystemUserCA()
+		ca, err = openSystemUserCA()
+		if err != nil {
+			return StatusResult{}, err
+		}
 	}
 	coord, err := defaultCoordinator()
 	if err != nil {
@@ -113,7 +116,10 @@ func installCA(ctx context.Context, ca userCAModule) (InstallResult, error) {
 		return target.client.Install(ctx)
 	}
 	if ca == nil {
-		ca = openSystemUserCA()
+		ca, err = openSystemUserCA()
+		if err != nil {
+			return InstallResult{}, err
+		}
 	}
 	result, routed, err := runTransient(ctx, ca, func(lifecycle *lifecycle) (InstallResult, error) {
 		return lifecycle.Install(ctx)
@@ -142,7 +148,10 @@ func uninstallCA(ctx context.Context, ca userCAModule, request UninstallRequest)
 		return target.client.Uninstall(ctx, request)
 	}
 	if ca == nil {
-		ca = openSystemUserCA()
+		ca, err = openSystemUserCA()
+		if err != nil {
+			return UninstallResult{}, err
+		}
 	}
 	result, routed, err := runTransient(ctx, ca, func(lifecycle *lifecycle) (UninstallResult, error) {
 		return lifecycle.UninstallWithConsent(ctx, request.ConsentFingerprint)

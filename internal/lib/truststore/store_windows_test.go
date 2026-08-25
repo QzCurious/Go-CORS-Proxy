@@ -33,7 +33,7 @@ func (f *fakeWindowsRunner) run(_ context.Context, name string, args ...string) 
 
 func TestWindowsAddUsesCertificatePath(t *testing.T) {
 	runner := &fakeWindowsRunner{}
-	store := &Store{runner: runner}
+	store := testWindowsStore(runner)
 
 	if err := store.Add(context.Background(), `C:\Users\dev\certificate.pem`); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestWindowsListReturnsEveryParseableCertificate(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeWindowsRunner{listOut: out}
-	store := &Store{runner: runner}
+	store := testWindowsStore(runner)
 
 	certificates, err := store.List(context.Background())
 	if err != nil {
@@ -73,29 +73,34 @@ func TestWindowsListReturnsEveryParseableCertificate(t *testing.T) {
 	}
 }
 
-func TestWindowsRemoveAttemptsAllAndVerifiesAbsence(t *testing.T) {
+func TestWindowsRemoveDeletesPresentFingerprintsAndVerifiesAbsence(t *testing.T) {
 	certificate := mustParsePEM(t, testCertificatePEM(t, "CA", true))
 	out, err := json.Marshal(map[string]string{"DER": base64.StdEncoding.EncodeToString(certificate.Raw)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeWindowsRunner{listOut: out}
-	store := &Store{runner: runner}
+	store := testWindowsStore(runner)
 	if err := store.Remove(context.Background(), []string{certificateFingerprint(certificate), "ABCDEF"}); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(runner.calls, "\n")
-	if strings.Count(joined, "Remove-Item") != 2 {
+	if strings.Count(joined, "Remove-Item") != 1 {
 		t.Fatalf("remove calls:\n%s", joined)
 	}
 }
 
 func TestWindowsRemoveReportsPowerShellFailure(t *testing.T) {
 	wantErr := errors.New("denied")
-	runner := &fakeWindowsRunner{listOut: []byte("[]"), err: wantErr}
-	store := &Store{runner: runner}
+	certificate := mustParsePEM(t, testCertificatePEM(t, "CA", true))
+	out, err := json.Marshal(map[string]string{"DER": base64.StdEncoding.EncodeToString(certificate.Raw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeWindowsRunner{listOut: out, err: wantErr}
+	store := testWindowsStore(runner)
 
-	err := store.Remove(context.Background(), []string{"ABCDEF"})
+	err = store.Remove(context.Background(), []string{certificateFingerprint(certificate)})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("remove error = %v", err)
 	}
@@ -109,4 +114,8 @@ func mustParsePEM(t *testing.T, certificatePEM []byte) *x509.Certificate {
 		t.Fatal(err)
 	}
 	return certificate
+}
+
+func testWindowsStore(runner commandRunner) *Store {
+	return &Store{platform: &windowsStore{runner: runner}}
 }

@@ -8,24 +8,21 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 )
 
-// Store accesses the current user's Windows root certificate store.
-type Store struct {
+type windowsStore struct {
 	runner commandRunner
 }
 
-// New returns the current user's operating-system trust store.
-func New() *Store {
-	return &Store{runner: execRunner{}}
+var _ platformStore = (*windowsStore)(nil)
+
+func newPlatformStore() (platformStore, error) {
+	return &windowsStore{runner: execRunner{}}, nil
 }
 
-// List returns a fresh, unordered snapshot containing one record for every
-// parseable certificate in the current user's trust store.
-func (s *Store) List(ctx context.Context) ([]Certificate, error) {
+func (s *windowsStore) list(ctx context.Context) ([]Certificate, error) {
 	script := `
 $records = @(
 	Get-ChildItem -Path Cert:\CurrentUser\Root |
@@ -44,8 +41,7 @@ ConvertTo-Json -Compress -InputObject $records
 	return certificatesFromJSON(out)
 }
 
-// Add adds a certificate file to the current user's trusted root store.
-func (s *Store) Add(ctx context.Context, certificatePath string) error {
+func (s *windowsStore) add(ctx context.Context, certificatePath string) error {
 	script := fmt.Sprintf(`
 Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
 `, psQuote(certificatePath))
@@ -53,31 +49,12 @@ Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root | Out-
 	return err
 }
 
-// Remove removes every trust-store entry matching any supplied fingerprint.
-// Missing fingerprints are successful.
-func (s *Store) Remove(ctx context.Context, fingerprints []string) error {
-	targets := removalTargets(fingerprints)
-	if len(targets) == 0 {
-		return nil
-	}
-
-	var errs []error
-	for fingerprint := range targets {
-		script := fmt.Sprintf(`
+func (s *windowsStore) remove(ctx context.Context, fingerprint string) error {
+	script := fmt.Sprintf(`
 Remove-Item -Path %s -ErrorAction SilentlyContinue
 `, psQuote(`Cert:\CurrentUser\Root\`+fingerprint))
-		if _, err := s.powershell(ctx, script); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	remaining, err := s.List(ctx)
-	if err != nil {
-		errs = append(errs, err)
-	} else if err := remainingRemovalError(remaining, targets); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+	_, err := s.powershell(ctx, script)
+	return err
 }
 
 func certificatesFromJSON(out []byte) ([]Certificate, error) {
@@ -114,7 +91,7 @@ func certificatesFromJSON(out []byte) ([]Certificate, error) {
 	return certificates, nil
 }
 
-func (s *Store) powershell(ctx context.Context, script string) ([]byte, error) {
+func (s *windowsStore) powershell(ctx context.Context, script string) ([]byte, error) {
 	out, err := s.runner.run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	if err != nil {
 		return out, fmt.Errorf("powershell failed: %s: %w", bytes.TrimSpace(out), err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -33,12 +34,16 @@ type State struct {
 
 // New resolves private storage and platform trust integration without
 // inspecting or mutating either.
-func New() *CA {
+func New() (*CA, error) {
+	trustStore, err := truststore.New()
+	if err != nil {
+		return nil, fmt.Errorf("open operating-system trust store: %w", err)
+	}
 	return &CA{
 		dir:        filepath.Join(xdg.StateHome, "seamless-cors", "userca"),
-		trustStore: truststore.New(),
+		trustStore: trustStore,
 		now:        time.Now,
-	}
+	}, nil
 }
 
 // Inspect freshly derives one coherent State from the local pair and

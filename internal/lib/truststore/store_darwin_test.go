@@ -5,6 +5,7 @@ package truststore
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,36 @@ type fakeDarwinRunner struct {
 	out     []byte
 	err     error
 	runFunc func(context.Context, string, ...string) ([]byte, error)
+}
+
+func TestDarwinNewResolvesCurrentUserKeychain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	store, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform, ok := store.platform.(*darwinStore)
+	if !ok {
+		t.Fatalf("platform store = %T, want *darwinStore", store.platform)
+	}
+	want := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+	if platform.keychainPath != want {
+		t.Fatalf("keychain path = %q, want %q", platform.keychainPath, want)
+	}
+}
+
+func TestDarwinNewReturnsHomeResolutionError(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	store, err := New()
+	if err == nil {
+		t.Fatalf("New() = %#v, nil; want home resolution error", store)
+	}
+	if store != nil {
+		t.Fatalf("New() store = %#v, want nil", store)
+	}
 }
 
 func (f *fakeDarwinRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -51,7 +82,7 @@ func assertDarwinMutationCancellation(t *testing.T, mutate func(context.Context,
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}}
-	store := &Store{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+	store := testDarwinStore(runner)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- mutate(ctx, store) }()
@@ -72,7 +103,7 @@ func TestDarwinAddMapsApprovalCancellation(t *testing.T) {
 		out: []byte("SecTrustSettingsSetTrustSettings: The authorization was canceled by the user."),
 		err: errors.New("exit status 1"),
 	}
-	store := &Store{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+	store := testDarwinStore(runner)
 	var denied *ApprovalDeniedError
 	if err := store.Add(context.Background(), "/tmp/certificate.pem"); !errors.As(err, &denied) {
 		t.Fatalf("add error = %v, want ApprovalDeniedError", err)
@@ -81,7 +112,7 @@ func TestDarwinAddMapsApprovalCancellation(t *testing.T) {
 
 func TestDarwinAddUsesCurrentUserKeychain(t *testing.T) {
 	runner := &fakeDarwinRunner{}
-	store := &Store{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+	store := testDarwinStore(runner)
 	if err := store.Add(context.Background(), "/tmp/certificate.pem"); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +130,7 @@ func TestDarwinListReturnsEveryParseableCertificate(t *testing.T) {
 	caPEM := testCertificatePEM(t, "owned-looking CA", true)
 	leafPEM := testCertificatePEM(t, "unrelated leaf", false)
 	runner := &fakeDarwinRunner{out: append(append([]byte("SHA-1 hash: ignored\n"), caPEM...), leafPEM...)}
-	store := &Store{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+	store := testDarwinStore(runner)
 
 	certificates, err := store.List(context.Background())
 	if err != nil {
@@ -137,7 +168,7 @@ func TestDarwinRemoveIsCompleteAndIdempotent(t *testing.T) {
 			return nil, nil
 		}
 	}}
-	store := &Store{runner: runner, keychainPath: "/tmp/login.keychain-db"}
+	store := testDarwinStore(runner)
 	certificate := certificatesFromPEMOutput(certificatePEM)[0]
 	if err := store.Remove(context.Background(), []string{certificate.Fingerprint, certificate.Fingerprint}); err != nil {
 		t.Fatal(err)
@@ -155,4 +186,8 @@ func TestDarwinRemoveIsCompleteAndIdempotent(t *testing.T) {
 	if deleteCalls != 1 {
 		t.Fatal("idempotent removal attempted an absent fingerprint")
 	}
+}
+
+func testDarwinStore(runner commandRunner) *Store {
+	return &Store{platform: &darwinStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}}
 }

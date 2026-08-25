@@ -24,7 +24,11 @@ func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
 	if target.kind == targetActive {
 		return executeAndStartClient(ctx, target.client, hooks)
 	}
-	return start(ctx, openSystemManagedPAC(), openSystemUserCA(), hooks)
+	ca, err := openSystemUserCA()
+	if err != nil {
+		return nil, err
+	}
+	return start(ctx, openSystemManagedPAC(), ca, hooks)
 }
 
 func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks StartHooks) (StartResult, error) {
@@ -93,7 +97,11 @@ func executeAndStartClient(ctx context.Context, client *client, hooks StartHooks
 }
 
 func Serve(ctx context.Context, ready func()) error {
-	return serve(ctx, openSystemManagedPAC(), openSystemUserCA(), ready)
+	ca, err := openSystemUserCA()
+	if err != nil {
+		return err
+	}
+	return serve(ctx, openSystemManagedPAC(), ca, ready)
 }
 
 func serve(ctx context.Context, pac managedPACModule, ca userCAModule, ready func()) error {
