@@ -1,5 +1,5 @@
-// Package managedpac owns current-user operating-system PAC inspection,
-// complete desired-state PAC derivation, effective no-op suppression,
-// publication generation, serial retrying mutation, and complete
-// marker-owned teardown. Publication failures remain internal to the module.
+// Package managedpac classifies current-user PAC settings, owns publication
+// generation and serial retrying reconciliation, and completely tears down
+// active marker-owned state. It drives platform PAC mechanics through
+// pacsettings without exposing product ownership policy to that library.
 package managedpac

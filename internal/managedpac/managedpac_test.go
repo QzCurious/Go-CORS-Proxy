@@ -9,91 +9,98 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/lib/pacsettings"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 type fakeSettings struct {
 	mu            sync.Mutex
-	states        []serviceSnapshot
+	states        []pacsettings.Setting
 	snapshotErr   error
 	applyErrors   map[string]error
-	applyStarted  chan string
-	applyRelease  chan struct{}
-	ignoreCancel  bool
+	beforeSet     func(*fakeSettings)
+	beforeDisable func(*fakeSettings)
 	writes        []string
 	clearErr      error
 	disableErrors map[string]error
 }
 
-func (f *fakeSettings) Snapshot(context.Context) ([]serviceSnapshot, error) {
+func (f *fakeSettings) List(context.Context) ([]pacsettings.Setting, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.snapshotErr != nil {
 		return nil, f.snapshotErr
 	}
-	return append([]serviceSnapshot(nil), f.states...), nil
+	return append([]pacsettings.Setting(nil), f.states...), nil
 }
 
-func (f *fakeSettings) Apply(ctx context.Context, pacURL string, serviceNames []string) (applyResult, error) {
-	serviceName := serviceNames[0]
-	if f.applyStarted != nil {
-		select {
-		case f.applyStarted <- pacURL:
-		default:
-		}
-	}
-	if f.applyRelease != nil {
-		if f.ignoreCancel {
-			<-f.applyRelease
-		} else {
-			select {
-			case <-f.applyRelease:
-			case <-ctx.Done():
-				return applyResult{}, ctx.Err()
-			}
-		}
-	}
+func (f *fakeSettings) SetURL(ctx context.Context, observed pacsettings.Setting, pacURL string) (pacsettings.MutationResult, error) {
+	serviceName := observed.ServiceName
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.beforeSet != nil {
+		beforeSet := f.beforeSet
+		f.beforeSet = nil
+		beforeSet(f)
+	}
+	if err := ctx.Err(); err != nil {
+		return pacsettings.MutationResult{}, err
+	}
 	if err := f.applyErrors[serviceName]; err != nil {
-		return applyResult{}, err
+		return pacsettings.MutationResult{}, err
 	}
 	for index := range f.states {
 		if f.states[index].ServiceName == serviceName {
-			f.states[index].PACURL = pacURL
+			if f.states[index] != observed {
+				current := f.states[index]
+				return pacsettings.MutationResult{Current: &current}, nil
+			}
+			f.states[index].URL = pacURL
 			f.states[index].Enabled = true
 			f.writes = append(f.writes, serviceName+"="+pacURL)
-			return applyResult{AppliedServices: []string{serviceName}}, nil
+			return pacsettings.MutationResult{Applied: true}, nil
 		}
 	}
-	return applyResult{}, nil
+	return pacsettings.MutationResult{}, nil
 }
 
-func (f *fakeSettings) DisableOwned(_ context.Context, serviceNames []string) error {
+func (f *fakeSettings) Disable(_ context.Context, observed pacsettings.Setting) (pacsettings.MutationResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.beforeDisable != nil {
+		beforeDisable := f.beforeDisable
+		f.beforeDisable = nil
+		beforeDisable(f)
+	}
 	if f.clearErr != nil {
-		return f.clearErr
+		return pacsettings.MutationResult{}, f.clearErr
 	}
-	if err := f.disableErrors[serviceNames[0]]; err != nil {
-		return err
+	if err := f.disableErrors[observed.ServiceName]; err != nil {
+		return pacsettings.MutationResult{}, err
 	}
-	selected := stringSet(serviceNames)
 	for index := range f.states {
 		state := &f.states[index]
-		if _, ok := selected[state.ServiceName]; ok && state.Enabled && isOwnedURL(state.PACURL) {
+		if state.ServiceName != observed.ServiceName {
+			continue
+		}
+		if *state != observed {
+			current := *state
+			return pacsettings.MutationResult{Current: &current}, nil
+		}
+		if state.Enabled {
 			state.Enabled = false
 		}
+		return pacsettings.MutationResult{Applied: true}, nil
 	}
-	return nil
+	return pacsettings.MutationResult{}, nil
 }
 
 func TestInspectClassifiesOnlyEmptyAndOwnedServicesAsManageable(t *testing.T) {
-	module := openWithSettings(&fakeSettings{states: []serviceSnapshot{
-		{ServiceName: "Wi-Fi", PACURL: "http://corp.example/proxy.pac", Enabled: true},
-		{ServiceName: "USB", PACURL: "", Enabled: false},
-		{ServiceName: "Ethernet", PACURL: "http://127.0.0.1:49152/seamless-cors.pac?v=1", Enabled: false},
+	module := openWithSettings(&fakeSettings{states: []pacsettings.Setting{
+		{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true},
+		{ServiceName: "USB", URL: "", Enabled: false},
+		{ServiceName: "Ethernet", URL: "http://127.0.0.1:49152/seamless-cors.pac?v=1", Enabled: false},
 	}})
 
 	snapshot, err := module.Inspect(context.Background())
@@ -123,7 +130,7 @@ func TestSnapshotDistinguishesOwnedURLFromActiveOwnedState(t *testing.T) {
 }
 
 func TestCleanupActiveStateRejectsOpenReconciliation(t *testing.T) {
-	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	settings := &fakeSettings{states: []pacsettings.Setting{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
 	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", "DIRECT"); err != nil {
 		t.Fatal(err)
@@ -138,9 +145,9 @@ func TestCleanupActiveStateRejectsOpenReconciliation(t *testing.T) {
 
 func TestCleanupActiveStateContinuesAndReportsPerServiceFailures(t *testing.T) {
 	settings := &fakeSettings{
-		states: []serviceSnapshot{
-			{ServiceName: "Wi-Fi", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
-			{ServiceName: "USB", PACURL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
+		states: []pacsettings.Setting{
+			{ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
+			{ServiceName: "USB", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
 		},
 		disableErrors: map[string]error{"Wi-Fi": errors.New("permission denied")},
 	}
@@ -164,6 +171,41 @@ func TestCleanupActiveStateContinuesAndReportsPerServiceFailures(t *testing.T) {
 	}
 }
 
+func TestCleanupPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
+	settings := &fakeSettings{
+		states: []pacsettings.Setting{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}},
+		beforeDisable: func(settings *fakeSettings) {
+			settings.states[0].URL = "http://corp.example/proxy.pac"
+		},
+	}
+	module := openWithSettings(settings)
+
+	if err := module.CleanupActiveState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	settings.mu.Lock()
+	defer settings.mu.Unlock()
+	if !settings.states[0].Enabled || settings.states[0].URL != "http://corp.example/proxy.pac" {
+		t.Fatalf("foreign setting was changed: %#v", settings.states[0])
+	}
+}
+
+func TestCleanupReportsOwnedStateThatChangesAfterInspection(t *testing.T) {
+	settings := &fakeSettings{
+		states: []pacsettings.Setting{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac?v=1", Enabled: true}},
+		beforeDisable: func(settings *fakeSettings) {
+			settings.states[0].URL = "http://127.0.0.1/seamless-cors.pac?v=2"
+		},
+	}
+	module := openWithSettings(settings)
+
+	err := module.CleanupActiveState(context.Background())
+	var cleanupErr ActiveStateCleanupError
+	if !errors.As(err, &cleanupErr) || !slices.Equal(cleanupErr.RemainingServices, []string{"Wi-Fi"}) {
+		t.Fatalf("cleanup error = %#v", err)
+	}
+}
+
 func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 	tests := map[string]bool{
 		"http://127.0.0.1:8079/seamless-cors.pac":        true,
@@ -184,7 +226,7 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "other.example.test\n")
-	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	settings := &fakeSettings{states: []pacsettings.Setting{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
 	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
 		t.Fatal(err)
@@ -196,33 +238,51 @@ func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	}
 }
 
-func TestInitialProjectionPublicationFailureIsRetriedWithoutReturningGatewayError(t *testing.T) {
-	list := mustDesiredList(t, "api.example.test\n")
+func TestPublicationPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
 	settings := &fakeSettings{
-		states:      []serviceSnapshot{{ServiceName: "Wi-Fi"}},
-		applyErrors: map[string]error{"Wi-Fi": errors.New("write denied")},
+		states: []pacsettings.Setting{{ServiceName: "Wi-Fi"}},
+		beforeSet: func(settings *fakeSettings) {
+			settings.states[0] = pacsettings.Setting{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true}
+		},
 	}
 	module := openWithSettings(settings)
-	desired := pacrouting.Project(list, false, "127.0.0.1:8080")
-	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", desired)
+
+	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", "DIRECT")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.InstalledServices()) != 0 {
-		t.Fatalf("initial installed services = %v, want none", result.InstalledServices())
+	if warnings := result.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
+		t.Fatalf("warnings = %#v", warnings)
 	}
-
-	waitForGeneration(t, module, 2)
 	settings.mu.Lock()
-	settings.applyErrors = nil
-	settings.mu.Unlock()
-	waitForWrite(t, settings, "seamless-cors.pac?v=")
+	defer settings.mu.Unlock()
+	if len(settings.writes) != 0 || settings.states[0].URL != "http://corp.example/proxy.pac" {
+		t.Fatalf("foreign setting was overwritten: state=%#v writes=%v", settings.states[0], settings.writes)
+	}
+}
+
+func TestChangedManageablePublicationIsRetriedWithoutReturningGatewayError(t *testing.T) {
+	settings := &fakeSettings{
+		states: []pacsettings.Setting{{ServiceName: "Wi-Fi"}},
+		beforeSet: func(settings *fakeSettings) {
+			settings.states[0].URL = "http://127.0.0.1:8081/seamless-cors.pac?v=0"
+		},
+	}
+	module := openWithSettings(settings)
+	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", "DIRECT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := result.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningUpdateFailed {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	waitForWrite(t, settings, "seamless-cors.pac?v=2")
 }
 
 func TestPartialProjectionPublicationFailureIsRetried(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "other.example.test\n")
-	settings := &fakeSettings{states: []serviceSnapshot{
+	settings := &fakeSettings{states: []pacsettings.Setting{
 		{ServiceName: "Ethernet"},
 		{ServiceName: "Wi-Fi"},
 	}}
@@ -247,7 +307,7 @@ func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *t
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "second.example.test\n")
 	third := mustDesiredList(t, "third.example.test\n")
-	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	settings := &fakeSettings{states: []pacsettings.Setting{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
 	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
 		t.Fatal(err)
@@ -278,7 +338,7 @@ func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *t
 func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testing.T) {
 	first := mustDesiredList(t, "api.example.test\n")
 	second := mustDesiredList(t, "second.example.test\n")
-	settings := &fakeSettings{states: []serviceSnapshot{{ServiceName: "Wi-Fi"}}}
+	settings := &fakeSettings{states: []pacsettings.Setting{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
 	install, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080"))
 	if err != nil {
@@ -287,7 +347,7 @@ func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testin
 	initialURL := install.State().PACURL()
 
 	settings.mu.Lock()
-	settings.states[0].PACURL = "http://corp.example/proxy.pac"
+	settings.states[0].URL = "http://corp.example/proxy.pac"
 	settings.mu.Unlock()
 	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
 	drift := receiveReconciliation(t, module.ReconciliationResults())
@@ -299,7 +359,7 @@ func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testin
 	}
 
 	settings.mu.Lock()
-	settings.states[0].PACURL = initialURL
+	settings.states[0].URL = initialURL
 	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
 	settings.mu.Unlock()
 	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
+	"github.com/QzCurious/seamless-cors/internal/lib/pacsettings"
 )
 
 type Ownership string
@@ -203,9 +204,9 @@ func (r InstallResult) Warnings() []Warning {
 }
 
 // ManagedPAC owns PAC Projection publication generation, latest-value
-// reconciliation, platform PAC mutation, and complete active-state teardown.
+// reconciliation, serial mutation policy, and complete active-state teardown.
 type ManagedPAC struct {
-	settings systemSettings
+	settings pacSettings
 
 	opMu sync.Mutex
 	mu   sync.Mutex
@@ -230,10 +231,10 @@ type ManagedPAC struct {
 const projectionPublicationRetry = 100 * time.Millisecond
 
 func Open() *ManagedPAC {
-	return openWithSettings(newSystemSettings())
+	return openWithSettings(pacsettings.New())
 }
 
-func openWithSettings(settings systemSettings) *ManagedPAC {
+func openWithSettings(settings pacSettings) *ManagedPAC {
 	projectionPublisher, projectionStream := conflatedstream.New[string]()
 	resultPublisher, resultStream := conflatedstream.New[ReconciliationResult]()
 	return &ManagedPAC{
@@ -246,7 +247,7 @@ func openWithSettings(settings systemSettings) *ManagedPAC {
 }
 
 func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
-	states, err := m.settings.Snapshot(ctx)
+	states, err := m.settings.List(ctx)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("managed PAC inspection failed: %w", err)
 	}
@@ -255,8 +256,8 @@ func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
 		services = append(services, Service{
 			Name:      state.ServiceName,
 			Enabled:   state.Enabled,
-			URL:       state.PACURL,
-			Ownership: ownershipForURL(state.PACURL),
+			URL:       state.URL,
+			Ownership: ownershipForURL(state.URL),
 		})
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
@@ -264,7 +265,7 @@ func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
 }
 
 func ownershipForURL(raw string) Ownership {
-	if raw == "" || raw == "(null)" {
+	if raw == "" {
 		return OwnershipEmpty
 	}
 	if isOwnedURL(raw) {
@@ -489,7 +490,7 @@ func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selec
 			})
 			continue
 		}
-		result, err := m.settings.Apply(ctx, pacURL, []string{service.Name})
+		result, err := m.settings.SetURL(ctx, pacSetting(service), pacURL)
 		if err != nil {
 			warnings = append(warnings, Warning{
 				Kind:        WarningUpdateFailed,
@@ -498,8 +499,24 @@ func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selec
 			})
 			continue
 		}
-		if containsString(result.AppliedServices, service.Name) {
+		if result.Applied {
 			installed = append(installed, service.Name)
+			continue
+		}
+		if result.Current != nil {
+			if ownershipForURL(result.Current.URL) == OwnershipForeign {
+				warnings = append(warnings, Warning{
+					Kind:        WarningDrift,
+					ServiceName: service.Name,
+					Diagnostic:  "foreign PAC state is active",
+				})
+				continue
+			}
+			warnings = append(warnings, Warning{
+				Kind:        WarningUpdateFailed,
+				ServiceName: service.Name,
+				Diagnostic:  "PAC state changed during publication",
+			})
 		}
 	}
 	sort.Strings(installed)
@@ -548,16 +565,16 @@ func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {
 	if err != nil {
 		return ActiveStateCleanupError{InspectionErr: err}
 	}
-	var activeOwned []string
+	var activeOwned []Service
 	for _, service := range snapshot.services {
 		if service.Enabled && service.Ownership == OwnershipOwned {
-			activeOwned = append(activeOwned, service.Name)
+			activeOwned = append(activeOwned, service)
 		}
 	}
 	serviceFailures := make([]ServiceCleanupFailure, 0)
-	for _, serviceName := range activeOwned {
-		if err := m.settings.DisableOwned(ctx, []string{serviceName}); err != nil {
-			serviceFailures = append(serviceFailures, ServiceCleanupFailure{ServiceName: serviceName, Err: err})
+	for _, service := range activeOwned {
+		if _, err := m.settings.Disable(ctx, pacSetting(service)); err != nil {
+			serviceFailures = append(serviceFailures, ServiceCleanupFailure{ServiceName: service.Name, Err: err})
 		}
 	}
 	after, inspectErr := m.Inspect(ctx)
@@ -574,6 +591,10 @@ func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {
 		return ActiveStateCleanupError{ServiceFailures: serviceFailures, RemainingServices: remaining}
 	}
 	return nil
+}
+
+func pacSetting(service Service) pacsettings.Setting {
+	return pacsettings.Setting{ServiceName: service.Name, URL: service.URL, Enabled: service.Enabled}
 }
 
 func (m *ManagedPAC) closeReconciliationAdmission() (uint64, <-chan struct{}) {
