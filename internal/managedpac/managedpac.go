@@ -34,7 +34,7 @@ type Snapshot struct {
 	services []Service
 }
 
-// NewSnapshot returns an immutable semantic observation sorted by service name.
+// NewSnapshot returns a semantic observation sorted by service name.
 func NewSnapshot(services []Service) Snapshot {
 	cloned := append([]Service(nil), services...)
 	sort.Slice(cloned, func(i, j int) bool { return cloned[i].Name < cloned[j].Name })
@@ -42,7 +42,7 @@ func NewSnapshot(services []Service) Snapshot {
 }
 
 func (s Snapshot) Services() []Service {
-	return append([]Service(nil), s.services...)
+	return s.services
 }
 
 func (s Snapshot) ManageableServices() []string {
@@ -73,70 +73,12 @@ func (s Snapshot) HasActiveOwnedState() bool {
 	return false
 }
 
-type CleanupWhileReconciliationActiveError struct{}
-
-func (CleanupWhileReconciliationActiveError) Error() string {
-	return "managed PAC active-state cleanup rejected while reconciliation is active"
-}
-
-type ServiceCleanupFailure struct {
-	ServiceName string
-	Err         error
-}
-
-func (e ServiceCleanupFailure) Error() string {
-	return fmt.Sprintf("%s: %v", e.ServiceName, e.Err)
-}
-
-func (e ServiceCleanupFailure) Unwrap() error { return e.Err }
-
-type ActiveStateCleanupError struct {
-	InspectionErr     error
-	ServiceFailures   []ServiceCleanupFailure
-	VerificationErr   error
-	RemainingServices []string
-}
-
-func (e ActiveStateCleanupError) Error() string {
-	parts := make([]string, 0, 3)
-	if e.InspectionErr != nil {
-		parts = append(parts, "inspection failed: "+e.InspectionErr.Error())
-	}
-	if len(e.ServiceFailures) > 0 {
-		failures := make([]string, 0, len(e.ServiceFailures))
-		for _, failure := range e.ServiceFailures {
-			failures = append(failures, failure.Error())
-		}
-		parts = append(parts, "service mutations failed: "+strings.Join(failures, "; "))
-	}
-	if e.VerificationErr != nil {
-		parts = append(parts, "verification failed: "+e.VerificationErr.Error())
-	} else if len(e.RemainingServices) > 0 {
-		parts = append(parts, fmt.Sprintf("active state remains on services: %v", e.RemainingServices))
-	}
-	return "managed PAC active-state cleanup failed: " + strings.Join(parts, "; ")
-}
-
-func (e ActiveStateCleanupError) Unwrap() []error {
-	causes := make([]error, 0, len(e.ServiceFailures)+2)
-	if e.InspectionErr != nil {
-		causes = append(causes, e.InspectionErr)
-	}
-	for _, failure := range e.ServiceFailures {
-		causes = append(causes, failure)
-	}
-	if e.VerificationErr != nil {
-		causes = append(causes, e.VerificationErr)
-	}
-	return causes
-}
-
 type RuntimeState struct {
 	serviceNames []string
 	pacURL       string
 }
 
-// NewRuntimeState returns immutable state for a fixed Managed PAC Service Set.
+// NewRuntimeState returns read-only state for a fixed Managed PAC Service Set.
 func NewRuntimeState(serviceNames []string, pacURL string) RuntimeState {
 	return RuntimeState{
 		serviceNames: sortedUniqueStrings(serviceNames),
@@ -145,7 +87,7 @@ func NewRuntimeState(serviceNames []string, pacURL string) RuntimeState {
 }
 
 func (s RuntimeState) ServiceNames() []string {
-	return append([]string(nil), s.serviceNames...)
+	return s.serviceNames
 }
 
 func (s RuntimeState) PACURL() string { return s.pacURL }
@@ -164,9 +106,8 @@ type Warning struct {
 }
 
 type InstallResult struct {
-	state             RuntimeState
-	installedServices []string
-	warnings          []Warning
+	state    RuntimeState
+	warnings []Warning
 }
 
 // ReconciliationResult is the latest complete Managed PAC runtime snapshot
@@ -178,29 +119,21 @@ type ReconciliationResult struct {
 }
 
 func NewReconciliationResult(state RuntimeState, warnings []Warning) ReconciliationResult {
-	return ReconciliationResult{state: cloneRuntimeState(state), warnings: append([]Warning(nil), warnings...)}
+	return ReconciliationResult{state: state, warnings: warnings}
 }
 
-func (r ReconciliationResult) State() RuntimeState { return cloneRuntimeState(r.state) }
-func (r ReconciliationResult) Warnings() []Warning { return append([]Warning(nil), r.warnings...) }
+func (r ReconciliationResult) State() RuntimeState { return r.state }
+func (r ReconciliationResult) Warnings() []Warning { return r.warnings }
 
-// NewInstallResult returns an immutable Managed PAC installation result.
-func NewInstallResult(state RuntimeState, installedServices []string, warnings []Warning) InstallResult {
-	return InstallResult{
-		state:             cloneRuntimeState(state),
-		installedServices: append([]string(nil), installedServices...),
-		warnings:          append([]Warning(nil), warnings...),
-	}
+// NewInstallResult returns a read-only Managed PAC installation result.
+func NewInstallResult(state RuntimeState, warnings []Warning) InstallResult {
+	return InstallResult{state: state, warnings: warnings}
 }
 
-func (r InstallResult) State() RuntimeState { return cloneRuntimeState(r.state) }
-
-func (r InstallResult) InstalledServices() []string {
-	return append([]string(nil), r.installedServices...)
-}
+func (r InstallResult) State() RuntimeState { return r.state }
 
 func (r InstallResult) Warnings() []Warning {
-	return append([]Warning(nil), r.warnings...)
+	return r.warnings
 }
 
 // ManagedPAC owns PAC Projection publication generation, latest-value
@@ -260,18 +193,7 @@ func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
 			Ownership: ownershipForURL(state.URL),
 		})
 	}
-	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 	return NewSnapshot(services), nil
-}
-
-func ownershipForURL(raw string) Ownership {
-	if raw == "" {
-		return OwnershipEmpty
-	}
-	if isOwnedURL(raw) {
-		return OwnershipOwned
-	}
-	return OwnershipForeign
 }
 
 // InstallProjection performs the initial publication for a PAC Projection.
@@ -301,17 +223,17 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	m.mu.Unlock()
 	pacURL := pacURL(pacListen, generation)
 
-	installed, warnings, publicationErr := m.attemptPublication(ctx, selected, pacURL)
+	warnings, publicationErr := m.attemptPublication(ctx, selected, pacURL)
 	state := NewRuntimeState(selected, "")
 	if publicationErr == nil {
 		state = NewRuntimeState(selected, pacURL)
 	}
-	result := NewInstallResult(state, installed, warnings)
+	result := NewInstallResult(state, warnings)
 
 	m.mu.Lock()
 	m.latestProjection = &projection
 	m.pacListen = pacListen
-	m.serviceNames = append([]string(nil), selected...)
+	m.serviceNames = selected
 	m.runtimeState = state
 	if publicationErr != nil {
 		m.projectionPublisher.Publish(projection)
@@ -361,6 +283,42 @@ func (m *ManagedPAC) PublishProjection(projection string) {
 	workerDone, workerStop := m.startProjectionWorkerLocked()
 	m.mu.Unlock()
 	go m.runProjectionReconciliation(workerDone, workerStop)
+}
+
+// CleanupActiveState disables marker-owned PAC settings without changing
+// reconciliation admission. Active lifecycles must use Uninstall instead.
+func (m *ManagedPAC) CleanupActiveState(ctx context.Context) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+
+	m.mu.Lock()
+	accepting := m.accepting
+	m.mu.Unlock()
+	if accepting {
+		return CleanupWhileReconciliationActiveError{}
+	}
+	return m.cleanupActiveStateLocked(ctx)
+}
+
+// Uninstall closes reconciliation admission before waiting for the current
+// writer, then disables all currently active marker-owned settings.
+func (m *ManagedPAC) Uninstall(ctx context.Context) error {
+	_, workerDone := m.closeReconciliationAdmission()
+	if workerDone != nil {
+		<-workerDone
+	}
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	err := m.cleanupActiveStateLocked(ctx)
+	if err == nil {
+		m.mu.Lock()
+		m.runtimeState = RuntimeState{}
+		m.serviceNames = nil
+		m.latestProjection = nil
+		m.pacListen = ""
+		m.mu.Unlock()
+	}
+	return err
 }
 
 func (m *ManagedPAC) startProjectionWorkerLocked() (chan struct{}, chan struct{}) {
@@ -437,7 +395,7 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 		return true
 	}
 	pacListen := m.pacListen
-	serviceNames := append([]string(nil), m.serviceNames...)
+	serviceNames := m.serviceNames
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	m.publicationGeneration++
@@ -445,12 +403,12 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 	m.activeCancel = cancel
 	m.mu.Unlock()
 	pacURL := pacURL(pacListen, generation)
-	_, warnings, err := m.attemptPublication(ctx, serviceNames, pacURL)
+	warnings, err := m.attemptPublication(ctx, serviceNames, pacURL)
 	cancel()
 
 	m.mu.Lock()
 	m.activeCancel = nil
-	state := cloneRuntimeState(m.runtimeState)
+	state := m.runtimeState
 	if err == nil {
 		state = NewRuntimeState(serviceNames, pacURL)
 		m.runtimeState = state
@@ -460,23 +418,22 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 	return err == nil
 }
 
-func (m *ManagedPAC) attemptPublication(ctx context.Context, serviceNames []string, pacURL string) ([]string, []Warning, error) {
+func (m *ManagedPAC) attemptPublication(ctx context.Context, serviceNames []string, pacURL string) ([]Warning, error) {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return nil, []Warning{{Kind: WarningUpdateFailed, Diagnostic: err.Error()}}, err
+		return []Warning{{Kind: WarningUpdateFailed, Diagnostic: err.Error()}}, err
 	}
-	installed, warnings := m.applyEligible(ctx, snapshot, serviceNames, pacURL)
+	warnings := m.applyEligible(ctx, snapshot, serviceNames, pacURL)
 	for _, warning := range warnings {
 		if warning.Kind == WarningUpdateFailed {
-			return installed, warnings, errors.New("managed PAC publication failed")
+			return warnings, errors.New("managed PAC publication failed")
 		}
 	}
-	return installed, warnings, nil
+	return warnings, nil
 }
 
-func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selected []string, pacURL string) ([]string, []Warning) {
+func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selected []string, pacURL string) []Warning {
 	selectedSet := stringSet(selected)
-	var installed []string
 	var warnings []Warning
 	for _, service := range snapshot.services {
 		if _, ok := selectedSet[service.Name]; !ok {
@@ -500,7 +457,6 @@ func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selec
 			continue
 		}
 		if result.Applied {
-			installed = append(installed, service.Name)
 			continue
 		}
 		if result.Current != nil {
@@ -519,45 +475,8 @@ func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selec
 			})
 		}
 	}
-	sort.Strings(installed)
 	sortWarnings(warnings)
-	return installed, warnings
-}
-
-// CleanupActiveState disables marker-owned PAC settings without changing
-// reconciliation admission. Active lifecycles must use Uninstall instead.
-func (m *ManagedPAC) CleanupActiveState(ctx context.Context) error {
-	m.opMu.Lock()
-	defer m.opMu.Unlock()
-
-	m.mu.Lock()
-	accepting := m.accepting
-	m.mu.Unlock()
-	if accepting {
-		return CleanupWhileReconciliationActiveError{}
-	}
-	return m.cleanupActiveStateLocked(ctx)
-}
-
-// Uninstall closes reconciliation admission before waiting for the current
-// writer, then disables all currently active marker-owned settings.
-func (m *ManagedPAC) Uninstall(ctx context.Context) error {
-	_, workerDone := m.closeReconciliationAdmission()
-	if workerDone != nil {
-		<-workerDone
-	}
-	m.opMu.Lock()
-	defer m.opMu.Unlock()
-	err := m.cleanupActiveStateLocked(ctx)
-	if err == nil {
-		m.mu.Lock()
-		m.runtimeState = RuntimeState{}
-		m.serviceNames = nil
-		m.latestProjection = nil
-		m.pacListen = ""
-		m.mu.Unlock()
-	}
-	return err
+	return warnings
 }
 
 func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {
@@ -593,6 +512,74 @@ func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {
 	return nil
 }
 
+type CleanupWhileReconciliationActiveError struct{}
+
+func (CleanupWhileReconciliationActiveError) Error() string {
+	return "managed PAC active-state cleanup rejected while reconciliation is active"
+}
+
+type ServiceCleanupFailure struct {
+	ServiceName string
+	Err         error
+}
+
+func (e ServiceCleanupFailure) Error() string {
+	return fmt.Sprintf("%s: %v", e.ServiceName, e.Err)
+}
+
+func (e ServiceCleanupFailure) Unwrap() error { return e.Err }
+
+type ActiveStateCleanupError struct {
+	InspectionErr     error
+	ServiceFailures   []ServiceCleanupFailure
+	VerificationErr   error
+	RemainingServices []string
+}
+
+func (e ActiveStateCleanupError) Error() string {
+	parts := make([]string, 0, 3)
+	if e.InspectionErr != nil {
+		parts = append(parts, "inspection failed: "+e.InspectionErr.Error())
+	}
+	if len(e.ServiceFailures) > 0 {
+		failures := make([]string, 0, len(e.ServiceFailures))
+		for _, failure := range e.ServiceFailures {
+			failures = append(failures, failure.Error())
+		}
+		parts = append(parts, "service mutations failed: "+strings.Join(failures, "; "))
+	}
+	if e.VerificationErr != nil {
+		parts = append(parts, "verification failed: "+e.VerificationErr.Error())
+	} else if len(e.RemainingServices) > 0 {
+		parts = append(parts, fmt.Sprintf("active state remains on services: %v", e.RemainingServices))
+	}
+	return "managed PAC active-state cleanup failed: " + strings.Join(parts, "; ")
+}
+
+func (e ActiveStateCleanupError) Unwrap() []error {
+	causes := make([]error, 0, len(e.ServiceFailures)+2)
+	if e.InspectionErr != nil {
+		causes = append(causes, e.InspectionErr)
+	}
+	for _, failure := range e.ServiceFailures {
+		causes = append(causes, failure)
+	}
+	if e.VerificationErr != nil {
+		causes = append(causes, e.VerificationErr)
+	}
+	return causes
+}
+
+func ownershipForURL(raw string) Ownership {
+	if raw == "" {
+		return OwnershipEmpty
+	}
+	if isOwnedURL(raw) {
+		return OwnershipOwned
+	}
+	return OwnershipForeign
+}
+
 func pacSetting(service Service) pacsettings.Setting {
 	return pacsettings.Setting{ServiceName: service.Name, URL: service.URL, Enabled: service.Enabled}
 }
@@ -612,21 +599,12 @@ func (m *ManagedPAC) closeReconciliationAdmission() (uint64, <-chan struct{}) {
 	return m.admissionGeneration, m.projectionWorkerDone
 }
 
-func cloneRuntimeState(state RuntimeState) RuntimeState {
-	return RuntimeState{serviceNames: append([]string(nil), state.serviceNames...), pacURL: state.pacURL}
-}
-
 func stringSet(values []string) map[string]struct{} {
 	set := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		set[value] = struct{}{}
 	}
 	return set
-}
-
-func containsString(values []string, target string) bool {
-	_, ok := stringSet(values)[target]
-	return ok
 }
 
 func sortedUniqueStrings(values []string) []string {

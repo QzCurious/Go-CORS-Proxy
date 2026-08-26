@@ -46,7 +46,6 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	detail := consentResult.Consent
 	installResult := managedpac.NewInstallResult(
 		managedpac.NewRuntimeState([]string{"Ethernet", "USB"}, "ignored by assertion"),
-		[]string{"USB"},
 		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Ethernet", Diagnostic: "foreign PAC state is active"}},
 	)
 	settings.installResult = &installResult
@@ -269,7 +268,6 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 	}
 	installResult := managedpac.NewInstallResult(
 		managedpac.NewRuntimeState([]string{"Wi-Fi"}, ""),
-		nil,
 		[]managedpac.Warning{{Kind: managedpac.WarningUpdateFailed, ServiceName: "Wi-Fi", Diagnostic: "PAC write denied"}},
 	)
 	settings.installResult = &installResult
@@ -830,7 +828,6 @@ func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, servi
 	}
 	return managedpac.NewInstallResult(
 		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), "http://"+pacListen+"/seamless-cors.pac?v=1"),
-		sortedUniqueServiceNames(services),
 		nil,
 	), f.installErr
 }
