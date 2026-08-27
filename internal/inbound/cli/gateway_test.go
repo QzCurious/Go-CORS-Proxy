@@ -55,7 +55,15 @@ func TestManagedPACConsentPromptShowsProposedAndExcludedServices(t *testing.T) {
 	if !ok {
 		t.Fatal("consent was not accepted")
 	}
-	for _, want := range []string{"Managed PAC Consent is required", "proposed for Managed PAC Service Set", "excluded (foreign PAC state)", "excluded (PAC observation failed)", "managed-pac-observation-issue: VPN: PAC query failed", "Proceed? [y/N]"} {
+	for _, want := range []string{
+		"seamless-cors will manage proxy settings for this run",
+		"Network services to manage:\n  Ethernet",
+		"Network services left unchanged:",
+		"VPN: proxy settings could not be read (PAC query failed)",
+		"Wi-Fi: another proxy configuration is active",
+		"won't restore settings that existed before",
+		"Continue? [Y/n]",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("consent prompt missing %q:\n%s", want, out.String())
 		}

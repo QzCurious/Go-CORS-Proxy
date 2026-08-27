@@ -106,11 +106,11 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 }
 
 func confirmUpstreamListCreation(ctx context.Context, stdin io.Reader, stdout io.Writer, detail gateway.UpstreamListCreationConsent) (bool, error) {
-	fmt.Fprintf(stdout, "upstreams.txt is missing. Create %s with these default contents?\n\n%s", detail.Path, detail.DefaultContents)
+	fmt.Fprintf(stdout, "upstreams.txt is missing: %s\n", detail.Path)
 	if len(detail.MissingParentDirectories) > 0 {
 		fmt.Fprintf(stdout, "Missing parent directories that will also be created:\n  %s\n", strings.Join(detail.MissingParentDirectories, "\n  "))
 	}
-	fmt.Fprint(stdout, "Create it? [y/N] ")
+	fmt.Fprint(stdout, "Create it? [Y/n] ")
 	answer := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdin)
@@ -125,7 +125,7 @@ func confirmUpstreamListCreation(ctx context.Context, stdin io.Reader, stdout io
 		return false, ctx.Err()
 	case value := <-answer:
 		value = strings.TrimSpace(strings.ToLower(value))
-		return value == "y" || value == "yes", nil
+		return value == "" || value == "y" || value == "yes", nil
 	}
 }
 
@@ -245,7 +245,7 @@ func uninstallCAWithCommand(ctx context.Context, stdin io.Reader, stdout io.Writ
 	if result.Kind == gateway.UninstallResultConsentRequired {
 		fmt.Fprintln(stdout, "HTTPS interception is active. Uninstalling will disable HTTPS interception and remove every seamless-cors UserCA.")
 		fmt.Fprint(stdout, "Proceed? [y/N] ")
-		confirmed, err := readYes(ctx, stdin)
+		confirmed, err := readYes(ctx, stdin, false)
 		if err != nil {
 			return err
 		}
@@ -280,30 +280,49 @@ func confirmManagedPACConsent(ctx context.Context, stdin io.Reader, stdout io.Wr
 	if detail == nil {
 		return true, nil
 	}
-	fmt.Fprintln(stdout, "Managed PAC Consent is required before seamless-cors changes current-user OS-managed PAC state.")
+	fmt.Fprintln(stdout, "seamless-cors will manage proxy settings for this run.")
 	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "seamless-cors will manage the proposed services for this gateway run.")
-	fmt.Fprintln(stdout, "Foreign PAC settings are excluded and will not be changed.")
-	fmt.Fprintln(stdout, "Gateway Footprint Cleanup removes seamless-cors-owned managed PAC settings without restoring previous PAC state.")
-	fmt.Fprintln(stdout, "Current managed PAC state:")
+	fmt.Fprintln(stdout, "Network services to manage:")
 	for _, state := range detail.CurrentPACState {
-		url := state.URL
-		if url == "" {
-			url = "(empty)"
-		}
-		agreement := "excluded (foreign PAC state)"
-		if state.Ownership == gateway.PACOwnershipUnknown {
-			agreement = "excluded (PAC observation failed)"
-		}
 		if state.Manageable {
-			agreement = "proposed for Managed PAC Service Set"
+			fmt.Fprintf(stdout, "  %s\n", state.ServiceName)
 		}
-		fmt.Fprintf(stdout, "  %s: %s (%s; enabled=%t url=%s)\n", state.ServiceName, state.Ownership, agreement, state.Enabled, url)
 	}
-	renderManagedPACObservationIssues(stdout, detail.ObservationIssues)
+
+	issuesByService := make(map[string]string, len(detail.ObservationIssues))
+	for _, issue := range detail.ObservationIssues {
+		issuesByService[issue.ServiceName] = issue.Diagnostic
+	}
+	leftUnchanged := false
+	for _, state := range detail.CurrentPACState {
+		if !state.Manageable {
+			leftUnchanged = true
+			break
+		}
+	}
+	if leftUnchanged {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "Network services left unchanged:")
+		for _, state := range detail.CurrentPACState {
+			if state.Manageable {
+				continue
+			}
+			if state.Ownership == gateway.PACOwnershipUnknown {
+				fmt.Fprintf(stdout, "  %s: proxy settings could not be read", state.ServiceName)
+				if diagnostic := issuesByService[state.ServiceName]; diagnostic != "" {
+					fmt.Fprintf(stdout, " (%s)", diagnostic)
+				}
+				fmt.Fprintln(stdout)
+				continue
+			}
+			fmt.Fprintf(stdout, "  %s: another proxy configuration is active\n", state.ServiceName)
+		}
+	}
 	fmt.Fprintln(stdout)
-	fmt.Fprint(stdout, "Proceed? [y/N] ")
-	ok, err := readYes(ctx, stdin)
+	fmt.Fprintln(stdout, "Other proxy settings won't be changed. When seamless-cors stops, it removes its own settings but won't restore settings that existed before.")
+	fmt.Fprintln(stdout)
+	fmt.Fprint(stdout, "Continue? [Y/n] ")
+	ok, err := readYes(ctx, stdin, true)
 	if err != nil {
 		return false, err
 	}
@@ -315,7 +334,7 @@ func confirmManagedPACConsent(ctx context.Context, stdin io.Reader, stdout io.Wr
 	return true, nil
 }
 
-func readYes(ctx context.Context, stdin io.Reader) (bool, error) {
+func readYes(ctx context.Context, stdin io.Reader, defaultYes bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -345,6 +364,9 @@ func readYes(ctx context.Context, stdin io.Reader) (bool, error) {
 		return false, err
 	}
 	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer == "" {
+		return defaultYes, nil
+	}
 	return answer == "y" || answer == "yes", nil
 }
 
