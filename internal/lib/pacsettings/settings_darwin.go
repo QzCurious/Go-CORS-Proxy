@@ -8,17 +8,19 @@ import (
 	"strings"
 )
 
-type darwinSettings struct {
+type settings struct {
 	runner commandRunner
 }
 
-var _ platformSettings = (*darwinSettings)(nil)
+var _ Settings = (*settings)(nil)
 
-func newPlatformSettings() platformSettings {
-	return &darwinSettings{runner: execRunner{}}
+// New returns the current user's PAC settings without inspecting or mutating them.
+func New() Settings {
+	return &settings{runner: execRunner{}}
 }
 
-func (s *darwinSettings) list(ctx context.Context) ([]string, error) {
+// List returns the visible network service names.
+func (s *settings) List(ctx context.Context) ([]string, error) {
 	out, err := s.runner.run(ctx, "networksetup", "-listallnetworkservices")
 	if err != nil {
 		return nil, fmt.Errorf("list network services: %w", err)
@@ -36,7 +38,8 @@ func (s *darwinSettings) list(ctx context.Context) ([]string, error) {
 	return serviceNames, nil
 }
 
-func (s *darwinSettings) lookup(ctx context.Context, serviceName string) (Setting, error) {
+// Lookup returns a fresh PAC setting for serviceName.
+func (s *settings) Lookup(ctx context.Context, serviceName string) (Setting, error) {
 	// Read the operating system's current state.
 	out, err := s.runner.run(ctx, "networksetup", "-getautoproxyurl", serviceName)
 	if err != nil {
@@ -63,7 +66,8 @@ func (s *darwinSettings) lookup(ctx context.Context, serviceName string) (Settin
 	return setting, nil
 }
 
-func (s *darwinSettings) setURL(ctx context.Context, serviceName, url string) error {
+// SetURL sets and enables url for serviceName.
+func (s *settings) SetURL(ctx context.Context, serviceName, url string) error {
 	_, err := s.runner.run(ctx, "networksetup", "-setautoproxyurl", serviceName, url)
 	if err != nil {
 		return fmt.Errorf("set PAC URL for network service %q: %w", serviceName, err)
@@ -71,7 +75,8 @@ func (s *darwinSettings) setURL(ctx context.Context, serviceName, url string) er
 	return nil
 }
 
-func (s *darwinSettings) disable(ctx context.Context, serviceName string) error {
+// Disable disables PAC use for serviceName without changing its retained URL.
+func (s *settings) Disable(ctx context.Context, serviceName string) error {
 	_, err := s.runner.run(ctx, "networksetup", "-setautoproxystate", serviceName, "off")
 	if err != nil {
 		return fmt.Errorf("disable PAC for network service %q: %w", serviceName, err)

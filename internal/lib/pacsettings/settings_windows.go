@@ -16,22 +16,25 @@ const (
 	windowsInternetSettingsKey = `HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 )
 
-type windowsSettings struct {
+type settings struct {
 	runner commandRunner
 	notify func() error
 }
 
-var _ platformSettings = (*windowsSettings)(nil)
+var _ Settings = (*settings)(nil)
 
-func newPlatformSettings() platformSettings {
-	return &windowsSettings{runner: execRunner{}, notify: notifyInternetSettingsChanged}
+// New returns the current user's PAC settings without inspecting or mutating them.
+func New() Settings {
+	return &settings{runner: execRunner{}, notify: notifyInternetSettingsChanged}
 }
 
-func (s *windowsSettings) list(context.Context) ([]string, error) {
+// List returns the visible network service names.
+func (s *settings) List(context.Context) ([]string, error) {
 	return []string{windowsPACServiceName}, nil
 }
 
-func (s *windowsSettings) lookup(ctx context.Context, serviceName string) (Setting, error) {
+// Lookup returns a fresh PAC setting for serviceName.
+func (s *settings) Lookup(ctx context.Context, serviceName string) (Setting, error) {
 	if serviceName != windowsPACServiceName {
 		return Setting{}, fmt.Errorf("get PAC setting for network service %q: unknown network service", serviceName)
 	}
@@ -62,7 +65,8 @@ if ($null -ne $prop -and $null -ne $prop.AutoConfigURL) {
 	return setting, nil
 }
 
-func (s *windowsSettings) setURL(ctx context.Context, serviceName, url string) error {
+// SetURL sets and enables url for serviceName.
+func (s *settings) SetURL(ctx context.Context, serviceName, url string) error {
 	if serviceName != windowsPACServiceName {
 		return fmt.Errorf("set PAC URL for network service %q: unknown network service", serviceName)
 	}
@@ -78,7 +82,8 @@ New-ItemProperty -Path $key -Name AutoConfigURL -PropertyType String -Value %s -
 	return s.notifyInternetSettingsChanged()
 }
 
-func (s *windowsSettings) disable(ctx context.Context, serviceName string) error {
+// Disable disables PAC use for serviceName without changing its retained URL.
+func (s *settings) Disable(ctx context.Context, serviceName string) error {
 	if serviceName != windowsPACServiceName {
 		return fmt.Errorf("disable PAC for network service %q: unknown network service", serviceName)
 	}
@@ -93,7 +98,7 @@ Remove-ItemProperty -Path $key -Name AutoConfigURL -ErrorAction SilentlyContinue
 	return s.notifyInternetSettingsChanged()
 }
 
-func (s *windowsSettings) notifyInternetSettingsChanged() error {
+func (s *settings) notifyInternetSettingsChanged() error {
 	if s.notify == nil {
 		return nil
 	}

@@ -110,6 +110,6 @@ func TestDarwinDisableMutatesNamedService(t *testing.T) {
 	}
 }
 
-func testDarwinSettings(runner commandRunner) *Settings {
-	return &Settings{platform: &darwinSettings{runner: runner}}
+func testDarwinSettings(runner commandRunner) *settings {
+	return &settings{runner: runner}
 }

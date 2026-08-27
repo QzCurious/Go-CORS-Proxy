@@ -7,30 +7,34 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
-type darwinStore struct {
+type store struct {
 	runner       commandRunner
 	keychainPath string
 }
 
-var _ platformStore = (*darwinStore)(nil)
+var _ Store = (*store)(nil)
 
-func newPlatformStore() (platformStore, error) {
+// New resolves and returns the current user's operating-system trust store.
+func New() (Store, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve current user home directory: %w", err)
 	}
-	return &darwinStore{
+	return &store{
 		runner:       execRunner{},
 		keychainPath: filepath.Join(home, "Library", "Keychains", "login.keychain-db"),
 	}, nil
 }
 
-func (s *darwinStore) list(ctx context.Context) ([]Certificate, error) {
+// List returns a fresh, unordered snapshot containing one record for every
+// parseable certificate in the current user's trust store.
+func (s *store) List(ctx context.Context) ([]Certificate, error) {
 	out, err := s.runner.run(ctx, "security", "find-certificate", "-a", "-p", s.keychainPath)
 	if err != nil {
 		return nil, fmt.Errorf("list trusted certificates: %s: %w", bytes.TrimSpace(out), err)
@@ -64,7 +68,8 @@ func (s *darwinStore) list(ctx context.Context) ([]Certificate, error) {
 	return certificates, nil
 }
 
-func (s *darwinStore) add(ctx context.Context, certificatePath string) error {
+// Add adds a certificate file as a trusted root for the current user.
+func (s *store) Add(ctx context.Context, certificatePath string) error {
 	out, err := s.runner.run(ctx, "security", "add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", s.keychainPath, certificatePath)
 	if err != nil {
 		return fmt.Errorf("add trusted certificate: %s: %w", bytes.TrimSpace(out), err)
@@ -72,10 +77,15 @@ func (s *darwinStore) add(ctx context.Context, certificatePath string) error {
 	return nil
 }
 
-func (s *darwinStore) remove(ctx context.Context, fingerprint string) error {
-	out, err := s.runner.run(ctx, "security", "delete-certificate", "-Z", fingerprint, "-t", s.keychainPath)
-	if err != nil {
-		return fmt.Errorf("remove trusted certificate %s: %s: %w", fingerprint, bytes.TrimSpace(out), err)
+// Remove removes every trust-store entry matching any supplied fingerprint.
+// Fingerprints use Certificate.Fingerprint format.
+func (s *store) Remove(ctx context.Context, fingerprints []string) error {
+	var errs []error
+	for _, fingerprint := range fingerprints {
+		out, err := s.runner.run(ctx, "security", "delete-certificate", "-Z", fingerprint, "-t", s.keychainPath)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("remove trusted certificate %s: %s: %w", fingerprint, bytes.TrimSpace(out), err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

@@ -127,26 +127,22 @@ func TestWindowsListRejectsSingleCertificateObject(t *testing.T) {
 	}
 }
 
-func TestWindowsRemoveDeletesEachFingerprintWithoutListing(t *testing.T) {
+func TestWindowsRemoveDeletesEveryFingerprintInOneCommandWithoutListing(t *testing.T) {
 	certificate := mustParsePEM(t, testCertificatePEM(t, "CA", true))
-	out, err := json.Marshal(map[string]string{"DER": base64.StdEncoding.EncodeToString(certificate.Raw)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeWindowsRunner{listOut: out}
+	runner := &fakeWindowsRunner{}
 	store := testWindowsStore(runner)
 	if err := store.Remove(context.Background(), []string{certificateFingerprint(certificate), "ABCDEF"}); err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(runner.calls, "\n")
-	if strings.Count(joined, "Remove-Item") != 2 {
-		t.Fatalf("remove calls:\n%s", joined)
+	if len(runner.calls) != 1 {
+		t.Fatalf("remove commands = %d, want 1", len(runner.calls))
 	}
+	joined := strings.Join(runner.calls, "\n")
 	if !strings.Contains(joined, `'ABCDEF'`) ||
 		!strings.Contains(joined, `'`+certificateFingerprint(certificate)+`'`) {
 		t.Fatalf("remove calls do not contain every fingerprint:\n%s", joined)
 	}
-	if strings.Count(joined, "Where-Object { $_.Thumbprint -eq $thumbprint }") != 2 {
+	if !strings.Contains(joined, "Where-Object { $_.Thumbprint -in $thumbprints }") {
 		t.Fatalf("remove calls do not match certificates by thumbprint:\n%s", joined)
 	}
 	if strings.Contains(joined, "ConvertTo-Json") {
@@ -170,6 +166,6 @@ func TestWindowsRemoveReportsPowerShellFailure(t *testing.T) {
 	}
 }
 
-func testWindowsStore(runner commandRunner) *Store {
-	return &Store{platform: &windowsStore{runner: runner}}
+func testWindowsStore(runner commandRunner) *store {
+	return &store{runner: runner}
 }

@@ -12,17 +12,20 @@ import (
 	"strings"
 )
 
-type windowsStore struct {
+type store struct {
 	runner commandRunner
 }
 
-var _ platformStore = (*windowsStore)(nil)
+var _ Store = (*store)(nil)
 
-func newPlatformStore() (platformStore, error) {
-	return &windowsStore{runner: execRunner{}}, nil
+// New resolves and returns the current user's operating-system trust store.
+func New() (Store, error) {
+	return &store{runner: execRunner{}}, nil
 }
 
-func (s *windowsStore) list(ctx context.Context) ([]Certificate, error) {
+// List returns a fresh, unordered snapshot containing one record for every
+// parseable certificate in the current user's trust store.
+func (s *store) List(ctx context.Context) ([]Certificate, error) {
 	script := `
 $records = @(
 	Get-ChildItem -Path Cert:\CurrentUser\Root |
@@ -41,7 +44,8 @@ ConvertTo-Json -Compress -InputObject $records
 	return certificatesFromJSON(out)
 }
 
-func (s *windowsStore) add(ctx context.Context, certificatePath string) error {
+// Add adds a certificate file as a trusted root for the current user.
+func (s *store) Add(ctx context.Context, certificatePath string) error {
 	script := fmt.Sprintf(`
 Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop | Out-Null
 `, psQuote(certificatePath))
@@ -49,13 +53,23 @@ Import-Certificate -FilePath %s -CertStoreLocation Cert:\CurrentUser\Root -Error
 	return err
 }
 
-func (s *windowsStore) remove(ctx context.Context, fingerprint string) error {
+// Remove removes every trust-store entry matching any supplied fingerprint.
+// Fingerprints use Certificate.Fingerprint format.
+func (s *store) Remove(ctx context.Context, fingerprints []string) error {
+	if len(fingerprints) == 0 {
+		return nil
+	}
+
+	quotedFingerprints := make([]string, len(fingerprints))
+	for i, fingerprint := range fingerprints {
+		quotedFingerprints[i] = psQuote(fingerprint)
+	}
 	script := fmt.Sprintf(`
-$thumbprint = %s
+$thumbprints = @(%s)
 Get-ChildItem -LiteralPath Cert:\CurrentUser\Root -ErrorAction Stop |
-	Where-Object { $_.Thumbprint -eq $thumbprint } |
+	Where-Object { $_.Thumbprint -in $thumbprints } |
 	Remove-Item -ErrorAction Stop
-`, psQuote(fingerprint))
+`, strings.Join(quotedFingerprints, ", "))
 	_, err := s.powershell(ctx, script)
 	return err
 }
@@ -88,7 +102,7 @@ func certificatesFromJSON(out []byte) ([]Certificate, error) {
 	return certificates, nil
 }
 
-func (s *windowsStore) powershell(ctx context.Context, script string) ([]byte, error) {
+func (s *store) powershell(ctx context.Context, script string) ([]byte, error) {
 	out, err := s.runner.run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	if err != nil {
 		return out, fmt.Errorf("powershell failed: %s: %w", bytes.TrimSpace(out), err)

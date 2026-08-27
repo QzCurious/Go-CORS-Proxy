@@ -180,7 +180,7 @@ func (r CleanupResult) ObservationIssues() []ObservationIssue {
 // ManagedPAC owns PAC Projection publication generation, latest-value
 // reconciliation, serial mutation policy, and complete active-state teardown.
 type ManagedPAC struct {
-	settings pacSettings
+	settings pacsettings.Settings
 
 	opMu sync.Mutex
 	mu   sync.Mutex
@@ -208,7 +208,7 @@ func Open() *ManagedPAC {
 	return openWithSettings(pacsettings.New())
 }
 
-func openWithSettings(settings pacSettings) *ManagedPAC {
+func openWithSettings(settings pacsettings.Settings) *ManagedPAC {
 	projectionPublisher, projectionStream := conflatedstream.New[string]()
 	resultPublisher, resultStream := conflatedstream.New[ReconciliationResult]()
 	return &ManagedPAC{

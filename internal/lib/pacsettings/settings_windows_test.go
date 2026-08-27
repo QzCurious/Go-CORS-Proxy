@@ -89,6 +89,6 @@ func TestWindowsDisableMutatesAndNotifies(t *testing.T) {
 	}
 }
 
-func testWindowsSettings(runner commandRunner, notify func() error) *Settings {
-	return &Settings{platform: &windowsSettings{runner: runner, notify: notify}}
+func testWindowsSettings(runner commandRunner, notify func() error) *settings {
+	return &settings{runner: runner, notify: notify}
 }

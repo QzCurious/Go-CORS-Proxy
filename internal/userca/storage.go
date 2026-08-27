@@ -17,7 +17,7 @@ func hasOwnedMaterial(dir string) (bool, error) {
 	return false, nil
 }
 
-func uninstallAll(ctx context.Context, dir string, store trustStore) error {
+func uninstallAll(ctx context.Context, dir string, store truststore.Store) error {
 	records, trustErr := store.List(ctx)
 	var removeErr error
 	if trustErr == nil {

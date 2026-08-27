@@ -5,7 +5,6 @@ import (
 	"crypto/sha1"
 	"crypto/x509"
 	"encoding/hex"
-	"errors"
 	"os/exec"
 	"strings"
 )
@@ -18,48 +17,15 @@ type Certificate struct {
 	X509        *x509.Certificate
 }
 
-// Store accesses the current user's operating-system trust store.
-type Store struct {
-	platform platformStore
+// Store exposes the current user's operating-system trust store as
+// platform-neutral facts and mutations.
+type Store interface {
+	List(context.Context) ([]Certificate, error)
+	Add(context.Context, string) error
+	Remove(context.Context, []string) error
 }
 
-type platformStore interface {
-	list(ctx context.Context) ([]Certificate, error)
-	add(ctx context.Context, certificatePath string) error
-	remove(ctx context.Context, fingerprint string) error
-}
-
-// New resolves and returns the current user's operating-system trust store.
-func New() (*Store, error) {
-	platform, err := newPlatformStore()
-	if err != nil {
-		return nil, err
-	}
-	return &Store{platform: platform}, nil
-}
-
-// List returns a fresh, unordered snapshot containing one record for every
-// parseable certificate in the current user's trust store.
-func (s *Store) List(ctx context.Context) ([]Certificate, error) {
-	return s.platform.list(ctx)
-}
-
-// Add adds a certificate file as a trusted root for the current user.
-func (s *Store) Add(ctx context.Context, certificatePath string) error {
-	return s.platform.add(ctx, certificatePath)
-}
-
-// Remove removes every trust-store entry matching any supplied fingerprint.
-// Fingerprints use Certificate.Fingerprint format.
-func (s *Store) Remove(ctx context.Context, fingerprints []string) error {
-	var errs []error
-	for _, fingerprint := range fingerprints {
-		if err := s.platform.remove(ctx, fingerprint); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
+var _ func() (Store, error) = New
 
 func certificateFingerprint(cert *x509.Certificate) string {
 	sum := sha1.Sum(cert.Raw)

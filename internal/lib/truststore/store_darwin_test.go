@@ -22,13 +22,13 @@ func TestDarwinNewResolvesCurrentUserKeychain(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	store, err := New()
+	opened, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	platform, ok := store.platform.(*darwinStore)
+	platform, ok := opened.(*store)
 	if !ok {
-		t.Fatalf("platform store = %T, want *darwinStore", store.platform)
+		t.Fatalf("store = %T, want *store", opened)
 	}
 	want := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
 	if platform.keychainPath != want {
@@ -58,20 +58,20 @@ func (f *fakeDarwinRunner) run(ctx context.Context, name string, args ...string)
 
 func TestDarwinMutationsObserveCancellation(t *testing.T) {
 	t.Run("add", func(t *testing.T) {
-		assertDarwinMutationCancellation(t, func(ctx context.Context, store *Store) error {
+		assertDarwinMutationCancellation(t, func(ctx context.Context, store Store) error {
 			return store.Add(ctx, "/tmp/certificate.pem")
 		}, nil)
 	})
 	t.Run("remove", func(t *testing.T) {
 		certificatePEM := testCertificatePEM(t, "example", true)
 		certificate := mustParsePEM(t, certificatePEM)
-		assertDarwinMutationCancellation(t, func(ctx context.Context, store *Store) error {
+		assertDarwinMutationCancellation(t, func(ctx context.Context, store Store) error {
 			return store.Remove(ctx, []string{certificateFingerprint(certificate)})
 		}, certificatePEM)
 	})
 }
 
-func assertDarwinMutationCancellation(t *testing.T, mutate func(context.Context, *Store) error, listOut []byte) {
+func assertDarwinMutationCancellation(t *testing.T, mutate func(context.Context, Store) error, listOut []byte) {
 	t.Helper()
 	entered := make(chan struct{})
 	runner := &fakeDarwinRunner{runFunc: func(ctx context.Context, _ string, args ...string) ([]byte, error) {
@@ -221,6 +221,6 @@ func TestDarwinRemoveReportsCommandFailure(t *testing.T) {
 	}
 }
 
-func testDarwinStore(runner commandRunner) *Store {
-	return &Store{platform: &darwinStore{runner: runner, keychainPath: "/tmp/login.keychain-db"}}
+func testDarwinStore(runner commandRunner) *store {
+	return &store{runner: runner, keychainPath: "/tmp/login.keychain-db"}
 }

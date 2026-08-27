@@ -15,7 +15,7 @@ import (
 // coherent capability. It does not cache assessment results.
 type CA struct {
 	dir        string
-	trustStore trustStore
+	trustStore truststore.Store
 	now        func() time.Time
 }
 
