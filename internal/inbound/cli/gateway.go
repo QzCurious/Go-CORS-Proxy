@@ -410,6 +410,7 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 					fmt.Fprintf(stdout, "Proxy configuration URL: %s\n", guidance.ManagedPACPublicationURL)
 				}
 			}
+			renderStartUpstreamListIssues(stdout, guidance.UpstreamLists)
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
 			renderManagedPACObservationIssues(stdout, guidance.ManagedPACObservationIssues)
 		}
@@ -679,6 +680,11 @@ func renderStartUpstreamListSources(stdout io.Writer, sources []gateway.Upstream
 			label = "Global"
 		}
 		fmt.Fprintf(stdout, "  %s: %s\n", label, source.Path)
+	}
+}
+
+func renderStartUpstreamListIssues(stdout io.Writer, sources []gateway.UpstreamListSourceDetail) {
+	for _, source := range sources {
 		renderFileSyncIssue(stdout, source.Kind, source.Path, source.FileSyncIssue)
 		renderUpstreamListProjectionIssue(stdout, source.Kind, source.Path, source.ProjectionIssue)
 		renderUpstreamListWarnings(stdout, source.Warnings)

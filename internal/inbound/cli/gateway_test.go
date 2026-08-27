@@ -160,6 +160,32 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 	}
 }
 
+func TestStartCommandRendersUpstreamWarningsAfterHumanSummary(t *testing.T) {
+	var out bytes.Buffer
+	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
+		ManagedPACActive:         true,
+		ManagedPACServices:       []string{"Wi-Fi"},
+		ManagedPACPublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
+		UpstreamLists: []gateway.UpstreamListSourceDetail{{
+			Kind: gateway.UpstreamListSourceGlobal,
+			Path: "/config/seamless-cors/upstreams.txt",
+			Warnings: []gateway.UpstreamListWarningDetail{{
+				Source:     gateway.UpstreamListSourceGlobal,
+				Path:       "/config/seamless-cors/upstreams.txt",
+				Line:       5,
+				Text:       "localhost:12094",
+				Diagnostic: "invalid selector",
+			}},
+		}},
+	}})
+
+	summaryEnd := strings.Index(out.String(), "Proxy configuration URL:")
+	warning := strings.Index(out.String(), "warning: global")
+	if summaryEnd < 0 || warning < summaryEnd {
+		t.Fatalf("upstream warning interrupted start summary:\n%s", out.String())
+	}
+}
+
 func TestStartResultRendersIndependentUpstreamListIssues(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
