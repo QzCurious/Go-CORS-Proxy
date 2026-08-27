@@ -11,7 +11,6 @@ var errStartNotActivated = errors.New("gateway start did not activate runtime")
 
 type StartHooks struct {
 	ConfirmUpstreamListCreation func(context.Context, UpstreamListCreationConsent) (bool, error)
-	ConfirmManagedPAC           func(context.Context, ManagedPACConsentDetail) (bool, error)
 	Started                     func(StartResult)
 	HTTPSPipelineChanged        func(*HTTPSPipelineDetail)
 }
@@ -182,23 +181,8 @@ func executeStartLoop(
 		case Started, AlreadyRunning,
 			StartStopCancelled, StartCleanupFailed, StartAlreadyMutating,
 			StartNoManageablePACServices, StartManagedPACInstallationFailed,
-			StartOwnerTransition, StartConsentDeclined:
+			StartOwnerTransition:
 			return result, nil
-		case StartConsentRequired:
-			accepted := false
-			if hooks.ConfirmManagedPAC != nil {
-				accepted, err = hooks.ConfirmManagedPAC(ctx, typed.Consent)
-				if err != nil {
-					return result, err
-				}
-			}
-			if !accepted {
-				return StartConsentDeclined{}, nil
-			}
-			request.ManagedPACConsent = &ManagedPACConsentInput{
-				ServiceNames: append([]string(nil), typed.Consent.ProposedServices...),
-				Fingerprint:  typed.Consent.Fingerprint,
-			}
 		default:
 			return result, fmt.Errorf("gateway start did not activate runtime: %s", result.Kind())
 		}

@@ -67,7 +67,7 @@ type startSuccessBody struct {
 type startFailureDetails struct {
 	UpstreamListCreationConsent *UpstreamListCreationConsent       `json:"upstreamListCreationConsent,omitempty"`
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail `json:"upstreamListCreationWarning,omitempty"`
-	ManagedPACConsent           *ManagedPACConsentDetail           `json:"managedPacConsent,omitempty"`
+	ManagedPAC                  *ManagedPACStartDetail             `json:"managedPac,omitempty"`
 	ManagedPACWarnings          []ManagedPACWarningDetail          `json:"managedPacWarnings,omitempty"`
 	Diagnostic                  string                             `json:"diagnostic,omitempty"`
 	CleanupFailures             []CleanupFailureDetail             `json:"cleanupFailures,omitempty"`
@@ -131,12 +131,9 @@ func startFailureDetailsFrom(result StartResult) startFailureDetails {
 	case StartUpstreamListCreationConsentRequired:
 		consent := typed.Consent
 		details.UpstreamListCreationConsent = &consent
-	case StartConsentRequired:
-		consent := typed.Consent
-		details.ManagedPACConsent = &consent
 	case StartNoManageablePACServices:
-		consent := typed.Consent
-		details.ManagedPACConsent = &consent
+		detail := typed.Detail
+		details.ManagedPAC = &detail
 	case StartManagedPACInstallationFailed:
 		details.ManagedPACWarnings = typed.Warnings
 		details.Diagnostic = typed.Diagnostic
@@ -156,18 +153,11 @@ func (dto startFailureDetails) semantic(kind StartKind) StartResult {
 		return StartUpstreamListCreationConsentRequired{Consent: *dto.UpstreamListCreationConsent}
 	case StartResultOwnerTransition:
 		return StartOwnerTransition{}
-	case StartResultConsentRequired:
-		if dto.ManagedPACConsent == nil {
-			return nil
-		}
-		return StartConsentRequired{Consent: *dto.ManagedPACConsent, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
-	case StartResultConsentDeclined:
-		return StartConsentDeclined{}
 	case StartResultNoManageablePACServices:
-		if dto.ManagedPACConsent == nil {
+		if dto.ManagedPAC == nil {
 			return nil
 		}
-		return StartNoManageablePACServices{Consent: *dto.ManagedPACConsent, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
+		return StartNoManageablePACServices{Detail: *dto.ManagedPAC, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	case StartResultManagedPACInstallationFailed:
 		return StartManagedPACInstallationFailed{Warnings: dto.ManagedPACWarnings, Diagnostic: dto.Diagnostic, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	case StartResultStartAlreadyMutating:

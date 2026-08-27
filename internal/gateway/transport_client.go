@@ -208,8 +208,6 @@ func knownStartFailureKind(kind StartKind) bool {
 	switch kind {
 	case StartResultOwnerTransition,
 		StartResultUpstreamListCreationConsentRequired,
-		StartResultConsentRequired,
-		StartResultConsentDeclined,
 		StartResultNoManageablePACServices,
 		StartResultManagedPACInstallationFailed,
 		StartResultStartAlreadyMutating,

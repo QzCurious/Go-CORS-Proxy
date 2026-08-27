@@ -107,9 +107,7 @@ func TestStartRoutesToExistingServeOwner(t *testing.T) {
 		t.Fatal("serve owner was not published")
 	}
 
-	result, err := Start(context.Background(), StartHooks{ConfirmManagedPAC: func(context.Context, ManagedPACConsentDetail) (bool, error) {
-		return true, nil
-	}})
+	result, err := Start(context.Background(), StartHooks{})
 
 	if err != nil {
 		t.Fatal(err)

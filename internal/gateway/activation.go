@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 )
@@ -51,7 +50,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		return nil, fmt.Errorf("start runtime: %w", err)
 	}
 
-	acceptedServices, assessmentResult, err := s.acceptedManagedPACServices(ctx, request)
+	managedPACDetail, assessmentResult, err := s.assessManagedPAC(ctx)
 	if err != nil || assessmentResult != nil {
 		if err != nil {
 			return postStartFailure(err)
@@ -187,7 +186,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	// the latest-value desired-state channel retains the newest snapshot for
 	// reconciliation once activation has installed its fixed service set.
 	pacInstallBaseline := engine.currentPACProjection()
-	pacInstall, err := s.lifecycle.managedPAC.InstallProjection(ctx, acceptedServices, engine.PACListen(), pacInstallBaseline)
+	pacInstall, err := s.lifecycle.managedPAC.InstallProjection(ctx, managedPACDetail.ServiceSet, engine.PACListen(), pacInstallBaseline)
 	if err != nil {
 		withdraw()
 		warnings := managedPACWarningDetails(pacInstall.Warnings())
@@ -234,15 +233,17 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		s.lifecycle.mu.Unlock()
 		installedCA = &status
 	}
+	managedPACDetail.PublicationURL = pacInstall.State().PACURL()
+	managedPACDetail.Warnings = managedPACWarningDetails(pacInstall.Warnings())
+	managedPACDetail.ObservationIssues = append(
+		managedPACDetail.ObservationIssues,
+		managedPACObservationIssueDetails(pacInstall.ObservationIssues())...,
+	)
 	return Started{Guidance: StartGuidance{
-		UpstreamLists:               state.UpstreamLists,
-		ManagedPACActive:            true,
-		ManagedPACServices:          pacInstall.State().ServiceNames(),
-		ManagedPACPublicationURL:    pacInstall.State().PACURL(),
-		ManagedPACWarnings:          managedPACWarningDetails(pacInstall.Warnings()),
-		ManagedPACObservationIssues: managedPACObservationIssueDetails(pacInstall.ObservationIssues()),
-		HTTPSPipeline:               state.HTTPSPipeline,
-		InstalledCA:                 installedCA,
+		UpstreamLists: state.UpstreamLists,
+		ManagedPAC:    managedPACDetail,
+		HTTPSPipeline: state.HTTPSPipeline,
+		InstalledCA:   installedCA,
 	}}, nil
 }
 
@@ -274,9 +275,6 @@ func withUpstreamListCreationWarning(result StartResult, err error) StartResult 
 	case Started:
 		typed.UpstreamListCreationWarning = warning
 		return typed
-	case StartConsentRequired:
-		typed.UpstreamListCreationWarning = warning
-		return typed
 	case StartNoManageablePACServices:
 		typed.UpstreamListCreationWarning = warning
 		return typed
@@ -297,30 +295,16 @@ func withUpstreamListCreationWarning(result StartResult, err error) StartResult 
 	}
 }
 
-func (s startSequence) acceptedManagedPACServices(ctx context.Context, request StartRequest) ([]string, StartResult, error) {
-	if request.ManagedPACConsent != nil {
-		services := sortedUniqueServiceNames(request.ManagedPACConsent.ServiceNames)
-		if len(services) == 0 || request.ManagedPACConsent.Fingerprint != pacConsentFingerprint(services) {
-			return nil, nil, fmt.Errorf("Managed PAC Consent does not match its accepted service names")
-		}
-		return services, nil, nil
-	}
-
+func (s startSequence) assessManagedPAC(ctx context.Context) (ManagedPACStartDetail, StartResult, error) {
 	snapshot, err := s.lifecycle.managedPAC.Inspect(ctx)
 	if err != nil {
-		return nil, nil, err
+		return ManagedPACStartDetail{}, nil, err
 	}
-	detail := s.lifecycle.managedPACConsentDetail(snapshot)
-	if len(detail.ProposedServices) == 0 {
-		return nil, StartNoManageablePACServices{Consent: *detail}, nil
+	detail := managedPACStartDetail(snapshot)
+	if len(detail.ServiceSet) == 0 {
+		return ManagedPACStartDetail{}, StartNoManageablePACServices{Detail: detail}, nil
 	}
-	return nil, StartConsentRequired{Consent: *detail}, nil
-}
-
-func sortedUniqueServiceNames(values []string) []string {
-	result := append([]string(nil), values...)
-	slices.Sort(result)
-	return slices.Compact(result)
+	return detail, nil, nil
 }
 
 func (s startSequence) cleanupFailedPACInstall() *CleanupFailureDetail {

@@ -33,8 +33,6 @@ const (
 	StartResultAlreadyRunning                      StartKind = "already-running"
 	StartResultOwnerTransition                     StartKind = "owner-transition"
 	StartResultUpstreamListCreationConsentRequired StartKind = "upstream-list-creation-consent-required"
-	StartResultConsentRequired                     StartKind = "managed-pac-consent-required"
-	StartResultConsentDeclined                     StartKind = "managed-pac-consent-declined"
 	StartResultNoManageablePACServices             StartKind = "no-manageable-pac-services"
 	StartResultManagedPACInstallationFailed        StartKind = "managed-pac-installation-failed"
 	StartResultStartAlreadyMutating                StartKind = "start-already-mutating"
@@ -45,7 +43,6 @@ const (
 type StartRequest struct {
 	WorkingDirectory            string                            `json:"workingDirectory" minLength:"1"`
 	UpstreamListCreationConsent *UpstreamListCreationConsentInput `json:"upstreamListCreationConsent,omitempty"`
-	ManagedPACConsent           *ManagedPACConsentInput           `json:"managedPacConsent,omitempty"`
 }
 
 // StartResult is the closed semantic result of a Start operation.  Concrete
@@ -92,19 +89,10 @@ type UpstreamListCreationConsentInput struct {
 	Fingerprint UpstreamListCreationFingerprint `json:"fingerprint,omitempty"`
 }
 
-// StartConsentRequired reports the managed PAC services requiring confirmation.
-type StartConsentRequired struct {
-	Consent                     ManagedPACConsent
-	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
-}
-
-// StartConsentDeclined reports that managed PAC consent was declined.
-type StartConsentDeclined struct{}
-
 // StartNoManageablePACServices reports that managed PAC inspection found no
-// services that can be managed.  Consent contains the inspection snapshot.
+// services that can be managed. Detail contains the inspection snapshot.
 type StartNoManageablePACServices struct {
-	Consent                     ManagedPACConsent
+	Detail                      ManagedPACStartDetail
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
@@ -177,22 +165,6 @@ func (StartUpstreamListCreationConsentRequired) UpstreamListCreationWarningDetai
 	return nil
 }
 func (StartUpstreamListCreationConsentRequired) startResult() {}
-func (StartConsentRequired) Kind() StartKind                  { return StartResultConsentRequired }
-func (StartConsentRequired) Fulfillment() CommandFulfillment {
-	return startFulfillment(StartResultConsentRequired)
-}
-func (r StartConsentRequired) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
-	return r.UpstreamListCreationWarning
-}
-func (StartConsentRequired) startResult()    {}
-func (StartConsentDeclined) Kind() StartKind { return StartResultConsentDeclined }
-func (StartConsentDeclined) Fulfillment() CommandFulfillment {
-	return startFulfillment(StartResultConsentDeclined)
-}
-func (StartConsentDeclined) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
-	return nil
-}
-func (StartConsentDeclined) startResult() {}
 func (StartNoManageablePACServices) Kind() StartKind {
 	return StartResultNoManageablePACServices
 }
@@ -238,17 +210,14 @@ func (r StartCleanupFailed) UpstreamListCreationWarningDetail() *UpstreamListCre
 }
 func (StartCleanupFailed) startResult() {}
 
-type ManagedPACConsent struct {
+type ManagedPACStartDetail struct {
 	CurrentPACState   []ManagedPACServiceState     `json:"currentPacState"`
 	ObservationIssues []ManagedPACObservationIssue `json:"observationIssues,omitempty"`
-	ProposedServices  []string                     `json:"proposedServices"`
+	ServiceSet        []string                     `json:"serviceSet"`
 	CleanupMode       CleanupMode                  `json:"cleanupMode"`
-	Fingerprint       PACConsentFingerprint        `json:"fingerprint"`
+	PublicationURL    string                       `json:"publicationUrl,omitempty"`
+	Warnings          []ManagedPACWarningDetail    `json:"warnings,omitempty"`
 }
-
-// ManagedPACConsentDetail is retained as a representation-oriented alias for
-// existing control-surface helpers; Start variants use ManagedPACConsent.
-type ManagedPACConsentDetail = ManagedPACConsent
 
 type CleanupMode string
 
@@ -271,22 +240,11 @@ const (
 	PACOwnershipForeign PACOwnership = "foreign"
 )
 
-type ManagedPACConsentInput struct {
-	ServiceNames []string              `json:"serviceNames"`
-	Fingerprint  PACConsentFingerprint `json:"fingerprint"`
-}
-
-type PACConsentFingerprint string
-
 type StartGuidance struct {
-	UpstreamLists               []UpstreamListSourceDetail   `json:"upstreamLists"`
-	ManagedPACActive            bool                         `json:"managedPacActive"`
-	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
-	ManagedPACPublicationURL    string                       `json:"managedPacPublicationUrl,omitempty"`
-	HTTPSPipeline               *HTTPSPipelineDetail         `json:"httpsPipeline,omitempty"`
-	InstalledCA                 *InstalledCAStatusDetail     `json:"installedCA,omitempty"`
-	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
-	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
+	UpstreamLists []UpstreamListSourceDetail `json:"upstreamLists"`
+	ManagedPAC    ManagedPACStartDetail      `json:"managedPac"`
+	HTTPSPipeline *HTTPSPipelineDetail       `json:"httpsPipeline,omitempty"`
+	InstalledCA   *InstalledCAStatusDetail   `json:"installedCA,omitempty"`
 }
 
 // StartGuidanceDetail is retained as a representation-oriented alias for
@@ -1286,7 +1244,7 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 	}
 }
 
-func (f *lifecycle) managedPACConsentDetail(snapshot managedpac.Snapshot) *ManagedPACConsentDetail {
+func managedPACStartDetail(snapshot managedpac.Snapshot) ManagedPACStartDetail {
 	services := snapshot.Services()
 	out := make([]ManagedPACServiceState, 0, len(services))
 	for _, state := range services {
@@ -1298,13 +1256,11 @@ func (f *lifecycle) managedPACConsentDetail(snapshot managedpac.Snapshot) *Manag
 			Manageable:  state.Manageable(),
 		})
 	}
-	proposed := snapshot.ManageableServices()
-	return &ManagedPACConsentDetail{
+	return ManagedPACStartDetail{
 		CurrentPACState:   out,
 		ObservationIssues: managedPACObservationIssueDetails(snapshot.ObservationIssues()),
-		ProposedServices:  proposed,
+		ServiceSet:        snapshot.ManageableServices(),
 		CleanupMode:       CleanupModeNoPACRestoration,
-		Fingerprint:       pacConsentFingerprint(proposed),
 	}
 }
 
@@ -1314,15 +1270,6 @@ func managedPACObservationIssueDetails(issues []managedpac.ObservationIssue) []M
 		out = append(out, ManagedPACObservationIssue{ServiceName: issue.ServiceName, Diagnostic: issue.Diagnostic})
 	}
 	return out
-}
-
-func pacConsentFingerprint(serviceNames []string) PACConsentFingerprint {
-	h := sha256.New()
-	for _, serviceName := range sortedUniqueServiceNames(serviceNames) {
-		_, _ = h.Write([]byte(serviceName))
-		_, _ = h.Write([]byte{0})
-	}
-	return PACConsentFingerprint(hex.EncodeToString(h.Sum(nil)))
 }
 
 func managedPACWarningDetails(warnings []managedpac.Warning) []ManagedPACWarningDetail {

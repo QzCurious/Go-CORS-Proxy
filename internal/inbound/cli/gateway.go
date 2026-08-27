@@ -17,8 +17,6 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/gateway"
 )
 
-var errManagedPACConsentDeclined = errors.New("Managed PAC consent declined")
-
 var forceExit = os.Exit
 
 func foregroundSignalContext() (context.Context, func()) {
@@ -63,9 +61,6 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 		ConfirmUpstreamListCreation: func(ctx context.Context, detail gateway.UpstreamListCreationConsent) (bool, error) {
 			return confirmUpstreamListCreation(ctx, stdin, stdout, detail)
 		},
-		ConfirmManagedPAC: func(ctx context.Context, detail gateway.ManagedPACConsentDetail) (bool, error) {
-			return confirmManagedPACConsent(ctx, stdin, stdout, &detail)
-		},
 		Started: func(result gateway.StartResult) {
 			renderStartResultWithoutHTTPSPipeline(stdout, result)
 			if started, ok := result.(gateway.Started); ok {
@@ -86,9 +81,6 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	}
 	if result.Kind() == gateway.StartResultOwnerTransition {
 		return fmt.Errorf("Gateway Ownership is transitioning; retry start")
-	}
-	if result.Kind() == gateway.StartResultConsentDeclined {
-		return errManagedPACConsentDeclined
 	}
 	if cleanup, ok := result.(gateway.StartCleanupFailed); ok {
 		return fmt.Errorf("gateway start cleanup failed: %s", cleanupFailureText(cleanup.Failures))
@@ -276,64 +268,6 @@ func uninstallCAWithCommand(ctx context.Context, stdin io.Reader, stdout io.Writ
 	}
 }
 
-func confirmManagedPACConsent(ctx context.Context, stdin io.Reader, stdout io.Writer, detail *gateway.ManagedPACConsentDetail) (bool, error) {
-	if detail == nil {
-		return true, nil
-	}
-	fmt.Fprintln(stdout, "seamless-cors will manage proxy settings for this run.")
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Network services to manage:")
-	for _, state := range detail.CurrentPACState {
-		if state.Manageable {
-			fmt.Fprintf(stdout, "  %s\n", state.ServiceName)
-		}
-	}
-
-	issuesByService := make(map[string]string, len(detail.ObservationIssues))
-	for _, issue := range detail.ObservationIssues {
-		issuesByService[issue.ServiceName] = issue.Diagnostic
-	}
-	leftUnchanged := false
-	for _, state := range detail.CurrentPACState {
-		if !state.Manageable {
-			leftUnchanged = true
-			break
-		}
-	}
-	if leftUnchanged {
-		fmt.Fprintln(stdout)
-		fmt.Fprintln(stdout, "Network services left unchanged:")
-		for _, state := range detail.CurrentPACState {
-			if state.Manageable {
-				continue
-			}
-			if state.Ownership == gateway.PACOwnershipUnknown {
-				fmt.Fprintf(stdout, "  %s: proxy settings could not be read", state.ServiceName)
-				if diagnostic := issuesByService[state.ServiceName]; diagnostic != "" {
-					fmt.Fprintf(stdout, " (%s)", diagnostic)
-				}
-				fmt.Fprintln(stdout)
-				continue
-			}
-			fmt.Fprintf(stdout, "  %s: another proxy configuration is active\n", state.ServiceName)
-		}
-	}
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Other proxy settings won't be changed. When seamless-cors stops, it removes its own settings but won't restore settings that existed before.")
-	fmt.Fprintln(stdout)
-	fmt.Fprint(stdout, "Continue? [Y/n] ")
-	ok, err := readYes(ctx, stdin, true)
-	if err != nil {
-		return false, err
-	}
-	if !ok {
-		fmt.Fprintln(stdout, "Gateway Activation canceled.")
-		return false, nil
-	}
-	fmt.Fprintln(stdout)
-	return true, nil
-}
-
 func readYes(ctx context.Context, stdin io.Reader, defaultYes bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -397,22 +331,19 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 				fmt.Fprintln(stdout, "installed-ca-renewal: due")
 				fmt.Fprintln(stdout, "action: Run `seamless-cors install` to renew it.")
 			}
-			if guidance.ManagedPACActive {
-				if len(guidance.ManagedPACServices) > 0 {
-					fmt.Fprintln(stdout, "Automatic proxy configuration is on for:")
-					for _, service := range guidance.ManagedPACServices {
-						fmt.Fprintf(stdout, "  - %s\n", service)
-					}
-				} else {
-					fmt.Fprintln(stdout, "Automatic proxy configuration is on.")
+			if len(guidance.ManagedPAC.ServiceSet) > 0 {
+				fmt.Fprintln(stdout, "Services selected for automatic proxy management:")
+				for _, service := range guidance.ManagedPAC.ServiceSet {
+					fmt.Fprintf(stdout, "  - %s\n", service)
 				}
-				if guidance.ManagedPACPublicationURL != "" {
-					fmt.Fprintf(stdout, "Proxy configuration URL: %s\n", guidance.ManagedPACPublicationURL)
+				if guidance.ManagedPAC.PublicationURL != "" {
+					fmt.Fprintf(stdout, "Proxy configuration URL: %s\n", guidance.ManagedPAC.PublicationURL)
 				}
 			}
+			renderManagedPACExcludedServices(stdout, guidance.ManagedPAC)
 			renderStartUpstreamListIssues(stdout, guidance.UpstreamLists)
-			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
-			renderManagedPACObservationIssues(stdout, guidance.ManagedPACObservationIssues)
+			renderManagedPACWarnings(stdout, guidance.ManagedPAC.Warnings)
+			renderManagedPACObservationIssues(stdout, guidance.ManagedPAC.ObservationIssues)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
@@ -424,16 +355,32 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 	case gateway.StartResultNoManageablePACServices:
 		fmt.Fprintln(stdout, "seamless-cors could not start: no manageable PAC services")
 		if noServices, ok := result.(gateway.StartNoManageablePACServices); ok {
-			for _, state := range noServices.Consent.CurrentPACState {
-				fmt.Fprintf(stdout, "managed-pac-service: %s (%s)\n", state.ServiceName, state.Ownership)
-			}
-			renderManagedPACObservationIssues(stdout, noServices.Consent.ObservationIssues)
+			renderManagedPACExcludedServices(stdout, noServices.Detail)
+			renderManagedPACObservationIssues(stdout, noServices.Detail.ObservationIssues)
 		}
 	case gateway.StartResultManagedPACInstallationFailed:
 		fmt.Fprintln(stdout, "seamless-cors could not start: Managed PAC installation failed")
 		if failed, ok := result.(gateway.StartManagedPACInstallationFailed); ok {
 			renderManagedPACWarnings(stdout, failed.Warnings)
 		}
+	}
+}
+
+func renderManagedPACExcludedServices(stdout io.Writer, detail gateway.ManagedPACStartDetail) {
+	printedHeader := false
+	for _, state := range detail.CurrentPACState {
+		if state.Manageable {
+			continue
+		}
+		if !printedHeader {
+			fmt.Fprintln(stdout, "Network services left unchanged:")
+			printedHeader = true
+		}
+		if state.Ownership == gateway.PACOwnershipUnknown {
+			fmt.Fprintf(stdout, "  %s: proxy settings could not be read\n", state.ServiceName)
+			continue
+		}
+		fmt.Fprintf(stdout, "  %s: another PAC configuration is present\n", state.ServiceName)
 	}
 }
 

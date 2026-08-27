@@ -3,8 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,34 +36,28 @@ func TestSecondForegroundSignalForcesExit(t *testing.T) {
 	}
 }
 
-func TestManagedPACConsentPromptShowsProposedAndExcludedServices(t *testing.T) {
+func TestStartGuidanceShowsSelectedAndExcludedManagedPACServices(t *testing.T) {
 	var out bytes.Buffer
-	ok, err := confirmManagedPACConsent(context.Background(), bytes.NewBufferString("yes"), &out, &gateway.ManagedPACConsentDetail{
-		CurrentPACState: []gateway.ManagedPACServiceState{
-			{ServiceName: "Ethernet", Ownership: gateway.PACOwnershipEmpty, Manageable: true},
-			{ServiceName: "VPN", Ownership: gateway.PACOwnershipUnknown},
-			{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true, Ownership: gateway.PACOwnershipForeign},
+	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
+		ManagedPAC: gateway.ManagedPACStartDetail{
+			CurrentPACState: []gateway.ManagedPACServiceState{
+				{ServiceName: "Ethernet", Ownership: gateway.PACOwnershipEmpty, Manageable: true},
+				{ServiceName: "VPN", Ownership: gateway.PACOwnershipUnknown},
+				{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true, Ownership: gateway.PACOwnershipForeign},
+			},
+			ObservationIssues: []gateway.ManagedPACObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}},
+			ServiceSet:        []string{"Ethernet"},
 		},
-		ObservationIssues: []gateway.ManagedPACObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}},
-		ProposedServices:  []string{"Ethernet"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok {
-		t.Fatal("consent was not accepted")
-	}
+	}})
 	for _, want := range []string{
-		"seamless-cors will manage proxy settings for this run",
-		"Network services to manage:\n  Ethernet",
+		"Services selected for automatic proxy management:\n  - Ethernet",
 		"Network services left unchanged:",
-		"VPN: proxy settings could not be read (PAC query failed)",
-		"Wi-Fi: another proxy configuration is active",
-		"won't restore settings that existed before",
-		"Continue? [Y/n]",
+		"VPN: proxy settings could not be read",
+		"managed-pac-observation-issue: VPN: PAC query failed",
+		"Wi-Fi: another PAC configuration is present",
 	} {
 		if !strings.Contains(out.String(), want) {
-			t.Fatalf("consent prompt missing %q:\n%s", want, out.String())
+			t.Fatalf("start guidance missing %q:\n%s", want, out.String())
 		}
 	}
 }
@@ -89,38 +81,6 @@ func TestStopCommandDisclosesManagedPACObservationIssueOnSuccess(t *testing.T) {
 	}
 }
 
-func TestManagedPACConsentPromptDeclineCancels(t *testing.T) {
-	var out bytes.Buffer
-	ok, err := confirmManagedPACConsent(context.Background(), bytes.NewBufferString("no"), &out, &gateway.ManagedPACConsentDetail{})
-	if err != nil || ok {
-		t.Fatalf("prompt result = %t, %v", ok, err)
-	}
-	if !strings.Contains(out.String(), "Gateway Activation canceled") {
-		t.Fatalf("prompt output = %q", out.String())
-	}
-}
-
-func TestManagedPACConsentPromptReturnsWhenContextIsCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	input, output := io.Pipe()
-	defer input.Close()
-	defer output.Close()
-	var out bytes.Buffer
-	done := make(chan error, 1)
-	go func() {
-		_, err := confirmManagedPACConsent(ctx, input, &out, &gateway.ManagedPACConsentDetail{})
-		done <- err
-	}()
-
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("prompt error = %v, want context canceled", err)
-	}
-	if strings.Contains(out.String(), "Gateway Activation canceled") {
-		t.Fatalf("cancelled prompt rendered explicit-decline message: %q", out.String())
-	}
-}
-
 func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 	var out bytes.Buffer
 	ctx := context.WithValue(context.Background(), testContextKey{}, "start")
@@ -129,8 +89,7 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 			t.Fatal("start context was not forwarded")
 		}
 		result := gateway.Started{Guidance: gateway.StartGuidance{
-			ManagedPACActive:   true,
-			ManagedPACServices: []string{"Wi-Fi"},
+			ManagedPAC: gateway.ManagedPACStartDetail{ServiceSet: []string{"Wi-Fi"}},
 			UpstreamLists: []gateway.UpstreamListSourceDetail{{
 				Kind: gateway.UpstreamListSourceGlobal,
 				Path: "/config/seamless-cors/upstreams.txt",
@@ -151,7 +110,7 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 	}
 	for _, want := range []string{
 		"seamless-cors is running.",
-		"Automatic proxy configuration is on for:\n  - Wi-Fi",
+		"Services selected for automatic proxy management:\n  - Wi-Fi",
 		"warning: global /config/seamless-cors/upstreams.txt:2: https://*.bad.example.test: wildcards require a Host Selector",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -163,9 +122,10 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 func TestStartCommandRendersUpstreamWarningsAfterHumanSummary(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
-		ManagedPACActive:         true,
-		ManagedPACServices:       []string{"Wi-Fi"},
-		ManagedPACPublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
+		ManagedPAC: gateway.ManagedPACStartDetail{
+			ServiceSet:     []string{"Wi-Fi"},
+			PublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
+		},
 		UpstreamLists: []gateway.UpstreamListSourceDetail{{
 			Kind: gateway.UpstreamListSourceGlobal,
 			Path: "/config/seamless-cors/upstreams.txt",
@@ -276,9 +236,10 @@ func TestStartCommandRendersHumanSummary(t *testing.T) {
 			{Kind: gateway.UpstreamListSourceGlobal, Path: "/config/seamless-cors/upstreams.txt"},
 			{Kind: gateway.UpstreamListSourceDirectory, Path: "/project/upstreams.txt"},
 		},
-		ManagedPACActive:         true,
-		ManagedPACServices:       []string{"Ethernet", "Wi-Fi"},
-		ManagedPACPublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
+		ManagedPAC: gateway.ManagedPACStartDetail{
+			ServiceSet:     []string{"Ethernet", "Wi-Fi"},
+			PublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
+		},
 	}})
 
 	want := "" +
@@ -287,7 +248,7 @@ func TestStartCommandRendersHumanSummary(t *testing.T) {
 		"  Global: /config/seamless-cors/upstreams.txt\n" +
 		"  Directory: /project/upstreams.txt\n" +
 		"HTTPS interception is off.\n" +
-		"Automatic proxy configuration is on for:\n" +
+		"Services selected for automatic proxy management:\n" +
 		"  - Ethernet\n" +
 		"  - Wi-Fi\n" +
 		"Proxy configuration URL: http://127.0.0.1:62409/seamless-cors.pac?v=1\n"
@@ -503,12 +464,11 @@ func TestUninstallConfirmsOnlyWhenHTTPSIsActive(t *testing.T) {
 func TestStartRendersManagedPACWarningsSeparately(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
-		ManagedPACActive: true,
-		ManagedPACWarnings: []gateway.ManagedPACWarningDetail{{
+		ManagedPAC: gateway.ManagedPACStartDetail{Warnings: []gateway.ManagedPACWarningDetail{{
 			Kind:        gateway.ManagedPACWarningDrift,
 			ServiceName: "Wi-Fi",
 			Diagnostic:  "foreign PAC state is active",
-		}},
+		}}},
 	}})
 	if !strings.Contains(out.String(), "managed-pac-warning: Wi-Fi: foreign PAC state is active") {
 		t.Fatalf("start output = %q", out.String())
@@ -518,7 +478,7 @@ func TestStartRendersManagedPACWarningsSeparately(t *testing.T) {
 func TestStartRendersManagedPACObservationIssues(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
-		ManagedPACObservationIssues: []gateway.ManagedPACObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}},
+		ManagedPAC: gateway.ManagedPACStartDetail{ObservationIssues: []gateway.ManagedPACObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}}},
 	}})
 	if !strings.Contains(out.String(), "managed-pac-observation-issue: VPN: PAC query failed") {
 		t.Fatalf("start output = %q", out.String())

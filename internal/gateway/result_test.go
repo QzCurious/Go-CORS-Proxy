@@ -12,8 +12,6 @@ func TestEveryCommandResultKindHasItsDomainFulfillment(t *testing.T) {
 		{"start already running", AlreadyRunning{}, CommandFulfilled},
 		{"start owner transition", StartOwnerTransition{}, CommandUnfulfilled},
 		{"start upstream-list creation consent required", StartUpstreamListCreationConsentRequired{}, CommandUnfulfilled},
-		{"start consent required", StartConsentRequired{}, CommandUnfulfilled},
-		{"start consent declined", StartConsentDeclined{}, CommandUnfulfilled},
 		{"start no manageable PAC services", StartNoManageablePACServices{}, CommandUnfulfilled},
 		{"start managed PAC installation failed", StartManagedPACInstallationFailed{}, CommandUnfulfilled},
 		{"start already mutating", StartAlreadyMutating{}, CommandUnfulfilled},

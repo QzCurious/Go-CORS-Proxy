@@ -14,7 +14,7 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
-func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testing.T) {
+func TestExecuteStartAutomaticallyFixesManageableServicesWithoutBindingPACURLs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	configDir := filepath.Join(home, ".seamless-cors")
@@ -29,55 +29,40 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 		{Name: "Ethernet", Ownership: managedpac.OwnershipEmpty},
 		{Name: "USB", Ownership: managedpac.OwnershipEmpty},
 	}}
+	installResult := managedpac.NewInstallResult(
+		managedpac.NewRuntimeState([]string{"Ethernet", "USB"}, "ignored by assertion"),
+		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Ethernet", Diagnostic: "foreign PAC state is active"}},
+	)
+	settings.installResult = &installResult
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(filepath.Join(configDir, "runtime")), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
 
-	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	consentResult, ok := first.(StartConsentRequired)
+	started, ok := result.(Started)
 	if !ok {
-		t.Fatalf("first start = %#v", first)
+		t.Fatalf("start = %#v", result)
 	}
-	detail := consentResult.Consent
-	installResult := managedpac.NewInstallResult(
-		managedpac.NewRuntimeState([]string{"Ethernet", "USB"}, "ignored by assertion"),
-		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Ethernet", Diagnostic: "foreign PAC state is active"}},
-	)
-	settings.installResult = &installResult
-	changed, err := lifecycle.ExecuteStart(context.Background(), StartRequest{
-		WorkingDirectory: t.TempDir(),
-		ManagedPACConsent: &ManagedPACConsentInput{
-			ServiceNames: detail.ProposedServices,
-			Fingerprint:  detail.Fingerprint,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	started, ok := changed.(Started)
-	if !ok {
-		t.Fatalf("accepted retry = %#v", changed)
-	}
-	if got := started.Guidance.ManagedPACServices; len(got) != 2 || got[0] != "Ethernet" || got[1] != "USB" {
+	if got := started.Guidance.ManagedPAC.ServiceSet; len(got) != 2 || got[0] != "Ethernet" || got[1] != "USB" {
 		t.Fatalf("fixed service set = %v", got)
 	}
-	if len(started.Guidance.ManagedPACWarnings) != 1 || started.Guidance.ManagedPACWarnings[0].ServiceName != "Ethernet" {
-		t.Fatalf("managed PAC warnings = %#v", started.Guidance.ManagedPACWarnings)
+	if len(started.Guidance.ManagedPAC.Warnings) != 1 || started.Guidance.ManagedPAC.Warnings[0].ServiceName != "Ethernet" {
+		t.Fatalf("managed PAC warnings = %#v", started.Guidance.ManagedPAC.Warnings)
 	}
-	if started.Guidance.ManagedPACPublicationURL != "ignored by assertion" {
-		t.Fatalf("Managed PAC publication URL = %q", started.Guidance.ManagedPACPublicationURL)
+	if started.Guidance.ManagedPAC.PublicationURL != "ignored by assertion" {
+		t.Fatalf("Managed PAC publication URL = %q", started.Guidance.ManagedPAC.PublicationURL)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 }
 
-func TestManagedPACConsentShowsUnobservableServiceAsExcluded(t *testing.T) {
+func TestManagedPACStartDetailShowsUnobservableServiceAsExcluded(t *testing.T) {
 	issue := managedpac.ObservationIssue{ServiceName: "VPN", Diagnostic: "PAC query failed"}
-	detail := (&lifecycle{}).managedPACConsentDetail(managedpac.NewSnapshot([]managedpac.Service{
+	detail := managedPACStartDetail(managedpac.NewSnapshot([]managedpac.Service{
 		{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty},
 		{Name: "VPN", Ownership: managedpac.OwnershipUnknown, ObservationIssue: &issue},
 	}))
@@ -91,8 +76,8 @@ func TestManagedPACConsentShowsUnobservableServiceAsExcluded(t *testing.T) {
 	if len(detail.ObservationIssues) != 1 || detail.ObservationIssues[0].ServiceName != "VPN" {
 		t.Fatalf("observation issues = %#v", detail.ObservationIssues)
 	}
-	if len(detail.ProposedServices) != 1 || detail.ProposedServices[0] != "Wi-Fi" {
-		t.Fatalf("proposed services = %#v", detail.ProposedServices)
+	if len(detail.ServiceSet) != 1 || detail.ServiceSet[0] != "Wi-Fi" {
+		t.Fatalf("service set = %#v", detail.ServiceSet)
 	}
 }
 
@@ -168,21 +153,7 @@ func TestExecuteStartLoadsGlobalAndDirectoryUpstreamLists(t *testing.T) {
 	}
 	lifecycle.globalUpstreamListPath = globalPath
 
-	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory})
-	if err != nil {
-		t.Fatal(err)
-	}
-	consent, ok := first.(StartConsentRequired)
-	if !ok {
-		t.Fatalf("first start = %#v", first)
-	}
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{
-		WorkingDirectory: workingDirectory,
-		ManagedPACConsent: &ManagedPACConsentInput{
-			ServiceNames: consent.Consent.ProposedServices,
-			Fingerprint:  consent.Consent.Fingerprint,
-		},
-	})
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +172,7 @@ func TestExecuteStartLoadsGlobalAndDirectoryUpstreamLists(t *testing.T) {
 	}
 }
 
-func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testing.T) {
+func TestExecuteStartRequiresCreationConsentThenCreatesBeforeAutomaticPACActivation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	lifecycle, err := newLifecycle(
@@ -226,9 +197,10 @@ func TestExecuteStartRequiresCreationConsentThenCreatesBeforePACConsent(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := second.(StartConsentRequired); !ok {
+	if _, ok := second.(Started); !ok {
 		t.Fatalf("second = %#v", second)
 	}
+	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 	if _, err := os.Stat(creation.Consent.Path); err != nil {
 		t.Fatalf("created file: %v", err)
 	}
@@ -276,8 +248,8 @@ func TestExecuteStartStopsWhenNoManageablePACServiceExists(t *testing.T) {
 	if !ok || lifecycle.RuntimeActive() {
 		t.Fatalf("start result = %#v runtime active = %t", result, lifecycle.RuntimeActive())
 	}
-	if len(noServices.Consent.ProposedServices) != 0 {
-		t.Fatalf("service assessment = %#v", noServices.Consent)
+	if len(noServices.Detail.ServiceSet) != 0 {
+		t.Fatalf("service assessment = %#v", noServices.Detail)
 	}
 	if settings.applied != 0 {
 		t.Fatalf("PAC writes = %d, want none", settings.applied)
@@ -302,7 +274,7 @@ func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t
 	}
 	lifecycle.globalUpstreamListPath = filepath.Join(home, "upstreams.txt")
 
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}, ManagedPACConsent: &ManagedPACConsentInput{ServiceNames: []string{"Wi-Fi"}, Fingerprint: pacConsentFingerprint([]string{"Wi-Fi"})}})
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}})
 
 	if err != nil {
 		t.Fatal(err)
@@ -853,7 +825,7 @@ func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, servi
 		return *f.installResult, f.installErr
 	}
 	return managedpac.NewInstallResult(
-		managedpac.NewRuntimeState(sortedUniqueServiceNames(services), "http://"+pacListen+"/seamless-cors.pac?v=1"),
+		managedpac.NewRuntimeState(append([]string(nil), services...), "http://"+pacListen+"/seamless-cors.pac?v=1"),
 		nil,
 	), f.installErr
 }
@@ -884,14 +856,5 @@ func (f *lifecycleTestSystemSettings) Uninstall(context.Context) (managedpac.Cle
 
 func executeAcceptedStart(t *testing.T, lifecycle *lifecycle) (StartResult, error) {
 	t.Helper()
-	workingDirectory := t.TempDir()
-	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory})
-	consentResult, ok := first.(StartConsentRequired)
-	if err != nil || !ok {
-		return first, err
-	}
-	return lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory, ManagedPACConsent: &ManagedPACConsentInput{
-		ServiceNames: consentResult.Consent.ProposedServices,
-		Fingerprint:  consentResult.Consent.Fingerprint,
-	}})
+	return lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
 }

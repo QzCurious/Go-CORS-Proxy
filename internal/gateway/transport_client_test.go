@@ -23,7 +23,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.WorkingDirectory != "/project" || request.ManagedPACConsent == nil || request.ManagedPACConsent.Fingerprint != "services-v1" || len(request.ManagedPACConsent.ServiceNames) != 1 || request.ManagedPACConsent.ServiceNames[0] != "Wi-Fi" {
+		if request.WorkingDirectory != "/project" {
 			t.Fatalf("request = %#v", request)
 		}
 		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true, Guidance: &StartGuidanceDetail{
@@ -42,10 +42,7 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		HTTPRouterListen: server.Listener.Addr().String(),
 		Token:            "owner-token",
 	})
-	result, err := client.Start(context.Background(), StartRequest{
-		WorkingDirectory:  "/project",
-		ManagedPACConsent: &ManagedPACConsentInput{ServiceNames: []string{"Wi-Fi"}, Fingerprint: "services-v1"},
-	})
+	result, err := client.Start(context.Background(), StartRequest{WorkingDirectory: "/project"})
 	if err != nil {
 		t.Fatal(err)
 	}

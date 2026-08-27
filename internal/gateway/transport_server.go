@@ -244,10 +244,6 @@ func startFailureRepresentation(kind StartKind) failureRepresentation {
 		return failureRepresentation{http.StatusUnprocessableEntity, "Upstream List creation consent is required."}
 	case StartResultOwnerTransition:
 		return failureRepresentation{http.StatusServiceUnavailable, "Gateway ownership is transitioning; retry Start."}
-	case StartResultConsentRequired:
-		return failureRepresentation{http.StatusUnprocessableEntity, "Managed PAC consent is required."}
-	case StartResultConsentDeclined:
-		return failureRepresentation{http.StatusUnprocessableEntity, "Managed PAC consent was declined."}
 	case StartResultNoManageablePACServices:
 		return failureRepresentation{http.StatusUnprocessableEntity, "No manageable PAC services are available."}
 	case StartResultStartAlreadyMutating:
