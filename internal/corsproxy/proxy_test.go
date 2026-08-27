@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/corsproxy"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 func TestHTTPProxyForwardsRequestsAndRepairsAllStatuses(t *testing.T) {
@@ -40,7 +41,7 @@ func TestHTTPProxyForwardsRequestsAndRepairsAllStatuses(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil, corsproxy.NewHTTPSFacadeRoutes(nil))
 	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/v1/items?q=dev", nil)
 	req.Header.Set("Origin", "https://app.local")
 	rec := httptest.NewRecorder()
@@ -88,7 +89,7 @@ func TestHTTPProxyLeavesResponsesWithoutOriginUntouched(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil, corsproxy.NewHTTPSFacadeRoutes(nil))
 	req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -113,7 +114,7 @@ func TestHTTPProxyPreservesWildcardVary(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil, corsproxy.NewHTTPSFacadeRoutes(nil))
 	req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
 	req.Header.Set("Origin", "https://app.local")
 	rec := httptest.NewRecorder()
@@ -132,7 +133,7 @@ func TestProxyAnswersPreflightLocally(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := corsproxy.New(testTransport(t, upstream.Client()), nil)
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil, corsproxy.NewHTTPSFacadeRoutes(nil))
 	req := httptest.NewRequest(http.MethodOptions, upstream.URL+"/v1/items", nil)
 	req.Header.Set("Origin", "null")
 	req.Header.Set("Access-Control-Request-Method", "PATCH")
@@ -179,7 +180,9 @@ func TestDirectCONNECTLeavesHTTPSOpaque(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxyServer := httptest.NewServer(corsproxy.New(testTransport(t, upstream.Client()), nil))
+	proxyServer := httptest.NewServer(corsproxy.New(
+		testTransport(t, upstream.Client()), nil, corsproxy.NewHTTPSFacadeRoutes(nil),
+	))
 	defer proxyServer.Close()
 	proxyURL, err := url.Parse(proxyServer.URL)
 	if err != nil {
@@ -215,7 +218,7 @@ func TestTrustedHTTPSInterceptionRepairsResponseAndCompletes(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxyServer, proxyURL, roots := trustedProxyServer(t, upstream.Client())
+	proxyServer, proxyURL, roots := trustedProxyServer(t, upstream.Client(), nil)
 	defer proxyServer.Close()
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
@@ -247,12 +250,135 @@ func TestTrustedHTTPSInterceptionRepairsResponseAndCompletes(t *testing.T) {
 	}
 }
 
+func TestTrustedHTTPSInterceptionForwardsMatchingHTTPOriginWithoutTLS(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.TLS != nil {
+			t.Fatal("upstream request used TLS")
+		}
+		if req.URL.Path != "/secure" || req.URL.RawQuery != "mode=dev" {
+			t.Fatalf("request target = %q?%q", req.URL.Path, req.URL.RawQuery)
+		}
+		if got := req.Header.Get("Origin"); got != "https://app.local" {
+			t.Fatalf("Origin was rewritten: %q", got)
+		}
+		w.Header().Set("Location", "http://unchanged.example/next")
+		_, _ = io.WriteString(w, "plain upstream")
+	}))
+	defer upstream.Close()
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := corsproxy.NewHTTPSFacadeRoutes([]upstreamlist.OriginSelector{{
+		Scheme: "http", Hostname: upstreamURL.Hostname(), Port: upstreamURL.Port(),
+	}})
+	proxyServer, proxyURL, roots := trustedProxyServer(t, upstream.Client(), routes)
+	defer proxyServer.Close()
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:           http.ProxyURL(proxyURL),
+		TLSClientConfig: roots,
+	}}
+	req, err := http.NewRequest(
+		http.MethodGet,
+		"https://"+upstreamURL.Host+"/secure?mode=dev",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://app.local")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Location"); got != "http://unchanged.example/next" {
+		t.Fatalf("Location = %q", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "plain upstream" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestHTTPSFacadeRoutesApplyLatestPublishedSnapshot(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "plain upstream")
+	}))
+	defer upstream.Close()
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := corsproxy.NewHTTPSFacadeRoutes(nil)
+	handler := corsproxy.New(testTransport(t, upstream.Client()), nil, routes)
+	target := "https://" + upstreamURL.Host + "/live"
+
+	before := httptest.NewRecorder()
+	handler.ServeHTTP(before, httptest.NewRequest(http.MethodGet, target, nil))
+	if before.Code < http.StatusInternalServerError {
+		t.Fatalf("unmatched HTTPS status = %d, want proxy failure", before.Code)
+	}
+
+	routes.Set([]upstreamlist.OriginSelector{{
+		Scheme: "http", Hostname: upstreamURL.Hostname(), Port: upstreamURL.Port(),
+	}})
+	after := httptest.NewRecorder()
+	handler.ServeHTTP(after, httptest.NewRequest(http.MethodGet, target, nil))
+	if after.Code != http.StatusOK || after.Body.String() != "plain upstream" {
+		t.Fatalf("matched response = (%d, %q)", after.Code, after.Body.String())
+	}
+}
+
+func TestHTTPSFacadePortlessSelectorUsesHTTPDefaultPort(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Host != "example.test" {
+			t.Fatalf("Host = %q", req.Host)
+		}
+		_, _ = io.WriteString(w, "plain upstream")
+	}))
+	defer upstream.Close()
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialed := make(chan string, 1)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialed <- address
+		return (&net.Dialer{}).DialContext(ctx, network, upstreamURL.Host)
+	}
+	handler := corsproxy.New(
+		transport,
+		nil,
+		corsproxy.NewHTTPSFacadeRoutes([]upstreamlist.OriginSelector{{
+			Scheme: "http", Hostname: "example.test",
+		}}),
+	)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "https://example.test/default", nil),
+	)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "plain upstream" {
+		t.Fatalf("response = (%d, %q)", recorder.Code, recorder.Body.String())
+	}
+	if address := <-dialed; address != "example.test:80" {
+		t.Fatalf("dial address = %q, want HTTP default port", address)
+	}
+}
+
 func TestProxyGeneratedFailureIsNotCORSRepaired(t *testing.T) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
 		return nil, errTestDial
 	}
-	handler := corsproxy.New(transport, nil)
+	handler := corsproxy.New(transport, nil, corsproxy.NewHTTPSFacadeRoutes(nil))
 	req := httptest.NewRequest(http.MethodGet, "http://upstream.invalid/resource", nil)
 	req.Header.Set("Origin", "https://app.local")
 	rec := httptest.NewRecorder()
@@ -268,10 +394,17 @@ func TestProxyGeneratedFailureIsNotCORSRepaired(t *testing.T) {
 	}
 }
 
-func trustedProxyServer(t *testing.T, upstreamClient *http.Client) (*httptest.Server, *url.URL, *tls.Config) {
+func trustedProxyServer(
+	t *testing.T,
+	upstreamClient *http.Client,
+	routes *corsproxy.HTTPSFacadeRoutes,
+) (*httptest.Server, *url.URL, *tls.Config) {
 	t.Helper()
 	certificate, certificatePEM := testHTTPSCertificate(t)
-	handler := corsproxy.New(testTransport(t, upstreamClient), certificate)
+	if routes == nil {
+		routes = corsproxy.NewHTTPSFacadeRoutes(nil)
+	}
+	handler := corsproxy.New(testTransport(t, upstreamClient), certificate, routes)
 	proxyServer := httptest.NewServer(handler)
 	proxyURL, err := url.Parse(proxyServer.URL)
 	if err != nil {

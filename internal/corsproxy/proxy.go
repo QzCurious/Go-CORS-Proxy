@@ -9,20 +9,71 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 	"github.com/elazarl/goproxy"
 )
 
 const certificateCacheCapacity = 128
 
-// New constructs one immutable proxy handler. Gateway owns handler generation
-// publication and lifecycle; the returned handler owns only request behavior.
+type origin struct {
+	hostname string
+	port     string
+}
+
+type routeSet map[origin]struct{}
+
+// HTTPSFacadeRoutes owns the current immutable HTTP Origin Selector lookup used
+// by CORS Proxy generations. Gateway publishes every adopted Effective Upstream
+// List transition through Set.
+type HTTPSFacadeRoutes struct {
+	current atomic.Pointer[routeSet]
+}
+
+func NewHTTPSFacadeRoutes(selectors []upstreamlist.OriginSelector) *HTTPSFacadeRoutes {
+	routes := &HTTPSFacadeRoutes{}
+	routes.Set(selectors)
+	return routes
+}
+
+// Set compiles and publishes one complete HTTP Origin Selector snapshot.
+// Callers filter non-HTTP selectors before crossing this interface.
+func (r *HTTPSFacadeRoutes) Set(selectors []upstreamlist.OriginSelector) {
+	next := make(routeSet, len(selectors))
+	for _, selector := range selectors {
+		if selector.Scheme != "http" {
+			panic("corsproxy: Routes require HTTP Origin Selectors")
+		}
+		next[origin{hostname: selector.Hostname, port: selector.Port}] = struct{}{}
+	}
+	r.current.Store(&next)
+}
+
+func (r *HTTPSFacadeRoutes) rewrites(req *http.Request) bool {
+	if req.URL.Scheme != "https" {
+		return false
+	}
+	_, ok := (*r.current.Load())[origin{
+		hostname: strings.ToLower(req.URL.Hostname()),
+		port:     req.URL.Port(),
+	}]
+	return ok
+}
+
+// New constructs one CA-bound proxy handler. Gateway owns handler generation
+// publication and lifecycle; HTTPSFacadeRoutes independently publishes current
+// forwarding to every generation that shares it.
 func New(
 	transport *http.Transport,
 	certificate *tls.Certificate,
+	routes *HTTPSFacadeRoutes,
 ) http.Handler {
 	if transport == nil {
 		panic("corsproxy: Transport is required")
+	}
+	if routes == nil {
+		panic("corsproxy: HTTPSFacadeRoutes are required")
 	}
 
 	proxy := goproxy.NewProxyHttpServer()
@@ -51,6 +102,18 @@ func New(
 		_ *goproxy.ProxyCtx,
 	) (*goproxy.ConnectAction, string) {
 		return action, host
+	})
+
+	// HTTPS Facade forwarding. Only the outbound scheme changes; authority,
+	// request identity, and response content remain untouched.
+	proxy.OnRequest().DoFunc(func(
+		req *http.Request,
+		_ *goproxy.ProxyCtx,
+	) (*http.Request, *http.Response) {
+		if routes.rewrites(req) {
+			req.URL.Scheme = "http"
+		}
+		return req, nil
 	})
 
 	// Preflight.

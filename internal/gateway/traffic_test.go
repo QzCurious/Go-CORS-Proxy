@@ -10,13 +10,30 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
+	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
+
+func TestGatewayFiltersHTTPOriginSelectorsForCORSProxy(t *testing.T) {
+	projection := upstreamlist.Projection{OriginSelectors: []upstreamlist.OriginSelector{
+		{Scheme: "https", Hostname: "secure.example.test"},
+		{Scheme: "http", Hostname: "plain.example.test"},
+		{Scheme: "http", Hostname: "local.example.test", Port: "3000"},
+	}}
+	want := []upstreamlist.OriginSelector{
+		{Scheme: "http", Hostname: "plain.example.test"},
+		{Scheme: "http", Hostname: "local.example.test", Port: "3000"},
+	}
+	if got := httpOriginSelectors(projection); !reflect.DeepEqual(got, want) {
+		t.Fatalf("HTTP Origin Selectors = %#v, want %#v", got, want)
+	}
+}
 
 func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
 	observed := fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}
