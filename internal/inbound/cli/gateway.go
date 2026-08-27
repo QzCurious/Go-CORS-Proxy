@@ -387,9 +387,9 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 	case gateway.StartResultStarted:
 		if started, ok := result.(gateway.Started); ok {
 			guidance := started.Guidance
-			fmt.Fprintln(stdout, "seamless-cors running")
-			renderUpstreamListSources(stdout, guidance.UpstreamLists)
-			fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(guidance.HTTPSPipeline))
+			fmt.Fprintln(stdout, "seamless-cors is running.")
+			renderStartUpstreamListSources(stdout, guidance.UpstreamLists)
+			fmt.Fprintf(stdout, "HTTPS interception is %s.\n", humanOnOffState(guidance.HTTPSPipeline))
 			if includeHTTPSPipeline {
 				renderHTTPSPipelineIssue(stdout, guidance.HTTPSPipeline)
 			}
@@ -398,12 +398,16 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 				fmt.Fprintln(stdout, "action: Run `seamless-cors install` to renew it.")
 			}
 			if guidance.ManagedPACActive {
-				fmt.Fprintln(stdout, "managed-pac: active")
 				if len(guidance.ManagedPACServices) > 0 {
-					fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(guidance.ManagedPACServices, ", "))
+					fmt.Fprintln(stdout, "Automatic proxy configuration is on for:")
+					for _, service := range guidance.ManagedPACServices {
+						fmt.Fprintf(stdout, "  - %s\n", service)
+					}
+				} else {
+					fmt.Fprintln(stdout, "Automatic proxy configuration is on.")
 				}
 				if guidance.ManagedPACPublicationURL != "" {
-					fmt.Fprintf(stdout, "managed-pac-publication-url: %s\n", guidance.ManagedPACPublicationURL)
+					fmt.Fprintf(stdout, "Proxy configuration URL: %s\n", guidance.ManagedPACPublicationURL)
 				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
@@ -458,8 +462,15 @@ func (r *liveHTTPSPipelineRenderer) Render(detail *gateway.HTTPSPipelineDetail) 
 	}
 	r.initialized = true
 	r.current = next
-	fmt.Fprintf(r.stdout, "https: %s\n", humanHTTPSState(detail))
+	fmt.Fprintf(r.stdout, "HTTPS interception is %s.\n", humanOnOffState(detail))
 	renderHTTPSPipelineIssue(r.stdout, detail)
+}
+
+func humanOnOffState(pipeline *gateway.HTTPSPipelineDetail) string {
+	if pipeline != nil && pipeline.Readiness == gateway.HTTPSReadinessReady {
+		return "on"
+	}
+	return "off"
 }
 
 func homeRelativePath(path string) string {
@@ -651,6 +662,23 @@ func renderUpstreamListWarnings(stdout io.Writer, warnings []gateway.UpstreamLis
 func renderUpstreamListSources(stdout io.Writer, sources []gateway.UpstreamListSourceDetail) {
 	for _, source := range sources {
 		fmt.Fprintf(stdout, "upstream-list-%s: %s\n", source.Kind, source.Path)
+		renderFileSyncIssue(stdout, source.Kind, source.Path, source.FileSyncIssue)
+		renderUpstreamListProjectionIssue(stdout, source.Kind, source.Path, source.ProjectionIssue)
+		renderUpstreamListWarnings(stdout, source.Warnings)
+	}
+}
+
+func renderStartUpstreamListSources(stdout io.Writer, sources []gateway.UpstreamListSourceDetail) {
+	if len(sources) == 0 {
+		return
+	}
+	fmt.Fprintln(stdout, "Upstream lists:")
+	for _, source := range sources {
+		label := "Directory"
+		if source.Kind == gateway.UpstreamListSourceGlobal {
+			label = "Global"
+		}
+		fmt.Fprintf(stdout, "  %s: %s\n", label, source.Path)
 		renderFileSyncIssue(stdout, source.Kind, source.Path, source.FileSyncIssue)
 		renderUpstreamListProjectionIssue(stdout, source.Kind, source.Path, source.ProjectionIssue)
 		renderUpstreamListWarnings(stdout, source.Warnings)

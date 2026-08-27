@@ -150,9 +150,8 @@ func TestStartCommandRendersSurfaceNeutralResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"seamless-cors running",
-		"managed-pac: active",
-		"managed-pac-services: Wi-Fi",
+		"seamless-cors is running.",
+		"Automatic proxy configuration is on for:\n  - Wi-Fi",
 		"warning: global /config/seamless-cors/upstreams.txt:2: https://*.bad.example.test: wildcards require a Host Selector",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -244,22 +243,30 @@ func TestStartCommandReportsManagedPACInstallationWarnings(t *testing.T) {
 	}
 }
 
-func TestStartCommandRendersBothUpstreamListPaths(t *testing.T) {
+func TestStartCommandRendersHumanSummary(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
 		UpstreamLists: []gateway.UpstreamListSourceDetail{
 			{Kind: gateway.UpstreamListSourceGlobal, Path: "/config/seamless-cors/upstreams.txt"},
 			{Kind: gateway.UpstreamListSourceDirectory, Path: "/project/upstreams.txt"},
 		},
+		ManagedPACActive:         true,
+		ManagedPACServices:       []string{"Ethernet", "Wi-Fi"},
+		ManagedPACPublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
 	}})
 
-	for _, want := range []string{
-		"upstream-list-global: /config/seamless-cors/upstreams.txt",
-		"upstream-list-directory: /project/upstreams.txt",
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("start output missing %q:\n%s", want, out.String())
-		}
+	want := "" +
+		"seamless-cors is running.\n" +
+		"Upstream lists:\n" +
+		"  Global: /config/seamless-cors/upstreams.txt\n" +
+		"  Directory: /project/upstreams.txt\n" +
+		"HTTPS interception is off.\n" +
+		"Automatic proxy configuration is on for:\n" +
+		"  - Ethernet\n" +
+		"  - Wi-Fi\n" +
+		"Proxy configuration URL: http://127.0.0.1:62409/seamless-cors.pac?v=1\n"
+	if out.String() != want {
+		t.Fatalf("start output:\n%s\nwant:\n%s", out.String(), want)
 	}
 }
 
