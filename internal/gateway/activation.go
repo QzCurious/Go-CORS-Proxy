@@ -26,7 +26,8 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	}()
 
 	if !s.lifecycle.takeStartCleanupComplete() {
-		if failure := cleanManagedPACActiveState(ctx, s.lifecycle.managedPAC); failure != nil {
+		_, failure := cleanManagedPACActiveState(ctx, s.lifecycle.managedPAC)
+		if failure != nil {
 			return StartCleanupFailed{Failures: []CleanupFailure{*failure}}, nil
 		}
 	}
@@ -206,12 +207,13 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	if s.lifecycle.runtime != active || ctx.Err() != nil {
 		s.lifecycle.mu.Unlock()
 		withdraw()
-		_ = s.lifecycle.managedPAC.Uninstall(context.Background())
+		_, _ = s.lifecycle.managedPAC.Uninstall(context.Background())
 		return StartStopCancelled{}, nil
 	}
 	active.managedPAC = &managedPACRuntime{
-		state:    pacInstall.State(),
-		warnings: managedPACWarningDetails(pacInstall.Warnings()),
+		state:             pacInstall.State(),
+		warnings:          managedPACWarningDetails(pacInstall.Warnings()),
+		observationIssues: managedPACObservationIssueDetails(pacInstall.ObservationIssues()),
 	}
 	active.phase = runtimePhaseRunning
 	s.lifecycle.mu.Unlock()
@@ -233,13 +235,14 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		installedCA = &status
 	}
 	return Started{Guidance: StartGuidance{
-		UpstreamLists:            state.UpstreamLists,
-		ManagedPACActive:         true,
-		ManagedPACServices:       pacInstall.State().ServiceNames(),
-		ManagedPACPublicationURL: pacInstall.State().PACURL(),
-		ManagedPACWarnings:       managedPACWarningDetails(pacInstall.Warnings()),
-		HTTPSPipeline:            state.HTTPSPipeline,
-		InstalledCA:              installedCA,
+		UpstreamLists:               state.UpstreamLists,
+		ManagedPACActive:            true,
+		ManagedPACServices:          pacInstall.State().ServiceNames(),
+		ManagedPACPublicationURL:    pacInstall.State().PACURL(),
+		ManagedPACWarnings:          managedPACWarningDetails(pacInstall.Warnings()),
+		ManagedPACObservationIssues: managedPACObservationIssueDetails(pacInstall.ObservationIssues()),
+		HTTPSPipeline:               state.HTTPSPipeline,
+		InstalledCA:                 installedCA,
 	}}, nil
 }
 
@@ -321,5 +324,6 @@ func sortedUniqueServiceNames(values []string) []string {
 }
 
 func (s startSequence) cleanupFailedPACInstall() *CleanupFailureDetail {
-	return uninstallManagedPAC(context.Background(), s.lifecycle.managedPAC)
+	_, failure := uninstallManagedPAC(context.Background(), s.lifecycle.managedPAC)
+	return failure
 }

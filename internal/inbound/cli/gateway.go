@@ -292,11 +292,15 @@ func confirmManagedPACConsent(ctx context.Context, stdin io.Reader, stdout io.Wr
 			url = "(empty)"
 		}
 		agreement := "excluded (foreign PAC state)"
+		if state.Ownership == gateway.PACOwnershipUnknown {
+			agreement = "excluded (PAC observation failed)"
+		}
 		if state.Manageable {
 			agreement = "proposed for Managed PAC Service Set"
 		}
 		fmt.Fprintf(stdout, "  %s: %s (%s; enabled=%t url=%s)\n", state.ServiceName, state.Ownership, agreement, state.Enabled, url)
 	}
+	renderManagedPACObservationIssues(stdout, detail.ObservationIssues)
 	fmt.Fprintln(stdout)
 	fmt.Fprint(stdout, "Proceed? [y/N] ")
 	ok, err := readYes(ctx, stdin)
@@ -381,6 +385,7 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 				}
 			}
 			renderManagedPACWarnings(stdout, guidance.ManagedPACWarnings)
+			renderManagedPACObservationIssues(stdout, guidance.ManagedPACObservationIssues)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
@@ -395,6 +400,7 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 			for _, state := range noServices.Consent.CurrentPACState {
 				fmt.Fprintf(stdout, "managed-pac-service: %s (%s)\n", state.ServiceName, state.Ownership)
 			}
+			renderManagedPACObservationIssues(stdout, noServices.Consent.ObservationIssues)
 		}
 	case gateway.StartResultManagedPACInstallationFailed:
 		fmt.Fprintln(stdout, "seamless-cors could not start: Managed PAC installation failed")
@@ -463,6 +469,7 @@ func renderStopResult(stdout io.Writer, result gateway.StopResult) {
 	case gateway.StopResultNotRunningCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors stop cleanup failed; no running seamless-cors found")
 	}
+	renderManagedPACObservationIssues(stdout, result.ManagedPACObservationIssues)
 }
 
 func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
@@ -532,6 +539,7 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 			fmt.Fprintf(stdout, "managed-pac-publication-url: %s\n", result.Runtime.ManagedPACPublicationURL)
 		}
 		renderManagedPACWarnings(stdout, result.Runtime.ManagedPACWarnings)
+		renderManagedPACObservationIssues(stdout, result.Runtime.ManagedPACObservationIssues)
 		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSPipeline))
 		renderHTTPSPipelineIssue(stdout, result.Runtime.HTTPSPipeline)
 	}
@@ -595,6 +603,12 @@ func renderManagedPACWarnings(stdout io.Writer, warnings []gateway.ManagedPACWar
 			continue
 		}
 		fmt.Fprintf(stdout, "managed-pac-warning: %s: %s\n", warning.ServiceName, warning.Diagnostic)
+	}
+}
+
+func renderManagedPACObservationIssues(stdout io.Writer, issues []gateway.ManagedPACObservationIssue) {
+	for _, issue := range issues {
+		fmt.Fprintf(stdout, "managed-pac-observation-issue: %s: %s\n", issue.ServiceName, issue.Diagnostic)
 	}
 }
 

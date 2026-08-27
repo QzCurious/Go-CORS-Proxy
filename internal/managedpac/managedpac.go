@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,19 +17,28 @@ import (
 type Ownership string
 
 const (
+	OwnershipUnknown Ownership = "unknown"
 	OwnershipEmpty   Ownership = "empty"
 	OwnershipOwned   Ownership = "owned"
 	OwnershipForeign Ownership = "foreign"
 )
 
 type Service struct {
-	Name      string
-	Enabled   bool
-	URL       string
-	Ownership Ownership
+	Name             string
+	Enabled          bool
+	URL              string
+	Ownership        Ownership
+	ObservationIssue *ObservationIssue
 }
 
-func (s Service) Manageable() bool { return s.Ownership != OwnershipForeign }
+func (s Service) Manageable() bool {
+	return s.ObservationIssue == nil && (s.Ownership == OwnershipEmpty || s.Ownership == OwnershipOwned)
+}
+
+type ObservationIssue struct {
+	ServiceName string
+	Diagnostic  string
+}
 
 type Snapshot struct {
 	services []Service
@@ -53,6 +63,16 @@ func (s Snapshot) ManageableServices() []string {
 		}
 	}
 	return names
+}
+
+func (s Snapshot) ObservationIssues() []ObservationIssue {
+	var issues []ObservationIssue
+	for _, service := range s.services {
+		if service.ObservationIssue != nil {
+			issues = append(issues, *service.ObservationIssue)
+		}
+	}
+	return issues
 }
 
 func (s Snapshot) HasOwnedState() bool {
@@ -106,34 +126,55 @@ type Warning struct {
 }
 
 type InstallResult struct {
-	state    RuntimeState
-	warnings []Warning
+	state             RuntimeState
+	warnings          []Warning
+	observationIssues []ObservationIssue
 }
 
 // ReconciliationResult is the latest complete Managed PAC runtime snapshot
 // produced by one publication attempt. Warnings replace the preceding
 // snapshot; they are not an event history.
 type ReconciliationResult struct {
-	state    RuntimeState
-	warnings []Warning
+	state             RuntimeState
+	warnings          []Warning
+	observationIssues []ObservationIssue
 }
 
-func NewReconciliationResult(state RuntimeState, warnings []Warning) ReconciliationResult {
-	return ReconciliationResult{state: state, warnings: warnings}
+func NewReconciliationResult(state RuntimeState, warnings []Warning, observationIssues ...ObservationIssue) ReconciliationResult {
+	return ReconciliationResult{state: state, warnings: warnings, observationIssues: observationIssues}
 }
 
 func (r ReconciliationResult) State() RuntimeState { return r.state }
 func (r ReconciliationResult) Warnings() []Warning { return r.warnings }
+func (r ReconciliationResult) ObservationIssues() []ObservationIssue {
+	return r.observationIssues
+}
 
 // NewInstallResult returns a read-only Managed PAC installation result.
-func NewInstallResult(state RuntimeState, warnings []Warning) InstallResult {
-	return InstallResult{state: state, warnings: warnings}
+func NewInstallResult(state RuntimeState, warnings []Warning, observationIssues ...ObservationIssue) InstallResult {
+	return InstallResult{state: state, warnings: warnings, observationIssues: observationIssues}
 }
 
 func (r InstallResult) State() RuntimeState { return r.state }
 
 func (r InstallResult) Warnings() []Warning {
 	return r.warnings
+}
+
+func (r InstallResult) ObservationIssues() []ObservationIssue {
+	return r.observationIssues
+}
+
+type CleanupResult struct {
+	observationIssues []ObservationIssue
+}
+
+func NewCleanupResult(observationIssues []ObservationIssue) CleanupResult {
+	return CleanupResult{observationIssues: observationIssues}
+}
+
+func (r CleanupResult) ObservationIssues() []ObservationIssue {
+	return r.observationIssues
 }
 
 // ManagedPAC owns PAC Projection publication generation, latest-value
@@ -180,17 +221,26 @@ func openWithSettings(settings pacSettings) *ManagedPAC {
 }
 
 func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
-	states, err := m.settings.List(ctx)
+	serviceNames, err := m.settings.List(ctx)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("managed PAC inspection failed: %w", err)
 	}
-	services := make([]Service, 0, len(states))
-	for _, state := range states {
+	services := make([]Service, 0, len(serviceNames))
+	for _, serviceName := range serviceNames {
+		setting, err := m.settings.Lookup(ctx, serviceName)
+		if err != nil {
+			if ctx.Err() != nil {
+				return Snapshot{}, fmt.Errorf("managed PAC inspection canceled: %w", ctx.Err())
+			}
+			issue := ObservationIssue{ServiceName: serviceName, Diagnostic: err.Error()}
+			services = append(services, Service{Name: serviceName, Ownership: OwnershipUnknown, ObservationIssue: &issue})
+			continue
+		}
 		services = append(services, Service{
-			Name:      state.ServiceName,
-			Enabled:   state.Enabled,
-			URL:       state.URL,
-			Ownership: ownershipForURL(state.URL),
+			Name:      serviceName,
+			Enabled:   setting.Enabled,
+			URL:       setting.URL,
+			Ownership: ownershipForURL(setting.URL),
 		})
 	}
 	return NewSnapshot(services), nil
@@ -223,12 +273,12 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	m.mu.Unlock()
 	pacURL := pacURL(pacListen, generation)
 
-	warnings, publicationErr := m.attemptPublication(ctx, selected, pacURL)
+	warnings, observationIssues, publicationErr := m.attemptPublication(ctx, selected, pacURL)
 	state := NewRuntimeState(selected, "")
 	if publicationErr == nil {
 		state = NewRuntimeState(selected, pacURL)
 	}
-	result := NewInstallResult(state, warnings)
+	result := NewInstallResult(state, warnings, observationIssues...)
 
 	m.mu.Lock()
 	m.latestProjection = &projection
@@ -287,7 +337,7 @@ func (m *ManagedPAC) PublishProjection(projection string) {
 
 // CleanupActiveState disables marker-owned PAC settings without changing
 // reconciliation admission. Active lifecycles must use Uninstall instead.
-func (m *ManagedPAC) CleanupActiveState(ctx context.Context) error {
+func (m *ManagedPAC) CleanupActiveState(ctx context.Context) (CleanupResult, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 
@@ -295,21 +345,21 @@ func (m *ManagedPAC) CleanupActiveState(ctx context.Context) error {
 	accepting := m.accepting
 	m.mu.Unlock()
 	if accepting {
-		return CleanupWhileReconciliationActiveError{}
+		return CleanupResult{}, CleanupWhileReconciliationActiveError{}
 	}
 	return m.cleanupActiveStateLocked(ctx)
 }
 
 // Uninstall closes reconciliation admission before waiting for the current
 // writer, then disables all currently active marker-owned settings.
-func (m *ManagedPAC) Uninstall(ctx context.Context) error {
+func (m *ManagedPAC) Uninstall(ctx context.Context) (CleanupResult, error) {
 	_, workerDone := m.closeReconciliationAdmission()
 	if workerDone != nil {
 		<-workerDone
 	}
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	err := m.cleanupActiveStateLocked(ctx)
+	result, err := m.cleanupActiveStateLocked(ctx)
 	if err == nil {
 		m.mu.Lock()
 		m.runtimeState = RuntimeState{}
@@ -318,7 +368,7 @@ func (m *ManagedPAC) Uninstall(ctx context.Context) error {
 		m.pacListen = ""
 		m.mu.Unlock()
 	}
-	return err
+	return result, err
 }
 
 func (m *ManagedPAC) startProjectionWorkerLocked() (chan struct{}, chan struct{}) {
@@ -403,7 +453,7 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 	m.activeCancel = cancel
 	m.mu.Unlock()
 	pacURL := pacURL(pacListen, generation)
-	warnings, err := m.attemptPublication(ctx, serviceNames, pacURL)
+	warnings, observationIssues, err := m.attemptPublication(ctx, serviceNames, pacURL)
 	cancel()
 
 	m.mu.Lock()
@@ -414,29 +464,34 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 		m.runtimeState = state
 	}
 	m.mu.Unlock()
-	m.resultPublisher.Publish(NewReconciliationResult(state, warnings))
+	m.resultPublisher.Publish(NewReconciliationResult(state, warnings, observationIssues...))
 	return err == nil
 }
 
-func (m *ManagedPAC) attemptPublication(ctx context.Context, serviceNames []string, pacURL string) ([]Warning, error) {
+func (m *ManagedPAC) attemptPublication(ctx context.Context, serviceNames []string, pacURL string) ([]Warning, []ObservationIssue, error) {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return []Warning{{Kind: WarningUpdateFailed, Diagnostic: err.Error()}}, err
+		return []Warning{{Kind: WarningUpdateFailed, Diagnostic: err.Error()}}, nil, err
 	}
-	warnings := m.applyEligible(ctx, snapshot, serviceNames, pacURL)
+	warnings, observationIssues := m.applyEligible(ctx, snapshot, serviceNames, pacURL)
 	for _, warning := range warnings {
 		if warning.Kind == WarningUpdateFailed {
-			return warnings, errors.New("managed PAC publication failed")
+			return warnings, observationIssues, errors.New("managed PAC publication failed")
 		}
 	}
-	return warnings, nil
+	return warnings, observationIssues, nil
 }
 
-func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selected []string, pacURL string) []Warning {
+func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selected []string, pacURL string) ([]Warning, []ObservationIssue) {
 	selectedSet := stringSet(selected)
 	var warnings []Warning
+	var observationIssues []ObservationIssue
 	for _, service := range snapshot.services {
 		if _, ok := selectedSet[service.Name]; !ok {
+			continue
+		}
+		if service.ObservationIssue != nil {
+			observationIssues = append(observationIssues, *service.ObservationIssue)
 			continue
 		}
 		if service.Ownership == OwnershipForeign {
@@ -447,43 +502,41 @@ func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selec
 			})
 			continue
 		}
-		result, err := m.settings.SetURL(ctx, pacSetting(service), pacURL)
+		current, err := m.settings.Lookup(ctx, service.Name)
 		if err != nil {
+			if ctx.Err() != nil {
+				warnings = append(warnings, Warning{Kind: WarningUpdateFailed, ServiceName: service.Name, Diagnostic: err.Error()})
+				continue
+			}
+			observationIssues = append(observationIssues, ObservationIssue{ServiceName: service.Name, Diagnostic: err.Error()})
+			continue
+		}
+		if ownershipForURL(current.URL) == OwnershipForeign {
+			warnings = append(warnings, Warning{
+				Kind:        WarningDrift,
+				ServiceName: service.Name,
+				Diagnostic:  "foreign PAC state is active",
+			})
+			continue
+		}
+		if err := m.settings.SetURL(ctx, service.Name, pacURL); err != nil {
 			warnings = append(warnings, Warning{
 				Kind:        WarningUpdateFailed,
 				ServiceName: service.Name,
 				Diagnostic:  err.Error(),
 			})
-			continue
-		}
-		if result.Applied {
-			continue
-		}
-		if result.Current != nil {
-			if ownershipForURL(result.Current.URL) == OwnershipForeign {
-				warnings = append(warnings, Warning{
-					Kind:        WarningDrift,
-					ServiceName: service.Name,
-					Diagnostic:  "foreign PAC state is active",
-				})
-				continue
-			}
-			warnings = append(warnings, Warning{
-				Kind:        WarningUpdateFailed,
-				ServiceName: service.Name,
-				Diagnostic:  "PAC state changed during publication",
-			})
 		}
 	}
 	sortWarnings(warnings)
-	return warnings
+	return warnings, sortedObservationIssues(observationIssues)
 }
 
-func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {
+func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) (CleanupResult, error) {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return ActiveStateCleanupError{InspectionErr: err}
+		return CleanupResult{}, ActiveStateCleanupError{InspectionErr: err}
 	}
+	observationIssues := snapshot.ObservationIssues()
 	var activeOwned []Service
 	for _, service := range snapshot.services {
 		if service.Enabled && service.Ownership == OwnershipOwned {
@@ -492,24 +545,42 @@ func (m *ManagedPAC) cleanupActiveStateLocked(ctx context.Context) error {
 	}
 	serviceFailures := make([]ServiceCleanupFailure, 0)
 	for _, service := range activeOwned {
-		if _, err := m.settings.Disable(ctx, pacSetting(service)); err != nil {
+		current, err := m.settings.Lookup(ctx, service.Name)
+		if err != nil {
+			if ctx.Err() != nil {
+				serviceFailures = append(serviceFailures, ServiceCleanupFailure{ServiceName: service.Name, Err: err})
+				continue
+			}
+			observationIssues = append(observationIssues, ObservationIssue{ServiceName: service.Name, Diagnostic: err.Error()})
+			continue
+		}
+		if !current.Enabled || ownershipForURL(current.URL) != OwnershipOwned {
+			continue
+		}
+		if err := m.settings.Disable(ctx, service.Name); err != nil {
 			serviceFailures = append(serviceFailures, ServiceCleanupFailure{ServiceName: service.Name, Err: err})
 		}
 	}
 	after, inspectErr := m.Inspect(ctx)
 	if inspectErr != nil {
-		return ActiveStateCleanupError{ServiceFailures: serviceFailures, VerificationErr: inspectErr}
+		return NewCleanupResult(sortedObservationIssues(observationIssues)), ActiveStateCleanupError{ServiceFailures: serviceFailures, VerificationErr: inspectErr}
 	}
+	observationIssues = append(observationIssues, after.ObservationIssues()...)
 	var remaining []string
 	for _, service := range after.services {
 		if service.Enabled && service.Ownership == OwnershipOwned {
 			remaining = append(remaining, service.Name)
 		}
 	}
+	remainingSet := stringSet(remaining)
+	serviceFailures = slices.DeleteFunc(serviceFailures, func(failure ServiceCleanupFailure) bool {
+		_, remains := remainingSet[failure.ServiceName]
+		return !remains
+	})
 	if len(serviceFailures) > 0 || len(remaining) > 0 {
-		return ActiveStateCleanupError{ServiceFailures: serviceFailures, RemainingServices: remaining}
+		return NewCleanupResult(sortedObservationIssues(observationIssues)), ActiveStateCleanupError{ServiceFailures: serviceFailures, RemainingServices: remaining}
 	}
-	return nil
+	return NewCleanupResult(sortedObservationIssues(observationIssues)), nil
 }
 
 type CleanupWhileReconciliationActiveError struct{}
@@ -580,10 +651,6 @@ func ownershipForURL(raw string) Ownership {
 	return OwnershipForeign
 }
 
-func pacSetting(service Service) pacsettings.Setting {
-	return pacsettings.Setting{ServiceName: service.Name, URL: service.URL, Enabled: service.Enabled}
-}
-
 func (m *ManagedPAC) closeReconciliationAdmission() (uint64, <-chan struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -605,6 +672,19 @@ func stringSet(values []string) map[string]struct{} {
 		set[value] = struct{}{}
 	}
 	return set
+}
+
+func sortedObservationIssues(issues []ObservationIssue) []ObservationIssue {
+	byService := make(map[string]ObservationIssue, len(issues))
+	for _, issue := range issues {
+		byService[issue.ServiceName] = issue
+	}
+	out := make([]ObservationIssue, 0, len(byService))
+	for _, issue := range byService {
+		out = append(out, issue)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServiceName < out[j].ServiceName })
+	return out
 }
 
 func sortedUniqueStrings(values []string) []string {

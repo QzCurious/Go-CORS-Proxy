@@ -16,78 +16,27 @@ const (
 	windowsInternetSettingsKey = `HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 )
 
-// Settings accesses the current user's operating-system PAC settings.
-type Settings struct {
+type windowsSettings struct {
 	runner commandRunner
 	notify func() error
 }
 
-// New returns the current user's PAC settings without inspecting or mutating them.
-func New() *Settings {
-	return &Settings{runner: execRunner{}, notify: notifyInternetSettingsChanged}
+var _ platformSettings = (*windowsSettings)(nil)
+
+func newPlatformSettings() platformSettings {
+	return &windowsSettings{runner: execRunner{}, notify: notifyInternetSettingsChanged}
 }
 
-// List returns a fresh snapshot of visible PAC settings.
-func (s *Settings) List(ctx context.Context) ([]Setting, error) {
-	setting, err := s.get(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return []Setting{setting}, nil
+func (s *windowsSettings) list(context.Context) ([]string, error) {
+	return []string{windowsPACServiceName}, nil
 }
 
-// SetURL sets and enables url only when the setting still matches observed.
-func (s *Settings) SetURL(ctx context.Context, observed Setting, url string) (MutationResult, error) {
-	if observed.ServiceName != windowsPACServiceName {
-		return MutationResult{}, nil
+func (s *windowsSettings) lookup(ctx context.Context, serviceName string) (Setting, error) {
+	if serviceName != windowsPACServiceName {
+		return Setting{}, fmt.Errorf("get PAC setting for network service %q: unknown network service", serviceName)
 	}
-	current, err := s.get(ctx)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	if current != observed {
-		return changedMutation(current), nil
-	}
-	script := fmt.Sprintf(`
-$key = %s
-New-Item -Path $key -Force | Out-Null
-New-ItemProperty -Path $key -Name AutoConfigURL -PropertyType String -Value %s -Force | Out-Null
-`, psQuote(windowsInternetSettingsKey), psQuote(url))
-	if _, err := s.powershell(ctx, script); err != nil {
-		return MutationResult{}, err
-	}
-	if err := s.notifyInternetSettingsChanged(); err != nil {
-		return MutationResult{Applied: true}, err
-	}
-	return MutationResult{Applied: true}, nil
-}
 
-// Disable disables PAC use only when the setting still matches observed.
-func (s *Settings) Disable(ctx context.Context, observed Setting) (MutationResult, error) {
-	if observed.ServiceName != windowsPACServiceName {
-		return MutationResult{}, nil
-	}
-	current, err := s.get(ctx)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	if current != observed {
-		return changedMutation(current), nil
-	}
-	script := fmt.Sprintf(`
-$key = %s
-Remove-ItemProperty -Path $key -Name AutoConfigURL -ErrorAction SilentlyContinue
-`, psQuote(windowsInternetSettingsKey))
-	if _, err := s.powershell(ctx, script); err != nil {
-		return MutationResult{}, err
-	}
-	if err := s.notifyInternetSettingsChanged(); err != nil {
-		return MutationResult{Applied: true}, err
-	}
-	return MutationResult{Applied: true}, nil
-}
-
-func (s *Settings) get(ctx context.Context) (Setting, error) {
+	// Read the operating system's current state as JSON.
 	script := fmt.Sprintf(`
 $key = %s
 $value = ''
@@ -96,31 +45,55 @@ if ($null -ne $prop -and $null -ne $prop.AutoConfigURL) {
 	$value = [string]$prop.AutoConfigURL
 }
 [pscustomobject]@{
-	ServiceName = %s
 	URL = $value
 	Enabled = ($value.Length -gt 0)
 } | ConvertTo-Json -Compress
-`, psQuote(windowsInternetSettingsKey), psQuote(windowsPACServiceName))
-	out, err := s.powershell(ctx, script)
+`, psQuote(windowsInternetSettingsKey))
+	out, err := s.runner.run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	if err != nil {
-		return Setting{}, err
+		return Setting{}, fmt.Errorf("get PAC setting for network service %q: %w", serviceName, err)
 	}
+
+	// Translate PowerShell's JSON into the domain snapshot.
 	var setting Setting
 	if err := json.Unmarshal(bytes.TrimSpace(out), &setting); err != nil {
-		return Setting{}, fmt.Errorf("parse Windows PAC state: %w", err)
+		return Setting{}, fmt.Errorf("parse PAC setting for network service %q: %w", serviceName, err)
 	}
 	return setting, nil
 }
 
-func (s *Settings) powershell(ctx context.Context, script string) ([]byte, error) {
-	out, err := s.runner.run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-	if err != nil {
-		return out, fmt.Errorf("powershell failed: %s: %w", bytes.TrimSpace(out), err)
+func (s *windowsSettings) setURL(ctx context.Context, serviceName, url string) error {
+	if serviceName != windowsPACServiceName {
+		return fmt.Errorf("set PAC URL for network service %q: unknown network service", serviceName)
 	}
-	return out, nil
+	script := fmt.Sprintf(`
+$key = %s
+New-Item -Path $key -Force | Out-Null
+New-ItemProperty -Path $key -Name AutoConfigURL -PropertyType String -Value %s -Force | Out-Null
+`, psQuote(windowsInternetSettingsKey), psQuote(url))
+	_, err := s.runner.run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	if err != nil {
+		return fmt.Errorf("set PAC URL for network service %q: %w", serviceName, err)
+	}
+	return s.notifyInternetSettingsChanged()
 }
 
-func (s *Settings) notifyInternetSettingsChanged() error {
+func (s *windowsSettings) disable(ctx context.Context, serviceName string) error {
+	if serviceName != windowsPACServiceName {
+		return fmt.Errorf("disable PAC for network service %q: unknown network service", serviceName)
+	}
+	script := fmt.Sprintf(`
+$key = %s
+Remove-ItemProperty -Path $key -Name AutoConfigURL -ErrorAction SilentlyContinue
+`, psQuote(windowsInternetSettingsKey))
+	_, err := s.runner.run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	if err != nil {
+		return fmt.Errorf("disable PAC for network service %q: %w", serviceName, err)
+	}
+	return s.notifyInternetSettingsChanged()
+}
+
+func (s *windowsSettings) notifyInternetSettingsChanged() error {
 	if s.notify == nil {
 		return nil
 	}

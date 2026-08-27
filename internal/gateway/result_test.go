@@ -45,3 +45,17 @@ func TestEveryCommandResultKindHasItsDomainFulfillment(t *testing.T) {
 		})
 	}
 }
+
+func TestStopSuccessTransportPreservesManagedPACObservationIssues(t *testing.T) {
+	want := StopResult{
+		Kind: StopResultStopped,
+		ManagedPACObservationIssues: []ManagedPACObservationIssue{{
+			ServiceName: "VPN",
+			Diagnostic:  "PAC query failed",
+		}},
+	}
+	got := stopSuccessBodyFrom(want).semantic()
+	if len(got.ManagedPACObservationIssues) != 1 || got.ManagedPACObservationIssues[0] != want.ManagedPACObservationIssues[0] {
+		t.Fatalf("round-trip observation issues = %#v", got.ManagedPACObservationIssues)
+	}
+}

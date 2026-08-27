@@ -59,7 +59,7 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 	if verification := coord.Verify(); verification.Status == stateActive {
 		return executeAndStartClient(ctx, newClient(verification.Cache), hooks)
 	}
-	failures := cleanGatewayFootprint(ctx, pac, coord, nil)
+	_, failures := cleanGatewayFootprint(ctx, pac, coord, nil)
 	if len(failures) > 0 {
 		return StartCleanupFailed{Failures: failures}, nil
 	}
@@ -205,18 +205,19 @@ func executeStartLoop(
 	}
 }
 
-func cleanRuntime(ctx context.Context, pac managedPACModule) ([]CleanupFailureDetail, error) {
+func cleanRuntime(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, []CleanupFailureDetail, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !acquired {
-		return nil, fmt.Errorf("gateway owner already running; retry after it finishes starting or stopping")
+		return nil, nil, fmt.Errorf("gateway owner already running; retry after it finishes starting or stopping")
 	}
 	defer lock.Release()
-	return cleanGatewayFootprint(ctx, pac, coord, nil), nil
+	issues, failures := cleanGatewayFootprint(ctx, pac, coord, nil)
+	return issues, failures, nil
 }

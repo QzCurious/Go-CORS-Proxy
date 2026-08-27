@@ -99,6 +99,30 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	}
 }
 
+func TestStopSucceedsAndDisclosesManagedPACObservationIssue(t *testing.T) {
+	settings := &lifecycleTestSystemSettings{
+		cleanupResult: managedpac.NewCleanupResult([]managedpac.ObservationIssue{{
+			ServiceName: "VPN",
+			Diagnostic:  "PAC query failed",
+		}}),
+	}
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := lifecycle.Stop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != StopResultStopped || result.Fulfillment() != CommandFulfilled {
+		t.Fatalf("stop result = %#v", result)
+	}
+	if len(result.ManagedPACObservationIssues) != 1 || result.ManagedPACObservationIssues[0].ServiceName != "VPN" {
+		t.Fatalf("observation issues = %#v", result.ManagedPACObservationIssues)
+	}
+}
+
 type blockingCleanupSettings struct {
 	cleanupEntered chan<- struct{}
 	releaseCleanup <-chan struct{}
@@ -118,12 +142,12 @@ func (*blockingCleanupSettings) ReconciliationResults() <-chan managedpac.Reconc
 	return make(chan managedpac.ReconciliationResult)
 }
 
-func (f *blockingCleanupSettings) CleanupActiveState(ctx context.Context) error {
+func (f *blockingCleanupSettings) CleanupActiveState(ctx context.Context) (managedpac.CleanupResult, error) {
 	return f.Uninstall(ctx)
 }
 
-func (f *blockingCleanupSettings) Uninstall(context.Context) error {
+func (f *blockingCleanupSettings) Uninstall(context.Context) (managedpac.CleanupResult, error) {
 	close(f.cleanupEntered)
 	<-f.releaseCleanup
-	return nil
+	return managedpac.CleanupResult{}, nil
 }

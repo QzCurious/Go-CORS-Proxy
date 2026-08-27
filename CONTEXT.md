@@ -133,8 +133,8 @@ A supported operating system where the gateway can configure PAC Routing and use
 _Avoid_: manual platform, manual proxy fallback, all-platform parity without adapters
 
 **Best-Effort Stop**:
-A terminal stop behavior where Gateway Footprint Cleanup attempts every cleanup subject, including seamless-cors-owned active PAC state and live coordination cache, even after another subject fails. Cleanup residue makes the result unfulfilled but does not preserve Gateway Ownership; a later ownerless command verifies and cleans stale footprint where its semantics permit.
-_Avoid_: first-error cleanup, successful result with residue, retrying owner, router-only fallback
+A terminal stop behavior where Gateway Footprint Cleanup attempts every cleanup subject, including successfully observed seamless-cors-owned active PAC state and live coordination cache, even after another subject fails. Observed cleanup residue makes the result unfulfilled, while a Managed PAC Observation Issue is disclosed without preventing fulfillment; neither condition preserves Gateway Ownership, and a later ownerless command verifies and cleans observable stale footprint where its semantics permit.
+_Avoid_: first-error cleanup, successful result with observed residue, silent PAC observation issue, retrying owner, router-only fallback
 
 **Owner Stop**:
 A stop behavior used by explicit stop, graceful process termination, and unexpected Gateway Router termination. It rejects new work, closes Gateway Runtime before Gateway Footprint Cleanup, waits for admitted owner-owned CA mutation, truthfully reports cleanup residue, and then tears down Router and ownership even when cleanup is incomplete.
@@ -364,12 +364,24 @@ _Avoid_: heuristic ownership, name-only matching, user intent guess
 A cleanup behavior where the gateway scans current machine state and removes resources only when an Ownership Marker proves the resource belongs to seamless-cors.
 _Avoid_: footprint-based cleanup, previous-state restoration, guessed ownership
 
+**Network Service**:
+A current-user operating-system service that can independently carry a PAC setting. Its visibility is established separately from whether its PAC setting can be observed or managed.
+_Avoid_: viable service, PAC setting, successfully observed service
+
+**PAC Setting Observation**:
+The current PAC URL and enabled state observed for one visible Network Service. A failed observation leaves the Network Service visible but does not establish manageable PAC state.
+_Avoid_: service discovery, missing service, assumed-empty PAC state
+
+**Managed PAC Observation Issue**:
+A current per-service condition where the latest Network Service discovery included a service but its PAC Setting Observation failed. The failure's cause is not classified, no manageable PAC state is established for that service, and the issue is exposed through consent, runtime status, or fulfilled cleanup detail until a later discovery or observation replaces it or lifecycle teardown ends current state.
+_Avoid_: inferred service presence, empty PAC setting, cause-classified observation error, Managed PAC Update Failure, silent service omission
+
 **Managed PAC Active-State Cleanup**:
-An idempotent Managed PAC operation that disables every currently enabled marker-owned PAC setting and verifies that none remains active without opening, closing, or otherwise changing Managed PAC reconciliation admission. Gateway Footprint Cleanup uses it only while reconciliation admission is closed; disabled owned URLs are inert retained configuration, platforms may represent inactive state differently, and foreign PAC state is always preserved.
-_Avoid_: Managed PAC Uninstall, active-lifecycle cleanup, reconciliation shutdown, PAC URL erasure, disabled owned URL cleanup, exact-URL cleanup, previous-state restoration, partial cleanup success
+An idempotent Managed PAC operation that disables and verifies every successfully observed, currently enabled marker-owned PAC setting without opening, closing, or otherwise changing Managed PAC reconciliation admission. A visible Network Service whose PAC setting cannot be observed is outside the cleanup scope and does not prevent success; disabled owned URLs are inert retained configuration, platforms may represent inactive state differently, and observed foreign PAC state is always preserved.
+_Avoid_: Managed PAC Uninstall, active-lifecycle cleanup, reconciliation shutdown, PAC URL erasure, disabled owned URL cleanup, exact-URL cleanup, previous-state restoration, unobservable-PAC cleanup failure
 
 **Gateway Footprint Cleanup Status**:
-A subject-level three-state result describing whether owned gateway footprint is `none`, `needed`, or `unknown`; `unknown` means current machine state could not be inspected and must not be treated as clean. The overall state is derived as `needed` when any subject is needed, otherwise `unknown` when any subject is unknown, and otherwise `none`.
+A subject-level three-state result describing whether owned gateway footprint is `none`, `needed`, or `unknown`; `unknown` means the subject itself could not be discovered and must not be treated as clean. Successfully discovered Network Services with failed PAC Setting Observations remain outside PAC management rather than making the PAC subject unknown. The overall state is derived as `needed` when any subject is needed, otherwise `unknown` when any subject is unknown, and otherwise `none`.
 _Avoid_: cleanup-needed boolean, assumed-clean inspection failure, suppressed cleanup inspection error
 
 **Managed PAC Ownership Marker**:
@@ -381,12 +393,12 @@ An idempotent Managed PAC lifecycle teardown that closes reconciliation admissio
 _Avoid_: Gateway Footprint Cleanup, cleanup-only operation, caller-owned teardown sequence, partial uninstall success
 
 **Managed PAC Service Set**:
-The network services classified as manageable during Gateway Activation and collectively accepted by the user for PAC Routing installation and later Managed PAC Reconciliation. Initially foreign services remain outside the set, while membership becomes fixed after acceptance: selected services remain members through later absence or drift, and excluded or newly appearing services wait until another start.
-_Avoid_: all visible services, initially foreign service, currently controlled service subset, live service discovery for expansion, implicit service expansion, removal-on-disappearance, removal-on-drift
+The successfully observed Network Services classified as manageable during Gateway Activation and collectively accepted by the user for PAC Routing installation and later Managed PAC Reconciliation. Initially foreign or unobservable services remain outside the set, while membership becomes fixed after acceptance: selected services remain members through later absence, drift, or observation issues and can recover on a later PAC Projection; excluded or newly appearing services wait until another start.
+_Avoid_: all visible services, initially foreign service, initially unobservable service, currently controlled service subset, live service discovery for expansion, implicit service expansion, removal-on-disappearance, removal-on-drift, removal-on-observation-issue
 
 **Managed PAC Installation**:
-A Gateway Activation mutation that attempts the desired PAC URL on every currently manageable visible member of the accepted Managed PAC Service Set. The accepted set remains fixed even when a member becomes absent or foreign before mutation; per-service exceptions produce Managed PAC Warnings, and a failed initial publication remains an internal Managed PAC condition that is retried while Gateway Runtime continues serving.
-_Avoid_: all-or-nothing PAC installation, failure-narrowed service set, silent partial installation, Gateway termination on transient PAC publication failure
+A Gateway Activation mutation that attempts the desired PAC URL on every currently manageable visible member of the accepted Managed PAC Service Set. The accepted set remains fixed even when a member becomes absent, foreign, or unobservable before mutation; per-service exceptions produce Managed PAC Warnings, mutation failures retry while Gateway Runtime continues serving, and observation issues wait for a later PAC Projection.
+_Avoid_: all-or-nothing PAC installation, failure-narrowed service set, silent partial installation, Gateway termination on transient PAC publication failure, observation-issue retry loop
 
 **Managed PAC Runtime State**:
 A Gateway Runtime's latched record of the fixed Managed PAC Service Set and the latest Managed PAC publication URL after Managed PAC installation. Its absence means the runtime has no active Managed PAC configuration; it retains no consent state and is not a live observation of operating-system proxy settings.
@@ -397,12 +409,12 @@ A status fact derived from the presence of Managed PAC Runtime State, meaning th
 _Avoid_: all-services-controlled, live OS PAC verification, warning-free Managed PAC, Managed PAC lease held
 
 **Managed PAC Mutation Sequence**:
-Managed PAC's private ordering rule where installation, PAC Projection publication, reconciliation, and uninstall execute one at a time independently from Upstream List observation and Gateway CA mutation serialization. A newer accepted PAC Projection replaces older pending publication input without interrupting an active attempt; failed attempts retain the last successfully published PAC and retry the newest projection, and uninstall waits for the current writer before removing and verifying all marker-owned PAC state.
+Managed PAC's private ordering rule where installation, PAC Projection publication, reconciliation, and uninstall execute one at a time independently from Upstream List observation and Gateway CA mutation serialization. A newer accepted PAC Projection replaces older pending publication input without interrupting an active attempt; mutation failures retain the last successfully published PAC and retry the newest projection, observation issues complete the attempt without retry, and uninstall waits for the current writer before cleaning successfully observed marker-owned PAC state.
 _Avoid_: caller-owned PAC lock, operation-success wait, concurrent PAC writes, refresh-cleanup race, post-stop PAC install, uninstall racing an old writer, global lifecycle mutex
 
 **Managed PAC Reconciliation**:
-A PAC update behavior that independently evaluates each visible member of the fixed Managed PAC Service Set: marker-owned and empty settings receive the current PAC URL, foreign settings are preserved with a warning, and temporarily absent services wait for a later update. Reconciliation does not inspect or expand to services outside the fixed set.
-_Avoid_: Managed PAC lease check, all-or-nothing refresh, idle watcher, new-service adoption, foreign PAC replacement, missing-service failure
+A PAC update behavior that independently evaluates each visible member of the fixed Managed PAC Service Set: marker-owned and empty observed settings receive the current PAC URL, foreign settings are preserved with a warning, and absent or unobservable services wait for a later PAC Projection. Observation issues complete the current attempt without internal retry, and reconciliation does not inspect or expand to services outside the fixed set.
+_Avoid_: Managed PAC lease check, all-or-nothing refresh, idle watcher, new-service adoption, foreign PAC replacement, missing-service failure, observation-issue retry loop
 
 **Managed PAC Reconciliation Request**:
 The complete PAC Projection published by Gateway for every adopted Upstream List or HTTPS Pipeline transition. Managed PAC owns publication generation, serial platform attempts, current warning delivery, and retry without receiving or reinterpreting the Upstream List or HTTPS Readiness.
@@ -417,11 +429,11 @@ A nonfatal condition where a visible member of the fixed Managed PAC Service Set
 _Avoid_: Managed PAC Lease Lost, consent-stale warning, fatal PAC drift, forced PAC restoration, foreign PAC takeover, silent proxy escape
 
 **Managed PAC Update Failure**:
-A nonfatal condition where Managed PAC Reconciliation is authorized to update an owned or empty selected service but its platform write fails. Managed PAC retains the last successfully published PAC, keeps the newest pending projection, consumes the failed publication generation, and retries internally.
+A nonfatal condition where platform mutation of a selected service fails during Managed PAC Reconciliation. Managed PAC preserves the failure's diagnostic without classifying its cause, retains the last successfully published PAC, keeps the newest pending projection, consumes the failed publication generation, and retries internally; PAC Setting Observation failure is instead a Managed PAC Observation Issue.
 _Avoid_: fatal PAC refresh, PAC URL rollback, whole-runtime failure, silent partial update
 
 **Managed PAC Warning**:
-A typed, surface-neutral current diagnostic that identifies each visible service affected by Managed PAC Drift or Managed PAC Update Failure independently from source-specific HTTPS Pipeline issues. Gateway Runtime replaces the warning snapshot after each Managed PAC Reconciliation, drops prior warnings for services now absent, and exposes the current snapshot through Start Guidance and status.
+A typed, surface-neutral current diagnostic that identifies each visible service affected by Managed PAC Drift or Managed PAC Update Failure independently from Managed PAC Observation Issues and source-specific HTTPS Pipeline issues. Gateway Runtime replaces the warning snapshot after each Managed PAC Reconciliation, drops prior warnings for services now absent, and exposes the current snapshot through Start Guidance and status.
 _Avoid_: superseded reconciliation warning, HTTPS Pipeline issue, terminal PAC error, warning history, untyped PAC warning, silent per-service drift
 
 **CA Ownership Marker**:
@@ -477,7 +489,7 @@ A surface-neutral expected start outcome returned to the original start caller a
 _Avoid_: context-canceled error, started result, stop failure
 
 **Managed PAC Consent Detail**:
-A surface-neutral description of every visible network service, identifying which services are manageable and therefore proposed for the fixed Managed PAC Service Set, together with the Managed PAC Consent Fingerprint and no-restoration cleanup behavior. Foreign services are shown as excluded rather than offered for replacement.
+A surface-neutral description of every visible Network Service, identifying which successfully observed services are manageable and therefore proposed for the fixed Managed PAC Service Set, together with any Managed PAC Observation Issue, the Managed PAC Consent Fingerprint, and no-restoration cleanup behavior. Foreign and unobservable services are shown as excluded rather than offered for replacement.
 _Avoid_: service-selection UI, foreign PAC authorization, lifecycle consent detail, prompt text, OS trust approval payload, start plan token
 
 **Managed PAC Consent Fingerprint**:
@@ -485,11 +497,11 @@ A stable identity derived only from the sorted names in the proposed manageable 
 _Avoid_: PAC URL authorization, full PAC state hash, enabled-state authorization, source ordering, generic consent flag, start plan token
 
 **Managed PAC Consent**:
-A collective user confirmation required before each new Gateway Runtime activation manages a nonempty proposed set of manageable network services. Accepting fixes that proposed set for the runtime, declining aborts activation, and foreign services remain excluded rather than being replaced; an empty proposed set produces No Manageable PAC Services without prompting.
+A collective user confirmation required before each new Gateway Runtime activation manages a nonempty proposed set of manageable Network Services. Accepting fixes that proposed set for the runtime, declining aborts activation, and foreign or unobservable services remain excluded rather than being replaced; an empty proposed set produces No Manageable PAC Services without prompting.
 _Avoid_: PAC Replacement Consent, per-service selection, foreign PAC takeover, implicit system PAC mutation, reusable consent
 
 **No Manageable PAC Services**:
-A terminal start outcome where every visible network service is foreign or no manageable service is visible, so Gateway presents the inspected service detail without requesting Managed PAC Consent or starting Gateway Runtime. A direct start process exits because no managed routing can be provided, while a router-hosted attempt leaves its explicitly requested router-only Gateway Owner alive.
+A terminal start outcome where every visible Network Service is foreign or unobservable, or no manageable service is visible, so Gateway presents the inspected service detail without requesting Managed PAC Consent or starting Gateway Runtime. A direct start process exits because no managed routing can be provided, while a router-hosted attempt leaves its explicitly requested router-only Gateway Owner alive.
 _Avoid_: empty Managed PAC consent, zero-service runtime, foreign service takeover, successful inactive start
 
 **Independent PAC Lifecycle**:

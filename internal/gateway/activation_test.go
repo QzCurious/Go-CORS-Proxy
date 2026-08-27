@@ -75,6 +75,27 @@ func TestExecuteStartFixesConsentSelectedServicesWithoutBindingPACURLs(t *testin
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 }
 
+func TestManagedPACConsentShowsUnobservableServiceAsExcluded(t *testing.T) {
+	issue := managedpac.ObservationIssue{ServiceName: "VPN", Diagnostic: "PAC query failed"}
+	detail := (&lifecycle{}).managedPACConsentDetail(managedpac.NewSnapshot([]managedpac.Service{
+		{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty},
+		{Name: "VPN", Ownership: managedpac.OwnershipUnknown, ObservationIssue: &issue},
+	}))
+
+	if len(detail.CurrentPACState) != 2 || detail.CurrentPACState[0].ServiceName != "VPN" {
+		t.Fatalf("current PAC state = %#v", detail.CurrentPACState)
+	}
+	if detail.CurrentPACState[0].Ownership != PACOwnershipUnknown || detail.CurrentPACState[0].Manageable {
+		t.Fatalf("unobservable service state = %#v", detail.CurrentPACState[0])
+	}
+	if len(detail.ObservationIssues) != 1 || detail.ObservationIssues[0].ServiceName != "VPN" {
+		t.Fatalf("observation issues = %#v", detail.ObservationIssues)
+	}
+	if len(detail.ProposedServices) != 1 || detail.ProposedServices[0] != "Wi-Fi" {
+		t.Fatalf("proposed services = %#v", detail.ProposedServices)
+	}
+}
+
 func TestStatusAdoptsLatestManagedPACReconciliationSnapshot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -103,6 +124,7 @@ func TestStatusAdoptsLatestManagedPACReconciliationSnapshot(t *testing.T) {
 	results <- managedpac.NewReconciliationResult(
 		managedpac.NewRuntimeState([]string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=2"),
 		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Wi-Fi", Diagnostic: "foreign PAC state is active"}},
+		managedpac.ObservationIssue{ServiceName: "VPN", Diagnostic: "PAC query failed"},
 	)
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -113,6 +135,9 @@ func TestStatusAdoptsLatestManagedPACReconciliationSnapshot(t *testing.T) {
 		if status.Runtime != nil && status.Runtime.ManagedPACPublicationURL == "http://127.0.0.1/seamless-cors.pac?v=2" {
 			if len(status.Runtime.ManagedPACWarnings) != 1 || status.Runtime.ManagedPACWarnings[0].Kind != ManagedPACWarningDrift {
 				t.Fatalf("Managed PAC warnings = %#v", status.Runtime.ManagedPACWarnings)
+			}
+			if len(status.Runtime.ManagedPACObservationIssues) != 1 || status.Runtime.ManagedPACObservationIssues[0].ServiceName != "VPN" {
+				t.Fatalf("Managed PAC observation issues = %#v", status.Runtime.ManagedPACObservationIssues)
 			}
 			break
 		}
@@ -811,6 +836,7 @@ type lifecycleTestSystemSettings struct {
 	cleared               int
 	cleanupCalls          int
 	uninstallCalls        int
+	cleanupResult         managedpac.CleanupResult
 	reconciliationResults <-chan managedpac.ReconciliationResult
 }
 
@@ -838,22 +864,22 @@ func (f *lifecycleTestSystemSettings) ReconciliationResults() <-chan managedpac.
 	return f.reconciliationResults
 }
 
-func (f *lifecycleTestSystemSettings) CleanupActiveState(context.Context) error {
+func (f *lifecycleTestSystemSettings) CleanupActiveState(context.Context) (managedpac.CleanupResult, error) {
 	f.cleared++
 	f.cleanupCalls++
 	if f.clearErr != nil {
-		return f.clearErr
+		return f.cleanupResult, f.clearErr
 	}
-	return nil
+	return f.cleanupResult, nil
 }
 
-func (f *lifecycleTestSystemSettings) Uninstall(context.Context) error {
+func (f *lifecycleTestSystemSettings) Uninstall(context.Context) (managedpac.CleanupResult, error) {
 	f.cleared++
 	f.uninstallCalls++
 	if f.clearErr != nil {
-		return f.clearErr
+		return f.cleanupResult, f.clearErr
 	}
-	return nil
+	return f.cleanupResult, nil
 }
 
 func executeAcceptedStart(t *testing.T, lifecycle *lifecycle) (StartResult, error) {

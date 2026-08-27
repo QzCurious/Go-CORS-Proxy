@@ -43,9 +43,11 @@ func TestManagedPACConsentPromptShowsProposedAndExcludedServices(t *testing.T) {
 	ok, err := confirmManagedPACConsent(context.Background(), bytes.NewBufferString("yes"), &out, &gateway.ManagedPACConsentDetail{
 		CurrentPACState: []gateway.ManagedPACServiceState{
 			{ServiceName: "Ethernet", Ownership: gateway.PACOwnershipEmpty, Manageable: true},
+			{ServiceName: "VPN", Ownership: gateway.PACOwnershipUnknown},
 			{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true, Ownership: gateway.PACOwnershipForeign},
 		},
-		ProposedServices: []string{"Ethernet"},
+		ObservationIssues: []gateway.ManagedPACObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}},
+		ProposedServices:  []string{"Ethernet"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -53,10 +55,29 @@ func TestManagedPACConsentPromptShowsProposedAndExcludedServices(t *testing.T) {
 	if !ok {
 		t.Fatal("consent was not accepted")
 	}
-	for _, want := range []string{"Managed PAC Consent is required", "proposed for Managed PAC Service Set", "excluded (foreign PAC state)", "Proceed? [y/N]"} {
+	for _, want := range []string{"Managed PAC Consent is required", "proposed for Managed PAC Service Set", "excluded (foreign PAC state)", "excluded (PAC observation failed)", "managed-pac-observation-issue: VPN: PAC query failed", "Proceed? [y/N]"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("consent prompt missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestStopCommandDisclosesManagedPACObservationIssueOnSuccess(t *testing.T) {
+	var out bytes.Buffer
+	err := stopGatewayWithCommand(context.Background(), &out, func(context.Context) (gateway.StopResult, error) {
+		return gateway.StopResult{
+			Kind: gateway.StopResultStopped,
+			ManagedPACObservationIssues: []gateway.ManagedPACObservationIssue{{
+				ServiceName: "VPN",
+				Diagnostic:  "PAC query failed",
+			}},
+		}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "managed-pac-observation-issue: VPN: PAC query failed") {
+		t.Fatalf("stop output = %q", out.String())
 	}
 }
 
@@ -449,6 +470,16 @@ func TestStartRendersManagedPACWarningsSeparately(t *testing.T) {
 		}},
 	}})
 	if !strings.Contains(out.String(), "managed-pac-warning: Wi-Fi: foreign PAC state is active") {
+		t.Fatalf("start output = %q", out.String())
+	}
+}
+
+func TestStartRendersManagedPACObservationIssues(t *testing.T) {
+	var out bytes.Buffer
+	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
+		ManagedPACObservationIssues: []gateway.ManagedPACObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}},
+	}})
+	if !strings.Contains(out.String(), "managed-pac-observation-issue: VPN: PAC query failed") {
 		t.Fatalf("start output = %q", out.String())
 	}
 }

@@ -3,114 +3,49 @@
 package pacsettings
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
 )
 
-// Settings accesses the current user's operating-system PAC settings.
-type Settings struct {
+type darwinSettings struct {
 	runner commandRunner
 }
 
-// New returns the current user's PAC settings without inspecting or mutating them.
-func New() *Settings {
-	return &Settings{runner: execRunner{}}
+var _ platformSettings = (*darwinSettings)(nil)
+
+func newPlatformSettings() platformSettings {
+	return &darwinSettings{runner: execRunner{}}
 }
 
-// List returns a fresh snapshot of visible PAC settings.
-func (s *Settings) List(ctx context.Context) ([]Setting, error) {
-	serviceNames, err := s.listServices(ctx)
+func (s *darwinSettings) list(ctx context.Context) ([]string, error) {
+	out, err := s.runner.run(ctx, "networksetup", "-listallnetworkservices")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list network services: %w", err)
 	}
-	settings := make([]Setting, 0, len(serviceNames))
-	for _, serviceName := range serviceNames {
-		setting, available, err := s.get(ctx, serviceName)
-		if err != nil {
-			return nil, err
-		}
-		if available {
-			settings = append(settings, setting)
-		}
-	}
-	return settings, nil
-}
-
-// SetURL sets and enables url only when the setting still matches observed.
-func (s *Settings) SetURL(ctx context.Context, observed Setting, url string) (MutationResult, error) {
-	current, available, err := s.get(ctx, observed.ServiceName)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	if !available {
-		return MutationResult{}, nil
-	}
-	if current != observed {
-		return changedMutation(current), nil
-	}
-	out, err := s.networksetup(ctx, "-setautoproxyurl", observed.ServiceName, url)
-	if err != nil && isMissingNetworkService(out, err) {
-		return MutationResult{}, nil
-	}
-	if err != nil {
-		return MutationResult{}, err
-	}
-	return MutationResult{Applied: true}, nil
-}
-
-// Disable disables PAC use only when the setting still matches observed.
-func (s *Settings) Disable(ctx context.Context, observed Setting) (MutationResult, error) {
-	current, available, err := s.get(ctx, observed.ServiceName)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	if !available {
-		return MutationResult{}, nil
-	}
-	if current != observed {
-		return changedMutation(current), nil
-	}
-	out, err := s.networksetup(ctx, "-setautoproxystate", observed.ServiceName, "off")
-	if err != nil && isMissingNetworkService(out, err) {
-		return MutationResult{}, nil
-	}
-	if err != nil {
-		return MutationResult{}, err
-	}
-	return MutationResult{Applied: true}, nil
-}
-
-func (s *Settings) listServices(ctx context.Context) ([]string, error) {
-	out, err := s.networksetup(ctx, "-listallnetworkservices")
-	if err != nil {
-		return nil, err
-	}
-	var serviceNames []string
-	for _, line := range strings.Split(string(out), "\n") {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	serviceNames := make([]string, 0, len(lines)-1)
+	for _, line := range lines[1:] {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "An asterisk") {
-			continue
-		}
 		line = strings.TrimSpace(strings.TrimPrefix(line, "*"))
 		if line != "" {
 			serviceNames = append(serviceNames, line)
 		}
 	}
+
 	return serviceNames, nil
 }
 
-func (s *Settings) get(ctx context.Context, serviceName string) (Setting, bool, error) {
-	out, err := s.networksetup(ctx, "-getautoproxyurl", serviceName)
-	if err != nil && isMissingNetworkService(out, err) {
-		return Setting{}, false, nil
-	}
+func (s *darwinSettings) lookup(ctx context.Context, serviceName string) (Setting, error) {
+	// Read the operating system's current state.
+	out, err := s.runner.run(ctx, "networksetup", "-getautoproxyurl", serviceName)
 	if err != nil {
-		return Setting{}, false, err
+		return Setting{}, fmt.Errorf("get PAC setting for network service %q: %w", serviceName, err)
 	}
-	setting := Setting{ServiceName: serviceName}
-	for _, line := range strings.Split(string(out), "\n") {
+
+	// Translate networksetup's text format into the domain snapshot.
+	var setting Setting
+	for line := range strings.SplitSeq(string(out), "\n") {
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
@@ -125,22 +60,21 @@ func (s *Settings) get(ctx context.Context, serviceName string) (Setting, bool, 
 			setting.Enabled = strings.EqualFold(value, "Yes")
 		}
 	}
-	return setting, true, nil
+	return setting, nil
 }
 
-func (s *Settings) networksetup(ctx context.Context, args ...string) ([]byte, error) {
-	out, err := s.runner.run(ctx, "networksetup", args...)
+func (s *darwinSettings) setURL(ctx context.Context, serviceName, url string) error {
+	_, err := s.runner.run(ctx, "networksetup", "-setautoproxyurl", serviceName, url)
 	if err != nil {
-		return out, fmt.Errorf("networksetup %s failed: %s: %w", strings.Join(args, " "), bytes.TrimSpace(out), err)
+		return fmt.Errorf("set PAC URL for network service %q: %w", serviceName, err)
 	}
-	return out, nil
+	return nil
 }
 
-func isMissingNetworkService(out []byte, err error) bool {
-	if err == nil {
-		return false
+func (s *darwinSettings) disable(ctx context.Context, serviceName string) error {
+	_, err := s.runner.run(ctx, "networksetup", "-setautoproxystate", serviceName, "off")
+	if err != nil {
+		return fmt.Errorf("disable PAC for network service %q: %w", serviceName, err)
 	}
-	message := strings.ToLower(string(out) + " " + err.Error())
-	return strings.Contains(message, "not a recognized network service") ||
-		strings.Contains(message, "network service was not found")
+	return nil
 }

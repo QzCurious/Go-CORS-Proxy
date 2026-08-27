@@ -239,10 +239,11 @@ func (r StartCleanupFailed) UpstreamListCreationWarningDetail() *UpstreamListCre
 func (StartCleanupFailed) startResult() {}
 
 type ManagedPACConsent struct {
-	CurrentPACState  []ManagedPACServiceState `json:"currentPacState"`
-	ProposedServices []string                 `json:"proposedServices"`
-	CleanupMode      CleanupMode              `json:"cleanupMode"`
-	Fingerprint      PACConsentFingerprint    `json:"fingerprint"`
+	CurrentPACState   []ManagedPACServiceState     `json:"currentPacState"`
+	ObservationIssues []ManagedPACObservationIssue `json:"observationIssues,omitempty"`
+	ProposedServices  []string                     `json:"proposedServices"`
+	CleanupMode       CleanupMode                  `json:"cleanupMode"`
+	Fingerprint       PACConsentFingerprint        `json:"fingerprint"`
 }
 
 // ManagedPACConsentDetail is retained as a representation-oriented alias for
@@ -264,6 +265,7 @@ type ManagedPACServiceState struct {
 type PACOwnership string
 
 const (
+	PACOwnershipUnknown PACOwnership = "unknown"
 	PACOwnershipEmpty   PACOwnership = "empty"
 	PACOwnershipOwned   PACOwnership = "owned"
 	PACOwnershipForeign PACOwnership = "foreign"
@@ -277,13 +279,14 @@ type ManagedPACConsentInput struct {
 type PACConsentFingerprint string
 
 type StartGuidance struct {
-	UpstreamLists            []UpstreamListSourceDetail `json:"upstreamLists"`
-	ManagedPACActive         bool                       `json:"managedPacActive"`
-	ManagedPACServices       []string                   `json:"managedPacServices,omitempty"`
-	ManagedPACPublicationURL string                     `json:"managedPacPublicationUrl,omitempty"`
-	HTTPSPipeline            *HTTPSPipelineDetail       `json:"httpsPipeline,omitempty"`
-	InstalledCA              *InstalledCAStatusDetail   `json:"installedCA,omitempty"`
-	ManagedPACWarnings       []ManagedPACWarningDetail  `json:"managedPacWarnings,omitempty"`
+	UpstreamLists               []UpstreamListSourceDetail   `json:"upstreamLists"`
+	ManagedPACActive            bool                         `json:"managedPacActive"`
+	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
+	ManagedPACPublicationURL    string                       `json:"managedPacPublicationUrl,omitempty"`
+	HTTPSPipeline               *HTTPSPipelineDetail         `json:"httpsPipeline,omitempty"`
+	InstalledCA                 *InstalledCAStatusDetail     `json:"installedCA,omitempty"`
+	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
+	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
 }
 
 // StartGuidanceDetail is retained as a representation-oriented alias for
@@ -339,9 +342,10 @@ const (
 )
 
 type StopResult struct {
-	Kind            StopResultKind
-	Warnings        []CommandWarning
-	CleanupFailures []CleanupFailureDetail
+	Kind                        StopResultKind
+	Warnings                    []CommandWarning
+	ManagedPACObservationIssues []ManagedPACObservationIssue
+	CleanupFailures             []CleanupFailureDetail
 }
 
 func (r StopResult) Fulfillment() CommandFulfillment {
@@ -471,15 +475,16 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen              string                     `json:"proxyListen"`
-	PACListen                string                     `json:"pacListen"`
-	UpstreamLists            []UpstreamListSourceDetail `json:"upstreamLists"`
-	UpstreamCount            int                        `json:"upstreamCount"`
-	HTTPSPipeline            *HTTPSPipelineDetail       `json:"httpsPipeline,omitempty"`
-	ManagedPACActive         bool                       `json:"managedPacActive"`
-	ManagedPACServices       []string                   `json:"managedPacServices,omitempty"`
-	ManagedPACPublicationURL string                     `json:"managedPacPublicationUrl,omitempty"`
-	ManagedPACWarnings       []ManagedPACWarningDetail  `json:"managedPacWarnings,omitempty"`
+	ProxyListen                 string                       `json:"proxyListen"`
+	PACListen                   string                       `json:"pacListen"`
+	UpstreamLists               []UpstreamListSourceDetail   `json:"upstreamLists"`
+	UpstreamCount               int                          `json:"upstreamCount"`
+	HTTPSPipeline               *HTTPSPipelineDetail         `json:"httpsPipeline,omitempty"`
+	ManagedPACActive            bool                         `json:"managedPacActive"`
+	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
+	ManagedPACPublicationURL    string                       `json:"managedPacPublicationUrl,omitempty"`
+	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
+	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
 }
 
 type HTTPSReadinessStatus string
@@ -529,6 +534,11 @@ type ManagedPACWarningDetail struct {
 	Kind        ManagedPACWarningKind `json:"kind"`
 	ServiceName string                `json:"serviceName,omitempty"`
 	Diagnostic  string                `json:"diagnostic"`
+}
+
+type ManagedPACObservationIssue struct {
+	ServiceName string `json:"serviceName"`
+	Diagnostic  string `json:"diagnostic"`
 }
 
 type CleanupStatusDetail struct {
@@ -605,8 +615,9 @@ type activeRuntime struct {
 }
 
 type managedPACRuntime struct {
-	state    managedpac.RuntimeState
-	warnings []ManagedPACWarningDetail
+	state             managedpac.RuntimeState
+	warnings          []ManagedPACWarningDetail
+	observationIssues []ManagedPACObservationIssue
 }
 
 type runtimePhase string
@@ -953,7 +964,8 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	f.caAdmissionMu.Lock()
 	f.caAdmissionMu.Unlock()
 	var cleanupFailures []CleanupFailureDetail
-	if failure := uninstallManagedPAC(ctx, f.managedPAC); failure != nil {
+	observationIssues, failure := uninstallManagedPAC(ctx, f.managedPAC)
+	if failure != nil {
 		cleanupFailures = append(cleanupFailures, *failure)
 	}
 	var ownedCache *stateCache
@@ -963,12 +975,13 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	cleanupFailures = append(cleanupFailures, cleanGatewayStateCache(f.coord, ownedCache)...)
 	if len(cleanupFailures) > 0 {
 		return StopResult{
-			Kind:            StopResultCleanupFailed,
-			Warnings:        warnings,
-			CleanupFailures: cleanupFailures,
+			Kind:                        StopResultCleanupFailed,
+			Warnings:                    warnings,
+			ManagedPACObservationIssues: observationIssues,
+			CleanupFailures:             cleanupFailures,
 		}, nil
 	}
-	return StopResult{Kind: StopResultStopped, Warnings: warnings}, nil
+	return StopResult{Kind: StopResultStopped, Warnings: warnings, ManagedPACObservationIssues: observationIssues}, nil
 }
 
 func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error) {
@@ -985,6 +998,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	var managedPACServiceNames []string
 	var managedPACPublicationURL string
 	var managedPACWarningSnapshot []ManagedPACWarningDetail
+	var managedPACObservationIssues []ManagedPACObservationIssue
 	if active != nil {
 		phase = active.phase
 		if active.managedPAC != nil {
@@ -992,6 +1006,7 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			managedPACServiceNames = active.managedPAC.state.ServiceNames()
 			managedPACPublicationURL = active.managedPAC.state.PACURL()
 			managedPACWarningSnapshot = append([]ManagedPACWarningDetail(nil), active.managedPAC.warnings...)
+			managedPACObservationIssues = append([]ManagedPACObservationIssue(nil), active.managedPAC.observationIssues...)
 		}
 	}
 	f.mu.Unlock()
@@ -1020,15 +1035,16 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
-			ProxyListen:              state.ProxyListen,
-			PACListen:                state.PACListen,
-			UpstreamLists:            state.UpstreamLists,
-			UpstreamCount:            state.UpstreamCount,
-			HTTPSPipeline:            state.HTTPSPipeline,
-			ManagedPACActive:         managedPACActive,
-			ManagedPACServices:       managedPACServiceNames,
-			ManagedPACPublicationURL: managedPACPublicationURL,
-			ManagedPACWarnings:       managedPACWarningSnapshot,
+			ProxyListen:                 state.ProxyListen,
+			PACListen:                   state.PACListen,
+			UpstreamLists:               state.UpstreamLists,
+			UpstreamCount:               state.UpstreamCount,
+			HTTPSPipeline:               state.HTTPSPipeline,
+			ManagedPACActive:            managedPACActive,
+			ManagedPACServices:          managedPACServiceNames,
+			ManagedPACPublicationURL:    managedPACPublicationURL,
+			ManagedPACWarnings:          managedPACWarningSnapshot,
+			ManagedPACObservationIssues: managedPACObservationIssues,
 		}
 		return result, nil
 	}
@@ -1213,6 +1229,7 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 			if f.runtime == active && active.managedPAC != nil {
 				active.managedPAC.state = result.State()
 				active.managedPAC.warnings = managedPACWarningDetails(result.Warnings())
+				active.managedPAC.observationIssues = managedPACObservationIssueDetails(result.ObservationIssues())
 			}
 			f.mu.Unlock()
 		case kind := <-active.engine.RuntimeChanges():
@@ -1283,11 +1300,20 @@ func (f *lifecycle) managedPACConsentDetail(snapshot managedpac.Snapshot) *Manag
 	}
 	proposed := snapshot.ManageableServices()
 	return &ManagedPACConsentDetail{
-		CurrentPACState:  out,
-		ProposedServices: proposed,
-		CleanupMode:      CleanupModeNoPACRestoration,
-		Fingerprint:      pacConsentFingerprint(proposed),
+		CurrentPACState:   out,
+		ObservationIssues: managedPACObservationIssueDetails(snapshot.ObservationIssues()),
+		ProposedServices:  proposed,
+		CleanupMode:       CleanupModeNoPACRestoration,
+		Fingerprint:       pacConsentFingerprint(proposed),
 	}
+}
+
+func managedPACObservationIssueDetails(issues []managedpac.ObservationIssue) []ManagedPACObservationIssue {
+	out := make([]ManagedPACObservationIssue, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, ManagedPACObservationIssue{ServiceName: issue.ServiceName, Diagnostic: issue.Diagnostic})
+	}
+	return out
 }
 
 func pacConsentFingerprint(serviceNames []string) PACConsentFingerprint {
@@ -1313,6 +1339,8 @@ func managedPACWarningDetails(warnings []managedpac.Warning) []ManagedPACWarning
 
 func pacOwnership(ownership managedpac.Ownership) PACOwnership {
 	switch ownership {
+	case managedpac.OwnershipUnknown:
+		return PACOwnershipUnknown
 	case managedpac.OwnershipEmpty:
 		return PACOwnershipEmpty
 	case managedpac.OwnershipOwned:

@@ -74,13 +74,15 @@ type startFailureDetails struct {
 }
 
 type stopSuccessBody struct {
-	Changed  bool             `json:"changed"`
-	Warnings []CommandWarning `json:"warnings,omitempty"`
+	Changed                     bool                         `json:"changed"`
+	Warnings                    []CommandWarning             `json:"warnings,omitempty"`
+	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
 }
 
 type stopFailureDetails struct {
-	Warnings        []CommandWarning       `json:"warnings,omitempty"`
-	CleanupFailures []CleanupFailureDetail `json:"cleanupFailures,omitempty"`
+	Warnings                    []CommandWarning             `json:"warnings,omitempty"`
+	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
+	CleanupFailures             []CleanupFailureDetail       `json:"cleanupFailures,omitempty"`
 }
 
 type installSuccessBody struct {
@@ -180,7 +182,7 @@ func (dto startFailureDetails) semantic(kind StartKind) StartResult {
 }
 
 func stopSuccessBodyFrom(result StopResult) stopSuccessBody {
-	return stopSuccessBody{Changed: result.Kind == StopResultStopped, Warnings: result.Warnings}
+	return stopSuccessBody{Changed: result.Kind == StopResultStopped, Warnings: result.Warnings, ManagedPACObservationIssues: result.ManagedPACObservationIssues}
 }
 
 func (dto stopSuccessBody) semantic() StopResult {
@@ -188,15 +190,15 @@ func (dto stopSuccessBody) semantic() StopResult {
 	if dto.Changed {
 		kind = StopResultStopped
 	}
-	return StopResult{Kind: kind, Warnings: dto.Warnings}
+	return StopResult{Kind: kind, Warnings: dto.Warnings, ManagedPACObservationIssues: dto.ManagedPACObservationIssues}
 }
 
 func stopFailureDetailsFrom(result StopResult) stopFailureDetails {
-	return stopFailureDetails{result.Warnings, result.CleanupFailures}
+	return stopFailureDetails{result.Warnings, result.ManagedPACObservationIssues, result.CleanupFailures}
 }
 
 func (dto stopFailureDetails) semantic(kind StopResultKind) StopResult {
-	return StopResult{Kind: kind, Warnings: dto.Warnings, CleanupFailures: dto.CleanupFailures}
+	return StopResult{Kind: kind, Warnings: dto.Warnings, ManagedPACObservationIssues: dto.ManagedPACObservationIssues, CleanupFailures: dto.CleanupFailures}
 }
 
 func installSuccessBodyFrom(result InstallResult) installSuccessBody {

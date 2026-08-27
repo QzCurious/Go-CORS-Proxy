@@ -5,26 +5,31 @@ import (
 	"fmt"
 )
 
-func cleanManagedPACActiveState(ctx context.Context, pac managedPACModule) *CleanupFailureDetail {
-	if err := pac.CleanupActiveState(ctx); err != nil {
-		return &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
+func cleanManagedPACActiveState(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailureDetail) {
+	result, err := pac.CleanupActiveState(ctx)
+	issues := managedPACObservationIssueDetails(result.ObservationIssues())
+	if err != nil {
+		return issues, &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
-	return nil
+	return issues, nil
 }
 
-func uninstallManagedPAC(ctx context.Context, pac managedPACModule) *CleanupFailureDetail {
-	if err := pac.Uninstall(ctx); err != nil {
-		return &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
+func uninstallManagedPAC(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailureDetail) {
+	result, err := pac.Uninstall(ctx)
+	issues := managedPACObservationIssueDetails(result.ObservationIssues())
+	if err != nil {
+		return issues, &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
-	return nil
+	return issues, nil
 }
 
-func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coordinator, ownedCache *stateCache) []CleanupFailureDetail {
+func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coordinator, ownedCache *stateCache) ([]ManagedPACObservationIssue, []CleanupFailureDetail) {
 	var failures []CleanupFailureDetail
-	if failure := cleanManagedPACActiveState(ctx, pac); failure != nil {
+	issues, failure := cleanManagedPACActiveState(ctx, pac)
+	if failure != nil {
 		failures = append(failures, *failure)
 	}
-	return append(failures, cleanGatewayStateCache(coord, ownedCache)...)
+	return issues, append(failures, cleanGatewayStateCache(coord, ownedCache)...)
 }
 
 func cleanGatewayStateCache(coord *coordinator, ownedCache *stateCache) []CleanupFailureDetail {

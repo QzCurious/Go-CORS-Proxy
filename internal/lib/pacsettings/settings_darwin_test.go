@@ -29,73 +29,64 @@ func (f *fakeDarwinRunner) run(ctx context.Context, name string, args ...string)
 	}
 }
 
-func TestDarwinListNormalizesVisibleServicesAndSkipsDisappearance(t *testing.T) {
-	runner := &fakeDarwinRunner{runFunc: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		switch args[0] {
-		case "-listallnetworkservices":
-			return []byte("An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n*Disabled VPN\nVanished VPN\n"), nil
-		case "-getautoproxyurl":
-			if args[1] == "Wi-Fi" {
-				return []byte("URL: (null)\nEnabled: No\n"), nil
-			}
-			if args[1] == "Vanished VPN" {
-				return []byte("Vanished VPN is not a recognized network service."), errors.New("exit status 1")
-			}
-			return []byte("URL: http://corp.example/proxy.pac\nEnabled: Yes\n"), nil
-		default:
-			return nil, nil
-		}
-	}}
-	settings := &Settings{runner: runner}
+func TestDarwinListReturnsAllVisibleServiceNames(t *testing.T) {
+	runner := &fakeDarwinRunner{}
+	settings := testDarwinSettings(runner)
 
 	got, err := settings.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] != (Setting{ServiceName: "Wi-Fi"}) {
-		t.Fatalf("settings = %#v", got)
-	}
-	if got[1].ServiceName != "Disabled VPN" || got[1].URL != "http://corp.example/proxy.pac" || !got[1].Enabled {
-		t.Fatalf("settings = %#v", got)
+	if strings.Join(got, ",") != "Wi-Fi,Disabled VPN" {
+		t.Fatalf("services = %#v", got)
 	}
 }
 
-func TestDarwinSetURLRequiresUnchangedObservation(t *testing.T) {
+func TestDarwinLookupReturnsFreshPACSetting(t *testing.T) {
 	runner := &fakeDarwinRunner{runFunc: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if args[0] == "-getautoproxyurl" {
 			return []byte("URL: http://corp.example/proxy.pac\nEnabled: Yes\n"), nil
 		}
 		return nil, nil
 	}}
-	settings := &Settings{runner: runner}
+	settings := testDarwinSettings(runner)
 
-	result, err := settings.SetURL(context.Background(), Setting{ServiceName: "Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac")
+	setting, err := settings.Lookup(context.Background(), "Wi-Fi")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Applied || result.Current == nil || result.Current.URL != "http://corp.example/proxy.pac" {
-		t.Fatalf("result = %#v", result)
+	if setting.URL != "http://corp.example/proxy.pac" || !setting.Enabled {
+		t.Fatalf("setting = %#v", setting)
 	}
-	if joined := strings.Join(runner.calls, "\n"); strings.Contains(joined, "-setautoproxyurl") {
-		t.Fatalf("changed setting was overwritten:\n%s", joined)
+	if len(runner.calls) != 1 || !strings.Contains(runner.calls[0], "-getautoproxyurl Wi-Fi") {
+		t.Fatalf("calls = %#v", runner.calls)
 	}
 }
 
-func TestDarwinSetURLAppliesAfterMatchingObservation(t *testing.T) {
-	runner := &fakeDarwinRunner{runFunc: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if args[0] == "-getautoproxyurl" {
-			return []byte("URL: (null)\nEnabled: No\n"), nil
-		}
-		return nil, nil
+func TestDarwinOperationsWrapRunnerFailures(t *testing.T) {
+	runnerErr := errors.New("exit status 4")
+	runner := &fakeDarwinRunner{runFunc: func(context.Context, string, ...string) ([]byte, error) {
+		return nil, runnerErr
 	}}
-	settings := &Settings{runner: runner}
+	settings := testDarwinSettings(runner)
 
-	result, err := settings.SetURL(context.Background(), Setting{ServiceName: "Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := settings.Lookup(context.Background(), "Vanished VPN"); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "get PAC setting") {
+		t.Fatalf("lookup error = %v", err)
 	}
-	if !result.Applied {
-		t.Fatalf("result = %#v", result)
+	if err := settings.SetURL(context.Background(), "Vanished VPN", "http://127.0.0.1/p.pac"); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "set PAC URL") {
+		t.Fatalf("set URL error = %v", err)
+	}
+	if err := settings.Disable(context.Background(), "Vanished VPN"); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "disable PAC") {
+		t.Fatalf("disable error = %v", err)
+	}
+}
+
+func TestDarwinSetURLMutatesNamedService(t *testing.T) {
+	runner := &fakeDarwinRunner{}
+	settings := testDarwinSettings(runner)
+
+	if err := settings.SetURL(context.Background(), "Wi-Fi", "http://127.0.0.1/seamless-cors.pac"); err != nil {
+		t.Fatal(err)
 	}
 	want := "networksetup -setautoproxyurl Wi-Fi http://127.0.0.1/seamless-cors.pac"
 	if joined := strings.Join(runner.calls, "\n"); !strings.Contains(joined, want) {
@@ -103,17 +94,12 @@ func TestDarwinSetURLAppliesAfterMatchingObservation(t *testing.T) {
 	}
 }
 
-func TestDarwinDisableRequiresUnchangedObservation(t *testing.T) {
+func TestDarwinDisableMutatesNamedService(t *testing.T) {
 	runner := &fakeDarwinRunner{}
-	settings := &Settings{runner: runner}
-	observed := Setting{ServiceName: "Wi-Fi", URL: "http://old.example/proxy.pac", Enabled: true}
+	settings := testDarwinSettings(runner)
 
-	result, err := settings.Disable(context.Background(), observed)
-	if err != nil {
+	if err := settings.Disable(context.Background(), "Wi-Fi"); err != nil {
 		t.Fatal(err)
-	}
-	if !result.Applied {
-		t.Fatalf("result = %#v", result)
 	}
 	joined := strings.Join(runner.calls, "\n")
 	if !strings.Contains(joined, "networksetup -setautoproxystate Wi-Fi off") {
@@ -122,4 +108,8 @@ func TestDarwinDisableRequiresUnchangedObservation(t *testing.T) {
 	if strings.Contains(joined, "-setautoproxyurl") {
 		t.Fatalf("disable changed the retained URL:\n%s", joined)
 	}
+}
+
+func testDarwinSettings(runner commandRunner) *Settings {
+	return &Settings{platform: &darwinSettings{runner: runner}}
 }

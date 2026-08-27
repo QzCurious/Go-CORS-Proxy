@@ -15,9 +15,12 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
 		t.Fatal(err)
 	}
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
-		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
-	}}}
+	settings := &lifecycleTestSystemSettings{
+		services: []managedpac.Service{{
+			Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
+		}},
+		cleanupResult: managedpac.NewCleanupResult([]managedpac.ObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}}),
+	}
 
 	result, err := stop(context.Background(), settings)
 	if err != nil {
@@ -25,6 +28,9 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 	}
 	if result.Kind != StopResultNotRunning {
 		t.Fatalf("stop kind = %s, want %s", result.Kind, StopResultNotRunning)
+	}
+	if len(result.ManagedPACObservationIssues) != 1 || result.ManagedPACObservationIssues[0].ServiceName != "VPN" {
+		t.Fatalf("observation issues = %#v", result.ManagedPACObservationIssues)
 	}
 	if coord.Exists() {
 		t.Fatal("stale Gateway State Cache was not removed")

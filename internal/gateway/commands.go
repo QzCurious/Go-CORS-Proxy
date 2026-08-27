@@ -31,11 +31,11 @@ func stop(ctx context.Context, pac managedPACModule) (StopResult, error) {
 		return StopResult{}, err
 	}
 	if target.kind != targetActive {
-		failures, err := cleanRuntime(ctx, pac)
+		issues, failures, err := cleanRuntime(ctx, pac)
 		if err != nil {
 			return StopResult{}, err
 		}
-		result := StopResult{Kind: StopResultNotRunning}
+		result := StopResult{Kind: StopResultNotRunning, ManagedPACObservationIssues: issues}
 		if len(failures) > 0 {
 			result.Kind = StopResultNotRunningCleanupFailed
 			result.CleanupFailures = failures

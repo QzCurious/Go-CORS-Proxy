@@ -20,72 +20,75 @@ func (f *fakeWindowsRunner) run(_ context.Context, name string, args ...string) 
 }
 
 func TestWindowsListReturnsCurrentUserSetting(t *testing.T) {
-	runner := &fakeWindowsRunner{out: []byte("{\"ServiceName\":\"Windows Current User\",\"URL\":\"http://127.0.0.1/seamless-cors.pac\",\"Enabled\":true}")}
-	settings := &Settings{runner: runner}
+	runner := &fakeWindowsRunner{}
+	settings := testWindowsSettings(runner, nil)
 
 	got, err := settings.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].URL != "http://127.0.0.1/seamless-cors.pac" || !got[0].Enabled {
-		t.Fatalf("settings = %#v", got)
+	if len(got) != 1 || got[0] != windowsPACServiceName {
+		t.Fatalf("services = %#v", got)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("list invoked PAC lookup: %#v", runner.calls)
 	}
 }
 
-func TestWindowsSetURLRequiresUnchangedObservation(t *testing.T) {
-	runner := &fakeWindowsRunner{out: []byte("{\"ServiceName\":\"Windows Current User\",\"URL\":\"http://corp.example/proxy.pac\",\"Enabled\":true}")}
-	settings := &Settings{runner: runner, notify: func() error { return nil }}
+func TestWindowsLookupReturnsCurrentUserSetting(t *testing.T) {
+	runner := &fakeWindowsRunner{out: []byte("{\"URL\":\"http://corp.example/proxy.pac\",\"Enabled\":true}")}
+	settings := testWindowsSettings(runner, func() error { return nil })
 
-	result, err := settings.SetURL(context.Background(), Setting{ServiceName: windowsPACServiceName}, "http://127.0.0.1/seamless-cors.pac")
+	setting, err := settings.Lookup(context.Background(), windowsPACServiceName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Applied || result.Current == nil || result.Current.URL != "http://corp.example/proxy.pac" {
-		t.Fatalf("result = %#v", result)
+	if setting.URL != "http://corp.example/proxy.pac" || !setting.Enabled {
+		t.Fatalf("setting = %#v", setting)
 	}
 	if len(runner.calls) != 1 {
-		t.Fatalf("calls = %#v, want inspection only", runner.calls)
+		t.Fatalf("calls = %#v, want one lookup", runner.calls)
 	}
 }
 
-func TestWindowsSetURLAppliesAndNotifiesAfterMatchingObservation(t *testing.T) {
-	current := Setting{ServiceName: windowsPACServiceName}
-	runner := &fakeWindowsRunner{out: []byte("{\"ServiceName\":\"Windows Current User\",\"URL\":\"\",\"Enabled\":false}")}
+func TestWindowsSetURLMutatesAndNotifies(t *testing.T) {
+	runner := &fakeWindowsRunner{}
 	notified := false
-	settings := &Settings{runner: runner, notify: func() error {
+	settings := testWindowsSettings(runner, func() error {
 		notified = true
 		return nil
-	}}
+	})
 
-	result, err := settings.SetURL(context.Background(), current, "http://127.0.0.1/seamless-cors.pac")
-	if err != nil {
+	if err := settings.SetURL(context.Background(), windowsPACServiceName, "http://127.0.0.1/seamless-cors.pac"); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Applied || !notified {
-		t.Fatalf("result = %#v, notified = %t", result, notified)
+	if !notified {
+		t.Fatal("PAC mutation was not notified")
 	}
-	if len(runner.calls) != 2 || !strings.Contains(runner.calls[1], "New-ItemProperty") {
+	if len(runner.calls) != 1 || !strings.Contains(runner.calls[0], "New-ItemProperty") {
 		t.Fatalf("calls = %#v", runner.calls)
 	}
 }
 
-func TestWindowsDisableRequiresUnchangedObservation(t *testing.T) {
-	current := Setting{ServiceName: windowsPACServiceName, URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}
-	runner := &fakeWindowsRunner{out: []byte("{\"ServiceName\":\"Windows Current User\",\"URL\":\"http://127.0.0.1/seamless-cors.pac\",\"Enabled\":true}")}
+func TestWindowsDisableMutatesAndNotifies(t *testing.T) {
+	runner := &fakeWindowsRunner{}
 	notified := false
-	settings := &Settings{runner: runner, notify: func() error {
+	settings := testWindowsSettings(runner, func() error {
 		notified = true
 		return nil
-	}}
+	})
 
-	result, err := settings.Disable(context.Background(), current)
-	if err != nil {
+	if err := settings.Disable(context.Background(), windowsPACServiceName); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Applied || !notified {
-		t.Fatalf("result = %#v, notified = %t", result, notified)
+	if !notified {
+		t.Fatal("PAC mutation was not notified")
 	}
-	if len(runner.calls) != 2 || !strings.Contains(runner.calls[1], "Remove-ItemProperty") {
+	if len(runner.calls) != 1 || !strings.Contains(runner.calls[0], "Remove-ItemProperty") {
 		t.Fatalf("calls = %#v", runner.calls)
 	}
+}
+
+func testWindowsSettings(runner commandRunner, notify func() error) *Settings {
+	return &Settings{platform: &windowsSettings{runner: runner, notify: notify}}
 }

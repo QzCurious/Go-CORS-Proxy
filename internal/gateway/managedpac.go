@@ -14,8 +14,8 @@ type managedPACModule interface {
 	InstallProjection(context.Context, []string, string, string) (managedpac.InstallResult, error)
 	PublishProjection(string)
 	ReconciliationResults() <-chan managedpac.ReconciliationResult
-	CleanupActiveState(context.Context) error
-	Uninstall(context.Context) error
+	CleanupActiveState(context.Context) (managedpac.CleanupResult, error)
+	Uninstall(context.Context) (managedpac.CleanupResult, error)
 }
 
 func openSystemManagedPAC() managedPACModule {
