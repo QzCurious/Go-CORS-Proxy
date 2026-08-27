@@ -1,0 +1,5 @@
+# HTTP Origin HTTPS Facade forwarding
+
+During active Trusted HTTPS Interception, CORS Proxy forwards an intercepted HTTPS request matching a Gateway-filtered HTTP Origin Selector to the corresponding HTTP upstream by changing only the outbound scheme. The selector retains its existing HTTP PAC Route but creates neither HTTPS Intent nor an additional HTTPS PAC Route. This deliberately refines ADR-0005: CA and direct-versus-MITM transitions still replace whole proxy generations, while each adopted Effective Upstream List atomically publishes immutable HTTP forwarding routes that take effect at the next decrypted request boundary, preserving the certificate cache and existing connections.
+
+Gateway owns filtering current HTTP Origin Selectors and publishing every adopted transition. CORS Proxy owns compiling, matching, and atomically replacing its route snapshot; Host Selectors and HTTPS Origin Selectors have no forwarding semantics, application request identity and response content are not rewritten, WebSocket upgrades follow the same scheme translation, and upstream failures remain connection-local.

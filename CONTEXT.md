@@ -25,11 +25,11 @@ A user-facing interaction surface through which a Gateway Control Command is iss
 _Avoid_: Inbound Adapter, Gateway Module interface, transport protocol
 
 **Gateway Feature Orchestration**:
-A rule that only the Gateway Module orders and combines file-observation facts, Upstream List Projections, HTTPS Pipeline work, PAC Projections, UserCA facts, Managed PAC mutations, and Gateway Runtime state; feature modules never initiate another feature's lifecycle. HTTPS Intent admits or removes the whole HTTPS Pipeline, but the Upstream List never becomes CORS Proxy request-admission or per-host interception policy and never initiates UserCA mutation.
+A rule that only the Gateway Module orders and combines file-observation facts, Upstream List Projections, HTTPS Pipeline work, PAC Projections, UserCA facts, Managed PAC mutations, and Gateway Runtime state; feature modules never initiate another feature's lifecycle. HTTPS Intent admits or removes the whole HTTPS Pipeline, while Gateway separately supplies current HTTP Origin Selectors for HTTPS Facade forwarding without making the Upstream List CORS Proxy request-admission or per-host interception policy or allowing it to initiate UserCA mutation.
 _Avoid_: feature-owned lifecycle orchestration, per-request Upstream List gate, duplicated selector translation, ordering-means-waiting
 
 **Independent Feature Serialization**:
-A concurrency rule where Gateway serializes UserCA lifecycle work and conditionally coordinates one active HTTPS Pipeline, while other feature modules serialize only their own mutations. Gateway atomically publishes immutable MITM or direct CORS Proxy generations during intent, UserCA, expiry, and uninstall transitions without holding Managed PAC serialization, and PAC publication remains independent.
+A concurrency rule where Gateway serializes UserCA lifecycle work and conditionally coordinates one active HTTPS Pipeline, while other feature modules serialize only their own mutations. Gateway atomically publishes CA-bound MITM or direct CORS Proxy generations during intent, UserCA, expiry, and uninstall transitions and independently publishes current HTTPS Facade forwarding without holding Managed PAC serialization; PAC publication remains independent.
 _Avoid_: global lifecycle lock, PAC-blocked UserCA mutation, list-coupled UserCA adoption
 
 **Surface-Neutral Command Result**:
@@ -65,7 +65,7 @@ The process-bootstrap role that establishes and keeps a Gateway Owner available 
 _Avoid_: CLI-owned Start semantics, implicit serve command, HTTP process bootstrap, Gateway Runtime
 
 **Gateway Runtime**:
-The live traffic-serving engine that owns the proxy listener and server, Gateway-owned outbound proxy transport, active immutable CORS Proxy generation, PAC listener and server, independent continuous observations and projections for each Upstream List, their current Effective Upstream List, source-specific File Sync and Projection Issues, optional HTTPS Pipeline Detail, current PAC Projection, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. It begins only after initial observation has established both source states; feature degradation never ends it, while explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
+The live traffic-serving engine that owns the proxy listener and server, Gateway-owned outbound proxy transport, active CORS Proxy generation and HTTPS Facade forwarding, PAC listener and server, independent continuous observations and projections for each Upstream List, their current Effective Upstream List, source-specific File Sync and Projection Issues, optional HTTPS Pipeline Detail, current PAC Projection, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. It begins only after initial observation has established both source states; feature degradation never ends it, while explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
 _Avoid_: initializing runtime, retained observation result, retained raw contents, lifecycle facade, command router, OS proxy manager, cleanup owner
 
 **Router-Only Serve**:
@@ -205,7 +205,7 @@ The immutable Installed UserCA Pair certificate and matching private signer that
 _Avoid_: HTTPS Certificate Provider, HTTPS Provider Source, list-bounded signer, selector certificate set, Gateway leaf generator
 
 **MITM Proxy Generation**:
-An immutable goproxy handler bound to one UserCA Signing Material instance. Gateway atomically replaces the handler behind its stable Proxy Listener; admitted connections may retain the previous proxy generation, while PAC changes only when HTTPS routes change.
+A goproxy handler bound to one UserCA Signing Material instance whose TLS identity and interception behavior remain fixed for its lifetime while it consults current HTTPS Facade forwarding at each decrypted request boundary. Gateway atomically replaces the handler behind its stable Proxy Listener for UserCA and HTTPS Readiness transitions; admitted connections may retain the previous proxy generation, while PAC changes only when HTTPS routes change.
 _Avoid_: mutable in-place CA swap, proxy-listener rotation, CA-rotation PAC rewrite
 
 **CA Material Integrity**:
@@ -317,7 +317,7 @@ A host-local general proxy endpoint that accepts traffic independently of PAC Ro
 _Avoid_: Upstream-gated proxy, PAC-only proxy, per-host interception gate, LAN-exposed proxy, gatewayListen
 
 **CORS Proxy**:
-The traffic-behavior module that constructs immutable proxy handlers owning CORS repair, Local Preflight Answer, Response Repair, and Trusted HTTPS Interception behavior for traffic reaching the Proxy Listener. Gateway Runtime owns proxy generation publication and lifecycle.
+The traffic-behavior module that constructs proxy handlers owning CORS repair, Local Preflight Answer, Response Repair, Trusted HTTPS Interception, and HTTPS Facade forwarding for traffic reaching the Proxy Listener. Gateway Runtime owns proxy generation lifecycle and supplies filtered HTTP Origin Selectors from each adopted Effective Upstream List, while CORS Proxy owns their request-boundary publication and matching.
 _Avoid_: active-generation owner, lifecycle manager, Upstream List admission module, PAC Routing module, generic proxy
 
 **CORS Repair Scope**:
@@ -605,7 +605,7 @@ An automatically selected listener address shown by status for troubleshooting, 
 _Avoid_: setup address, configured listener, manual proxy instruction
 
 **Upstream List**:
-One user-managed newline-delimited source decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing. An Upstream List never controls direct proxy admission or certificate scope; except for consented Global Upstream List Creation, seamless-cors only observes these ordinary-file sources and never repairs, rewrites, or recreates them.
+One user-managed newline-delimited source decoded by the Upstream List module into Host Selectors, Origin Selectors, and Upstream List Warnings for PAC Routing and Gateway-filtered HTTPS Facade forwarding. An Upstream List never controls direct proxy admission, certificate scope, or whether Trusted HTTPS Interception is active; except for consented Global Upstream List Creation, seamless-cors only observes these ordinary-file sources and never repairs, rewrites, or recreates them.
 _Avoid_: Domain List, Target List, symlinked list, automatic file repair, runtime recreation, network-filesystem observation guarantee, proxy admission list, proxy rules
 
 **Global Upstream List**:
@@ -651,6 +651,10 @@ _Avoid_: Host Route, Origin Route, Domain Route, PAC-owned selector
 **Origin Selector**:
 An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname without wildcard syntax, and normalized effective port from 1 through 65535, matched exactly. A source that omits its port uses the scheme's default port, so omitted and explicit-default spellings form the same Origin Selector; IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
 _Avoid_: Full Origin, URL selector, scheme-qualified domain, wildcard-bearing origin
+
+**HTTPS Facade**:
+A CORS Proxy forwarding behavior, available only during active Trusted HTTPS Interception, where an intercepted HTTPS request matching an HTTP Origin Selector's normalized hostname and observable port is sent to that selector's HTTP upstream by changing only its outbound scheme. It does not create HTTPS Intent or add an HTTPS PAC Route, leaves the selector's existing HTTP PAC Route and all Host Selector and HTTPS Origin Selector semantics intact, and adopts current selector changes at each decrypted request boundary without rewriting request identity or response content.
+_Avoid_: HTTP selector HTTPS Intent, implicit HTTPS selector, HTTPS upstream, PAC route, TLS passthrough, scheme alias
 
 **Upstream List Routing Policy**:
 A runtime interpretation owned by the PAC Routing module that decides whether normalized Upstream List Entries send a browser request to the Proxy Listener without revalidating them. Gateway Runtime supplies entries from the current effective Upstream List Projection rather than a source representation or diagnostic state.
@@ -772,7 +776,7 @@ QA engineer: "No, Selective Managed Proxy uses PAC Routing so only Upstream List
 
 Developer: "Can another host-local client configure the Proxy Listener directly?"
 
-QA engineer: "Yes. CORS Proxy handles every request reaching the Proxy Listener. Without an active ready HTTPS Pipeline it direct-tunnels CONNECT; with one, it intercepts every CONNECT rather than applying the Upstream List per request."
+QA engineer: "Yes. CORS Proxy handles every request reaching the Proxy Listener. Without an active ready HTTPS Pipeline it direct-tunnels CONNECT; with one, it intercepts every CONNECT rather than using the Upstream List for admission or interception scope. Current HTTP Origin Selectors affect only HTTPS Facade forwarding after interception."
 
 Developer: "When will HTTPS domains route through the gateway?"
 
