@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/httpsfacade"
 	"github.com/QzCurious/seamless-cors/internal/lib/pacsettings"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
@@ -353,10 +354,10 @@ func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
 	second := mustDesiredList(t, "other.example.test\n")
 	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projectPAC(first)); err != nil {
 		t.Fatal(err)
 	}
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
+	module.PublishProjection(projectPAC(second))
 	waitForWrite(t, settings, "v=2")
 	if got := publicationGeneration(module); got != 2 {
 		t.Fatalf("publication generation = %d, want 2", got)
@@ -412,14 +413,14 @@ func TestPartialProjectionPublicationFailureIsRetried(t *testing.T) {
 		{ServiceName: "Wi-Fi"},
 	}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Ethernet", "Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Ethernet", "Wi-Fi"}, "127.0.0.1:8081", projectPAC(first)); err != nil {
 		t.Fatal(err)
 	}
 
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Ethernet": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
+	module.PublishProjection(projectPAC(second))
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
@@ -434,19 +435,19 @@ func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *t
 	third := mustDesiredList(t, "third.example.test\n")
 	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080")); err != nil {
+	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projectPAC(first)); err != nil {
 		t.Fatal(err)
 	}
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
+	module.PublishProjection(projectPAC(second))
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
 	settings.applyErrors = nil
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(third, false, "127.0.0.1:8080"))
+	module.PublishProjection(projectPAC(third))
 	waitForGeneration(t, module, 3)
 	waitForWrite(t, settings, "v=3")
 	settings.mu.Lock()
@@ -465,7 +466,7 @@ func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testin
 	second := mustDesiredList(t, "second.example.test\n")
 	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	install, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", pacrouting.Project(first, false, "127.0.0.1:8080"))
+	install, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projectPAC(first))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +475,7 @@ func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testin
 	settings.mu.Lock()
 	settings.states[0].URL = "http://corp.example/proxy.pac"
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
+	module.PublishProjection(projectPAC(second))
 	drift := receiveReconciliation(t, module.ReconciliationResults())
 	if warnings := drift.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
 		t.Fatalf("drift warnings = %#v", warnings)
@@ -487,7 +488,7 @@ func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testin
 	settings.states[0].URL = initialURL
 	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(pacrouting.Project(second, false, "127.0.0.1:8080"))
+	module.PublishProjection(projectPAC(second))
 	failed := receiveReconciliation(t, module.ReconciliationResults())
 	if warnings := failed.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningUpdateFailed {
 		t.Fatalf("failure warnings = %#v", warnings)
@@ -524,6 +525,15 @@ func mustDesiredList(t *testing.T, contents string) upstreamlist.Projection {
 		t.Fatal(err)
 	}
 	return list
+}
+
+func projectPAC(upstreams upstreamlist.Projection) string {
+	return pacrouting.Project(
+		upstreams,
+		httpsfacade.Project(upstreams.OriginSelectors),
+		false,
+		"127.0.0.1:8080",
+	)
 }
 
 func waitForWrite(t *testing.T, settings *fakeSettings, fragment string) {

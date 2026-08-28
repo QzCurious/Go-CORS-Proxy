@@ -9,10 +9,11 @@ import (
 	"os"
 	"sync"
 
-	"github.com/QzCurious/seamless-cors/internal/corsproxy"
+	"github.com/QzCurious/seamless-cors/internal/httpsfacade"
 	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
+	"github.com/QzCurious/seamless-cors/internal/proxy"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
@@ -25,7 +26,8 @@ type trafficRuntime struct {
 	httpsGeneration        uint64
 	proxyHandler           *liveProxyHandler
 	proxyTransport         *http.Transport
-	proxyRoutes            *corsproxy.HTTPSFacadeRoutes
+	httpsFacadeProjection  httpsfacade.Projection
+	liveHTTPSFacade        *httpsfacade.Live
 	proxy                  *http.Server
 	pacContent             string
 	pacHandler             *livePACHandler
@@ -140,9 +142,10 @@ func newRuntimeFromSources(inputs []runtimeUpstreamListInput, proxyTransport *ht
 		projections = append(projections, source.projection)
 	}
 	initialList := upstreamlist.Merge(projections...)
-	proxyRoutes := corsproxy.NewHTTPSFacadeRoutes(httpOriginSelectors(initialList))
-	directProxy := corsproxy.New(proxyTransport, nil, proxyRoutes)
-	pacContent := pacrouting.Project(initialList, false, proxyListen)
+	facadeProjection := httpsfacade.Project(initialList.OriginSelectors)
+	liveFacade := httpsfacade.NewLive(facadeProjection)
+	directProxy := proxy.New(proxyTransport, nil, liveFacade)
+	pacContent := pacrouting.Project(initialList, facadeProjection, false, proxyListen)
 	pacHandler := newLivePACHandler(pacContent)
 	proxyHandler := &liveProxyHandler{current: directProxy}
 	var httpsPipeline *HTTPSPipelineDetail
@@ -160,7 +163,8 @@ func newRuntimeFromSources(inputs []runtimeUpstreamListInput, proxyTransport *ht
 		httpsGeneration:        httpsGeneration,
 		proxyHandler:           proxyHandler,
 		proxyTransport:         proxyTransport,
-		proxyRoutes:            proxyRoutes,
+		httpsFacadeProjection:  facadeProjection,
+		liveHTTPSFacade:        liveFacade,
 		pacContent:             pacContent,
 		pacHandler:             pacHandler,
 		proxy:                  &http.Server{Handler: proxyHandler},
@@ -270,7 +274,7 @@ func (r *trafficRuntime) DeactivateHTTPS(current userCAState, assessmentErr erro
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishPACProjection(projectionChanged)
-	r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil, r.proxyRoutes))
+	r.proxyHandler.Set(proxy.New(r.proxyTransport, nil, r.liveHTTPSFacade))
 	if pipelineChanged {
 		r.publishRuntimeChange(HTTPSPipelineChanged)
 	}
@@ -293,8 +297,8 @@ func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, current 
 	pipelineChanged := !sameHTTPSPipelineDetail(r.httpsPipeline, next)
 	if ready {
 		// Recovery publishes MITM behavior before exposing HTTPS PAC routes.
-		r.proxyHandler.Set(corsproxy.New(
-			r.proxyTransport, current.SigningMaterial(), r.proxyRoutes,
+		r.proxyHandler.Set(proxy.New(
+			r.proxyTransport, current.SigningMaterial(), r.liveHTTPSFacade,
 		))
 	}
 	r.httpsPipeline = next
@@ -309,7 +313,7 @@ func (r *trafficRuntime) settleHTTPSAssessmentLocked(generation uint64, current 
 		// Degradation withdraws served and asynchronously published HTTPS
 		// routes before new CONNECT requests switch to direct tunneling.
 		r.publishPACProjection(projectionChanged)
-		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil, r.proxyRoutes))
+		r.proxyHandler.Set(proxy.New(r.proxyTransport, nil, r.liveHTTPSFacade))
 	}
 	if pipelineChanged {
 		r.publishRuntimeChange(HTTPSPipelineChanged)
@@ -451,7 +455,7 @@ func (r *trafficRuntime) BeginHTTPSDeadlineAssessment(expectedGeneration uint64)
 	projectionChanged := r.updatePACProjectionLocked()
 	r.mu.Unlock()
 	r.publishPACProjection(projectionChanged)
-	r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil, r.proxyRoutes))
+	r.proxyHandler.Set(proxy.New(r.proxyTransport, nil, r.liveHTTPSFacade))
 	r.publishRuntimeChange(HTTPSPipelineChanged)
 	return generation, true
 }
@@ -565,7 +569,8 @@ func (r *trafficRuntime) applyUpstreamListSourceOutcomeContext(_ context.Context
 		projections = append(projections, r.upstreamLists[index].projection)
 	}
 	r.currentUpstreamList = upstreamlist.Merge(projections...)
-	r.proxyRoutes.Set(httpOriginSelectors(r.currentUpstreamList))
+	r.httpsFacadeProjection = httpsfacade.Project(r.currentUpstreamList.OriginSelectors)
+	r.liveHTTPSFacade.Set(r.httpsFacadeProjection)
 	statusChanged = true
 	hasHTTPSIntent := r.currentUpstreamList.HTTPSIntent()
 	switch {
@@ -588,7 +593,7 @@ func (r *trafficRuntime) applyUpstreamListSourceOutcomeContext(_ context.Context
 	// routes before new CONNECT requests switch to direct tunneling.
 	r.publishPACProjection(projectionChanged)
 	if deactivateProxy {
-		r.proxyHandler.Set(corsproxy.New(r.proxyTransport, nil, r.proxyRoutes))
+		r.proxyHandler.Set(proxy.New(r.proxyTransport, nil, r.liveHTTPSFacade))
 	}
 	if pipelineChanged {
 		r.publishRuntimeChange(HTTPSPipelineChanged)
@@ -627,16 +632,6 @@ func sameProjectionIssue(left, right *UpstreamListProjectionIssue) bool {
 	return *left == *right
 }
 
-func httpOriginSelectors(projection upstreamlist.Projection) []upstreamlist.OriginSelector {
-	selectors := make([]upstreamlist.OriginSelector, 0, len(projection.OriginSelectors))
-	for _, selector := range projection.OriginSelectors {
-		if selector.Scheme == "http" {
-			selectors = append(selectors, selector)
-		}
-	}
-	return selectors
-}
-
 func (r *trafficRuntime) publishPACProjection(changed bool) {
 	if !changed {
 		return
@@ -654,7 +649,12 @@ func (r *trafficRuntime) currentPACProjection() string {
 }
 
 func (r *trafficRuntime) updatePACProjectionLocked() bool {
-	next := pacrouting.Project(r.currentUpstreamList, r.httpsReadyLocked(), r.listeners[0].Addr().String())
+	next := pacrouting.Project(
+		r.currentUpstreamList,
+		r.httpsFacadeProjection,
+		r.httpsReadyLocked(),
+		r.listeners[0].Addr().String(),
+	)
 	r.pacContent = next
 	r.pacHandler.Set(next)
 	return true

@@ -84,19 +84,20 @@ Wildcard syntax is invalid in an Origin Selector and produces an Upstream List
 Warning requiring a Host Selector. Origin Selectors use the same conservative
 DNS/IP hostname validation as Host Selectors.
 
-An omitted port remains absent. An explicit port must be a decimal integer from
-1 through 65535 and is stored with leading zeroes removed. An empty, zero, or
-out-of-range explicit port produces an Upstream List Warning. Thus
-`https://example.test:443` and `https://example.test:0443` identify the same
-Origin Selector, while `https://example.test` remains a distinct selector with
-no explicit port.
+An omitted port becomes the scheme's effective default: 80 for HTTP and 443 for
+HTTPS. An explicit port must be a decimal integer from 1 through 65535 and is
+stored with leading zeroes removed. An empty, zero, or out-of-range explicit
+port produces an Upstream List Warning. Thus `https://example.test`,
+`https://example.test:443`, and `https://example.test:0443` identify the same
+Origin Selector.
 
-PAC Routing owns effective-port interpretation. An HTTP Origin Selector always
-produces PAC routes. An HTTPS Origin Selector produces PAC routes only while
-Trusted HTTPS Interception is enabled. Each active Origin Selector produces one
-exact-port PAC Route using its explicit port or the scheme's default when the
-port is omitted. Selectors with omitted and explicit default ports therefore
-derive equivalent PAC Routes, which PAC Routing deduplicates.
+An HTTP Origin Selector always produces its exact HTTP PAC Route. While Managed
+HTTPS Routing is active, HTTPS Facade also derives a browser-facing HTTPS route
+to that HTTP origin: HTTP port 80 maps to HTTPS port 443 and every other port is
+preserved. A native HTTPS Origin Selector for the derived browser origin takes
+precedence; among colliding HTTP origins, an unchanged-port facade takes
+precedence over the special port-80-to-port-443 translation. An HTTPS Origin
+Selector produces its native route only while Managed HTTPS Routing is active.
 
 ## Shared validation and normalization
 
@@ -114,6 +115,5 @@ entire source unusable instead of producing a line warning.
 
 Host Selectors and Origin Selectors are deduplicated independently by their
 normalized source-level values, preserving the first occurrence within each
-collection. Port presence is part of Origin Selector identity, so an omitted
-port and an explicit default port remain distinct selectors. A document may
-produce both valid selectors and warnings.
+collection. An omitted Origin Selector port and its scheme's explicit default
+port are equivalent. A document may produce both valid selectors and warnings.

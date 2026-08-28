@@ -78,6 +78,7 @@ line, to that Global Upstream List:
 ```text
 api.dev.example.com
 https://api.example.com:8443
+http://localhost:3000
 *.test.example.com
 ```
 
@@ -90,6 +91,14 @@ the gateway is stopped and started again.
 An explicit `https://` Origin Selector in either source expresses HTTPS Intent.
 A Host Selector does not express HTTPS Intent, but it serves both HTTP and HTTPS
 whenever HTTPS Readiness is ready.
+
+While HTTPS Readiness is ready, each `http://` Origin Selector also receives an
+HTTPS Facade that PAC routes through the gateway and Proxy forwards to the HTTP
+origin. HTTP port 80 uses the normal browser-facing HTTPS port 443; every other
+port is preserved, so `http://localhost:3000` is available to the browser as
+`https://localhost:3000`. An HTTP Origin Selector does not itself express HTTPS
+Intent, so the facade is active only when an explicit HTTPS Origin Selector has
+independently admitted the HTTPS Pipeline.
 
 To make HTTPS Readiness ready, run `seamless-cors install` and approve the
 operating-system prompt for the seamless-cors development CA. If the gateway is

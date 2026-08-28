@@ -1,4 +1,4 @@
-package corsproxy
+package proxy
 
 import (
 	"container/list"

@@ -18,6 +18,9 @@ const DefaultContents = `# One upstream host or origin per line.
 # http://localhost:3000        # Local HTTP origin
 # http://127.0.0.1:3000        # IPv4 HTTP origin
 # http://[::1]:3000            # IPv6 HTTP origin
+#
+# While trusted HTTPS routing is active, HTTP origins also receive an HTTPS
+# Facade: port 80 maps to HTTPS port 443 and every other port is preserved.
 `
 
 // HostSelector selects an HTTP or HTTPS hostname on any port. Hostname never

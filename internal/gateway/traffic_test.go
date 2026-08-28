@@ -10,30 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
-	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
-
-func TestGatewayFiltersHTTPOriginSelectorsForCORSProxy(t *testing.T) {
-	projection := upstreamlist.Projection{OriginSelectors: []upstreamlist.OriginSelector{
-		{Scheme: "https", Hostname: "secure.example.test"},
-		{Scheme: "http", Hostname: "plain.example.test"},
-		{Scheme: "http", Hostname: "local.example.test", Port: "3000"},
-	}}
-	want := []upstreamlist.OriginSelector{
-		{Scheme: "http", Hostname: "plain.example.test"},
-		{Scheme: "http", Hostname: "local.example.test", Port: "3000"},
-	}
-	if got := httpOriginSelectors(projection); !reflect.DeepEqual(got, want) {
-		t.Fatalf("HTTP Origin Selectors = %#v, want %#v", got, want)
-	}
-}
 
 func TestRuntimeClassifiesInitialFileSyncIssue(t *testing.T) {
 	observed := fileobservation.ReadError{Path: "/tmp/upstreams.txt", Cause: errors.New("source unavailable")}
@@ -274,11 +257,12 @@ func TestPACPublicationExcludesInactiveHTTPSRoutes(t *testing.T) {
 	go runtime.watchUpstreamList(ctx, 0, errs)
 	desired := runtime.PACProjections()
 
-	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttps://secure.example.test\n")
+	writeTrafficTestFile(t, upstreamPath, "api.example.test\nhttp://plain.example.test\nhttps://secure.example.test\n")
 	waitForTrafficConfig(t, runtime, errs, func(state runtimeState) bool { return state.HTTPSPipeline != nil })
 	select {
 	case state := <-desired:
-		if strings.Contains(state, "secure.example.test") {
+		if strings.Contains(state, "secure.example.test") ||
+			strings.Contains(state, `"scheme":"https","hostname":"plain.example.test"`) {
 			t.Fatalf("inactive HTTPS selector entered PAC input: %s", state)
 		}
 	case <-time.After(2 * time.Second):
@@ -318,7 +302,10 @@ func TestHTTPSIntentAdmitsAssessingPipelineAndRequestsAssessment(t *testing.T) {
 }
 
 func TestInstalledUserCASettlesActivePipelineAndPublishesHTTPSPACInput(t *testing.T) {
-	source, initial, upstreamPath := createTrafficConfig(t, "https://secure.example.test\n")
+	source, initial, upstreamPath := createTrafficConfig(
+		t,
+		"http://plain.example.test\nhttps://secure.example.test\n",
+	)
 	runtime, err := newRuntime(upstreamPath, source, initial)
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +319,11 @@ func TestInstalledUserCASettlesActivePipelineAndPublishesHTTPSPACInput(t *testin
 	}
 	select {
 	case desired := <-runtime.PACProjections():
-		if !strings.Contains(desired, "secure.example.test") {
+		if !strings.Contains(desired, "secure.example.test") ||
+			!strings.Contains(
+				desired,
+				`"scheme":"https","hostname":"plain.example.test","port":"443"`,
+			) {
 			t.Fatalf("PAC projection did not enable HTTPS route: %s", desired)
 		}
 	case <-time.After(time.Second):

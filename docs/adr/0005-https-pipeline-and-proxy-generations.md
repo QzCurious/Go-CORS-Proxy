@@ -1,0 +1,11 @@
+# HTTPS Pipeline and Proxy generations
+
+Only an effective HTTPS Origin Selector creates HTTPS Intent and admits an HTTPS Pipeline. Without intent, Gateway performs no UserCA assessment for runtime use, retains no signing material or expiry deadline, publishes no MITM generation, and includes no HTTPS PAC routes. When an intent-admitted pipeline is ready, HTTPS Origin Selectors and Host Selectors contribute their HTTPS routes and HTTP Origin Selectors may contribute HTTPS Facade Routes; those HTTP selectors do not themselves create HTTPS Intent.
+
+An admitted pipeline assesses coherent UserCA facts asynchronously and is either assessing or settled. UserCA guarantees that every usable assessment contains matching signing material, which Gateway uses to publish an immutable CA-backed Proxy generation before adding HTTPS PAC routes; an unmet capability or assessment failure keeps CONNECT direct and exposes exactly one source-specific current detail without making Start unfulfilled.
+
+When intent disappears or readiness is lost, Gateway first serves and enqueues the PAC Projection without HTTPS routes, then publishes a direct Proxy generation and discards retained signing material. Pipeline work is generation-scoped so results from cancelled, removed, or replaced assessments are ignored, and Gateway schedules expiry reassessment only for an active ready pipeline.
+
+Proxy constructs immutable direct and goproxy MITM handlers and directly adapts the single fixed CORS Module policy. Gateway owns the stable listener, server, outbound transport, handler generation ordering and atomic publication, and lifecycle; goproxy owns per-host leaf generation, connection-local signing and handshake failures do not change Gateway state, and handler generation replacement does not drain admitted or established connections. HTTPS Facade selector changes atomically replace its shared immutable projection at request boundaries without replacing the Proxy generation or certificate cache.
+
+CA Lifecycle Commands remain independent of HTTPS Intent. Install has a runtime consequence only when a pipeline exists, while uninstall removes HTTPS PAC routes and publishes direct behavior before deleting trust and material.

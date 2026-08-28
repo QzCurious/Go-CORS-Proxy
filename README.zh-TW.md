@@ -71,6 +71,7 @@ Global Upstream List：`seamless-cors/upstreams.txt`。例如 Linux 預設位置
 ```text
 api.dev.example.com
 https://api.example.com:8443
+http://localhost:3000
 *.test.example.com
 ```
 
@@ -80,6 +81,13 @@ Global 與 Directory Upstream List 會各自被監看與解析，再以不具優
 
 任一來源中明確的 `https://` Origin Selector 都代表 HTTPS Intent；Host Selector
 本身不代表 HTTPS Intent，但 HTTPS Readiness 為 ready 時會同時處理 HTTP 與 HTTPS。
+
+HTTPS Readiness 為 ready 時，每個 `http://` Origin Selector 也會取得 HTTPS
+Facade；PAC 會把瀏覽器請求導向 gateway，再由 Proxy 轉送到 HTTP origin。HTTP
+port 80 會使用瀏覽器端標準的 HTTPS port 443，其餘 port 則保持不變，因此
+`http://localhost:3000` 在瀏覽器端可透過 `https://localhost:3000` 使用。HTTP
+Origin Selector 本身不代表 HTTPS Intent，所以必須另有明確的 HTTPS Origin
+Selector 啟動 HTTPS Pipeline，Facade 才會生效。
 
 要讓 HTTPS Readiness 成為 ready，請執行 `seamless-cors install`，並在作業系統提示中允許安裝 seamless-cors 的開發用 CA 憑證。若 gateway 已在執行，HTTPS 攔截會立即啟用。未安裝 UserCA 時，gateway 仍會繼續處理 HTTP；若 upstream list 表達 HTTPS Intent，則會顯示警告。
 

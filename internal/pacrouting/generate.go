@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 
+	"github.com/QzCurious/seamless-cors/internal/httpsfacade"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
@@ -18,9 +19,19 @@ type pacRoute struct {
 	Wildcard bool    `json:"wildcard"`
 }
 
-// Project renders PAC content from complete Gateway-owned routing input.
-func Project(upstreams upstreamlist.Projection, trustedHTTPS bool, proxyListen string) string {
-	routes := make([]pacRoute, 0, len(upstreams.HostSelectors)*2+len(upstreams.OriginSelectors))
+// Project renders PAC content from complete Gateway-owned routing input. The
+// supplied HTTPS Facade Projection must have been formed from upstreams.
+func Project(
+	upstreams upstreamlist.Projection,
+	facades httpsfacade.Projection,
+	trustedHTTPS bool,
+	proxyListen string,
+) string {
+	routes := make(
+		[]pacRoute,
+		0,
+		len(upstreams.HostSelectors)*2+len(upstreams.OriginSelectors)+len(facades.Routes()),
+	)
 
 	for _, selector := range upstreams.HostSelectors {
 		routes = append(routes, pacRoute{
@@ -47,6 +58,16 @@ func Project(upstreams upstreamlist.Projection, trustedHTTPS bool, proxyListen s
 			Hostname: selector.Hostname,
 			Port:     &port,
 		})
+	}
+	if trustedHTTPS {
+		for _, facade := range facades.Routes() {
+			port := strconv.FormatUint(uint64(facade.HTTPSPort), 10)
+			routes = append(routes, pacRoute{
+				Scheme:   "https",
+				Hostname: facade.Hostname,
+				Port:     &port,
+			})
+		}
 	}
 
 	config := struct {
