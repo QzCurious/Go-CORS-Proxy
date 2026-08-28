@@ -44,14 +44,13 @@ func TestProjectKeepsExactAndWildcardHostSelectorsDistinct(t *testing.T) {
 	}
 }
 
-func TestProjectKeepsOmittedAndExplicitDefaultPortsDistinct(t *testing.T) {
+func TestProjectDeduplicatesOmittedAndExplicitDefaultPorts(t *testing.T) {
 	projection, err := upstreamlist.Project([]byte("https://example.test\nhttps://example.test:443\nhttps://example.test:0443\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []upstreamlist.OriginSelector{
-		{Scheme: "https", Hostname: "example.test"},
-		{Scheme: "https", Hostname: "example.test", Port: "443"},
+		{Scheme: "https", Hostname: "example.test", Port: 443},
 	}
 	if !reflect.DeepEqual(projection.OriginSelectors, want) {
 		t.Fatalf("Origin Selectors = %#v, want %#v", projection.OriginSelectors, want)
@@ -84,7 +83,7 @@ func TestMergeDeduplicatesInSourceOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	directory, err := upstreamlist.Project([]byte("shared.example.test\ndirectory.example.test\nhttps://shared.example.test\nhttps://directory.example.test\n"))
+	directory, err := upstreamlist.Project([]byte("shared.example.test\ndirectory.example.test\nhttps://shared.example.test:443\nhttps://directory.example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,8 +95,8 @@ func TestMergeDeduplicatesInSourceOrder(t *testing.T) {
 		{Hostname: "directory.example.test"},
 	}
 	wantOrigins := []upstreamlist.OriginSelector{
-		{Scheme: "https", Hostname: "shared.example.test"},
-		{Scheme: "https", Hostname: "directory.example.test"},
+		{Scheme: "https", Hostname: "shared.example.test", Port: 443},
+		{Scheme: "https", Hostname: "directory.example.test", Port: 443},
 	}
 	if !reflect.DeepEqual(merged.HostSelectors, wantHosts) {
 		t.Fatalf("Host Selectors = %#v, want %#v", merged.HostSelectors, wantHosts)

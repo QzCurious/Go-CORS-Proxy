@@ -145,19 +145,21 @@ func parseOriginSelector(selectorText string) (OriginSelector, error) {
 		return OriginSelector{}, errors.New("origin selector hostname is invalid")
 	}
 
-	port := u.Port()
-	if port != "" {
-		portNumber, err := strconv.ParseUint(port, 10, 16)
+	portNumber := uint64(80)
+	if scheme == "https" {
+		portNumber = 443
+	}
+	if port := u.Port(); port != "" {
+		portNumber, err = strconv.ParseUint(port, 10, 16)
 		if err != nil || portNumber == 0 {
 			return OriginSelector{}, errors.New("origin selector port must be between 1 and 65535")
 		}
-		port = strconv.FormatUint(portNumber, 10)
 	}
 
 	return OriginSelector{
 		Scheme:   scheme,
 		Hostname: strings.ToLower(hostname),
-		Port:     port,
+		Port:     uint16(portNumber),
 	}, nil
 }
 

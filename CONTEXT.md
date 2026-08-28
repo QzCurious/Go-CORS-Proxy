@@ -649,7 +649,7 @@ A scheme-qualified effective match containing an exact or Single-Label Wildcard 
 _Avoid_: Host Route, Origin Route, Domain Route, PAC-owned selector
 
 **Origin Selector**:
-An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname without wildcard syntax, and optional normalized explicit port from 1 through 65535, matched exactly. Port presence is part of selector identity, so an omitted port and the scheme's explicit default port remain distinct Origin Selectors; IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
+An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hostname without wildcard syntax, and normalized effective port from 1 through 65535, matched exactly. A source that omits its port uses the scheme's default port, so omitted and explicit-default spellings form the same Origin Selector; IP literal spelling is not canonicalized, so a valid Origin Selector is not guaranteed to identify a browser-reachable origin.
 _Avoid_: Full Origin, URL selector, scheme-qualified domain, wildcard-bearing origin
 
 **Upstream List Routing Policy**:
@@ -661,7 +661,7 @@ An Upstream List behavior where each line is validated independently so valid Up
 _Avoid_: Line-Level Domain Validation, parser-reason diagnostic taxonomy, silent invalid entry, whole-list rejection, invalid line as active entry
 
 **Upstream List Deduplication**:
-An Upstream List module behavior applied both within each source projection and while merging source projections into the Effective Upstream List. Equivalent normalized entries are treated as one active entry, keeping the first occurrence in Global-then-Directory order and ignoring later duplicates without giving either source routing precedence. Port presence is part of Origin Selector identity; PAC Routing separately deduplicates equivalent derived PAC Routes.
+An Upstream List module behavior applied both within each source projection and while merging source projections into the Effective Upstream List. Equivalent normalized entries are treated as one active entry, keeping the first occurrence in Global-then-Directory order and ignoring later duplicates without giving either source routing precedence. An omitted Origin Selector port and its scheme's explicit default port are equivalent; PAC Routing separately deduplicates equivalent derived PAC Routes.
 _Avoid_: Gateway-owned selector equality, duplicate source selectors, line-count domains, source override, PAC-owned source deduplication
 
 **Exact Host Match**:

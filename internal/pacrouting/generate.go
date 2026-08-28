@@ -3,6 +3,7 @@ package pacrouting
 import (
 	_ "embed"
 	"encoding/json"
+	"strconv"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
@@ -40,14 +41,7 @@ func Project(upstreams upstreamlist.Projection, trustedHTTPS bool, proxyListen s
 		if selector.Scheme == "https" && !trustedHTTPS {
 			continue
 		}
-		port := selector.Port
-		if port == "" {
-			if selector.Scheme == "https" {
-				port = "443"
-			} else {
-				port = "80"
-			}
-		}
+		port := strconv.FormatUint(uint64(selector.Port), 10)
 		routes = append(routes, pacRoute{
 			Scheme:   selector.Scheme,
 			Hostname: selector.Hostname,

@@ -10,7 +10,7 @@ import (
 func TestProjectInjectsCanonicalRouteViewBag(t *testing.T) {
 	projection := Project(upstreamlist.Projection{
 		HostSelectors:   []upstreamlist.HostSelector{{Hostname: "qa.example.test", Wildcard: true}},
-		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "api.example.test"}},
+		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "api.example.test", Port: 443}},
 	}, true, "127.0.0.1:8080")
 
 	want := `var VIEW_BAG = {` +
@@ -30,7 +30,7 @@ func TestProjectInjectsCanonicalRouteViewBag(t *testing.T) {
 func TestProjectionAddsHTTPSRoutesOnlyWhenTrusted(t *testing.T) {
 	upstreams := upstreamlist.Projection{
 		HostSelectors:   []upstreamlist.HostSelector{{Hostname: "api.example.test"}},
-		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "secure.example.test"}},
+		OriginSelectors: []upstreamlist.OriginSelector{{Scheme: "https", Hostname: "secure.example.test", Port: 443}},
 	}
 	withoutTrust := Project(upstreams, false, "127.0.0.1:8080")
 	if strings.Contains(withoutTrust, `"scheme":"https"`) || strings.Contains(withoutTrust, "secure.example.test") {

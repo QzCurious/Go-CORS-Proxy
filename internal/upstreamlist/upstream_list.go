@@ -28,12 +28,13 @@ type HostSelector struct {
 	Wildcard bool
 }
 
-// OriginSelector selects one HTTP(S) origin. An empty Port means the source
-// omitted the port; a non-empty Port is a normalized explicit port.
+// OriginSelector selects one HTTP(S) origin. Port is the normalized effective
+// port from 1 through 65535, including the scheme default when source text
+// omits it.
 type OriginSelector struct {
 	Scheme   string
 	Hostname string
-	Port     string
+	Port     uint16
 }
 
 // Warning describes one ignored invalid Upstream List line.

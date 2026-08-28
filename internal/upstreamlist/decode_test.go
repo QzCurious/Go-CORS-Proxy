@@ -22,8 +22,8 @@ http://[::1]:3000
 			{Hostname: "qa.example.test", Wildcard: true},
 		},
 		OriginSelectors: []OriginSelector{
-			{Scheme: "https", Hostname: "example.test", Port: "443"},
-			{Scheme: "http", Hostname: "::1", Port: "3000"},
+			{Scheme: "https", Hostname: "example.test", Port: 443},
+			{Scheme: "http", Hostname: "::1", Port: 3000},
 		},
 	}
 	if !reflect.DeepEqual(decoded, want) {
@@ -34,14 +34,14 @@ http://[::1]:3000
 func TestHTTPSIntentIgnoresHostAndHTTPSelectors(t *testing.T) {
 	list := Projection{
 		HostSelectors:   []HostSelector{{Hostname: "api.example.test"}},
-		OriginSelectors: []OriginSelector{{Scheme: "http", Hostname: "plain.example.test"}},
+		OriginSelectors: []OriginSelector{{Scheme: "http", Hostname: "plain.example.test", Port: 80}},
 	}
 	if list.HTTPSIntent() {
 		t.Fatal("HTTP-only entries should not express HTTPS intent")
 	}
 }
 
-func TestDecodeNormalizesExplicitPortsAndPreservesOmission(t *testing.T) {
+func TestDecodeNormalizesExplicitAndDefaultPorts(t *testing.T) {
 	decoded, err := decode([]byte(`
 HTTPS://user:password@EXAMPLE.TEST:0443/
 https://example.test
@@ -54,12 +54,12 @@ https://example.test:65535
 		t.Fatal(err)
 	}
 	want := []OriginSelector{
-		{Scheme: "https", Hostname: "example.test", Port: "443"},
-		{Scheme: "https", Hostname: "example.test"},
-		{Scheme: "http", Hostname: "example.test"},
-		{Scheme: "http", Hostname: "example.test", Port: "80"},
-		{Scheme: "http", Hostname: "example.test", Port: "1"},
-		{Scheme: "https", Hostname: "example.test", Port: "65535"},
+		{Scheme: "https", Hostname: "example.test", Port: 443},
+		{Scheme: "https", Hostname: "example.test", Port: 443},
+		{Scheme: "http", Hostname: "example.test", Port: 80},
+		{Scheme: "http", Hostname: "example.test", Port: 80},
+		{Scheme: "http", Hostname: "example.test", Port: 1},
+		{Scheme: "https", Hostname: "example.test", Port: 65535},
 	}
 	if !reflect.DeepEqual(decoded.OriginSelectors, want) {
 		t.Fatalf("Origin Selectors = %#v, want %#v", decoded.OriginSelectors, want)
