@@ -2,14 +2,7 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-`seamless-cors` automatically fixes CORS issues in local development and QA, so
-browsers can call APIs across origins without changes to frontend URLs or API
-server CORS settings. A managed Proxy Auto-Configuration (PAC) file routes only
-the upstreams you select through a local gateway, while unrelated traffic stays
-direct.
-
-HTTP works without certificate setup. Native HTTPS and the HTTPS Facade use a
-seamless-cors development CA that you install explicitly.
+Make CORS a development-environment concern, not an application concern. `seamless-cors` uses PAC to automatically route selected requests through a local CORS proxy, letting the frontend keep its API URLs and request logic while the API server needs no extra CORS configuration for test environments.
 
 > [!NOTE]
 > This project is under active development.
