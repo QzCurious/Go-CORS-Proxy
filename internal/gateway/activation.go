@@ -2,13 +2,10 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 )
-
-var errStartCAMutating = errors.New("UserCA is mutating during HTTPS pipeline admission")
 
 type startSequence struct {
 	lifecycle *lifecycle
@@ -50,13 +47,6 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 		return nil, fmt.Errorf("start runtime: %w", err)
 	}
 
-	managedPACDetail, assessmentResult, err := s.assessManagedPAC(ctx)
-	if err != nil || assessmentResult != nil {
-		if err != nil {
-			return postStartFailure(err)
-		}
-		return assessmentResult, nil
-	}
 	globalObservation := fileobservation.Open(globalUpstreamListPath)
 	directoryObservation := fileobservation.Open(directoryListPath)
 	closeUpstreamListObservations := true
@@ -68,6 +58,26 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	}()
 	initialGlobalOutcome := <-globalObservation.Outcomes()
 	initialDirectoryOutcome := <-directoryObservation.Outcomes()
+	if !s.lifecycle.caAdmissionMu.TryLock() {
+		return StartAlreadyMutating{}, nil
+	}
+	userCA, userCAAssessmentErr := s.lifecycle.userCA.Inspect(ctx)
+	s.lifecycle.caAdmissionMu.Unlock()
+	if ctx.Err() != nil {
+		return StartStopCancelled{}, nil
+	}
+	s.lifecycle.mu.Lock()
+	s.lifecycle.userCAState = userCA
+	s.lifecycle.userCAAssessmentErr = userCAAssessmentErr
+	s.lifecycle.mu.Unlock()
+
+	managedPACDetail, assessmentResult, err := s.assessManagedPAC(ctx)
+	if err != nil || assessmentResult != nil {
+		if err != nil {
+			return postStartFailure(err)
+		}
+		return assessmentResult, nil
+	}
 
 	engine, err := newRuntimeFromSources([]runtimeUpstreamListInput{
 		{
@@ -83,7 +93,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 			observation: directoryObservation,
 			initial:     initialDirectoryOutcome,
 		},
-	}, defaultProxyTransport())
+	}, defaultProxyTransport(), userCA, userCAAssessmentErr)
 	if err != nil {
 		return postStartFailure(err)
 	}
@@ -105,39 +115,19 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	}
 
 	publishRuntime := func() error {
-		state := engine.snapshot()
-		var assessment userCAState
-		var assessmentErr error
-		if state.HTTPSPipeline != nil {
-			// Only an intent-admitted pipeline inspects UserCA for runtime use.
-			// The CA admission gate prevents observing an in-progress mutation.
-			if !s.lifecycle.caAdmissionMu.TryLock() {
-				return errStartCAMutating
-			}
-			defer s.lifecycle.caAdmissionMu.Unlock()
-			assessment, assessmentErr = s.lifecycle.userCA.Inspect(ctx)
-			engine.SetInitialHTTPSAssessment(assessment, assessmentErr)
-		}
 		s.lifecycle.mu.Lock()
 		defer s.lifecycle.mu.Unlock()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if state.HTTPSPipeline != nil {
-			s.lifecycle.userCAState = assessment
-			s.lifecycle.userCAAssessmentErr = assessmentErr
-		}
 		s.lifecycle.runtime = active
-		if engine.interceptionActive() {
-			s.lifecycle.scheduleHTTPSDeadlineLocked(active, assessment)
+		if userCAAssessmentErr == nil && userCA.Usable {
+			s.lifecycle.scheduleUserCADeadlineLocked(active, userCA)
 		}
 		return nil
 	}
 	publishErr := publishRuntime()
 	if publishErr != nil {
-		if errors.Is(publishErr, errStartCAMutating) {
-			return StartAlreadyMutating{}, nil
-		}
 		if ctx.Err() != nil {
 			return StartStopCancelled{}, nil
 		}
@@ -149,7 +139,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 			s.lifecycle.runtime = nil
 		}
 		s.lifecycle.mu.Unlock()
-		s.lifecycle.cancelHTTPSDeadline(active)
+		s.lifecycle.cancelUserCADeadline(active)
 		cancel()
 	}
 
@@ -181,12 +171,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	default:
 	}
 
-	// Capture the complete desired PAC input at the installation boundary.
-	// Runtime changes may occur while feature-owned installation is in progress;
-	// the latest-value desired-state channel retains the newest snapshot for
-	// reconciliation once activation has installed its fixed service set.
-	pacInstallBaseline := engine.currentPACProjection()
-	pacInstall, err := s.lifecycle.managedPAC.InstallProjection(ctx, managedPACDetail.ServiceSet, engine.PACListen(), pacInstallBaseline)
+	pacInstall, err := s.lifecycle.managedPAC.Install(ctx, managedPACDetail.ServiceSet, engine.PACListen())
 	if err != nil {
 		withdraw()
 		warnings := managedPACWarningDetails(pacInstall.Warnings())
@@ -218,32 +203,33 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	s.lifecycle.mu.Unlock()
 	cleanupEngine = false
 
-	go s.lifecycle.watchRuntimeChanges(runCtx, active, engine.snapshot())
+	go s.lifecycle.watchRuntimeChanges(runCtx, active)
 
-	state := engine.snapshot()
-	var installedCA *InstalledCAStatusDetail
-	if state.HTTPSPipeline != nil {
-		s.lifecycle.mu.Lock()
-		status := installedCAStatus(
-			s.lifecycle.userCAState,
-			s.lifecycle.userCAAssessmentErr,
-			false,
-			s.lifecycle.userCACleanupIssue,
-		)
-		s.lifecycle.mu.Unlock()
-		installedCA = &status
+	routingReady, routingIssues, routingErr := s.lifecycle.managedPAC.RoutingReady(ctx, engine.PACListen())
+	observationIssues := managedPACObservationIssueDetails(routingIssues)
+	if routingErr != nil {
+		observationIssues = append(observationIssues, ManagedPACObservationIssue{Diagnostic: routingErr.Error()})
 	}
-	managedPACDetail.PublicationURL = pacInstall.State().PACURL()
-	managedPACDetail.Warnings = managedPACWarningDetails(pacInstall.Warnings())
-	managedPACDetail.ObservationIssues = append(
-		managedPACDetail.ObservationIssues,
-		managedPACObservationIssueDetails(pacInstall.ObservationIssues())...,
+	state := engine.snapshot()
+	s.lifecycle.mu.Lock()
+	active.managedPAC.routingReady = routingReady
+	active.managedPAC.observationIssues = observationIssues
+	installedCA := installedCAStatus(
+		s.lifecycle.userCAState,
+		s.lifecycle.userCAAssessmentErr,
+		false,
+		s.lifecycle.userCACleanupIssue,
 	)
+	userCAIssue := userCAAssessmentIssue(s.lifecycle.userCAAssessmentErr)
+	s.lifecycle.mu.Unlock()
+	managedPACDetail.Warnings = managedPACWarningDetails(pacInstall.Warnings())
+	managedPACDetail.ObservationIssues = observationIssues
 	return Started{Guidance: StartGuidance{
 		UpstreamLists: state.UpstreamLists,
 		ManagedPAC:    managedPACDetail,
-		HTTPSPipeline: state.HTTPSPipeline,
+		Traffic:       trafficStatus(state, routingReady),
 		InstalledCA:   installedCA,
+		UserCAIssue:   userCAIssue,
 	}}, nil
 }
 
@@ -307,7 +293,7 @@ func (s startSequence) assessManagedPAC(ctx context.Context) (ManagedPACStartDet
 	return detail, nil, nil
 }
 
-func (s startSequence) cleanupFailedPACInstall() *CleanupFailureDetail {
+func (s startSequence) cleanupFailedPACInstall() *CleanupFailure {
 	_, failure := uninstallManagedPAC(context.Background(), s.lifecycle.managedPAC)
 	return failure
 }

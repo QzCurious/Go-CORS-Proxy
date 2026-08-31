@@ -12,7 +12,6 @@ var errStartNotActivated = errors.New("gateway start did not activate runtime")
 type StartHooks struct {
 	ConfirmUpstreamListCreation func(context.Context, UpstreamListCreationConsent) (bool, error)
 	Started                     func(StartResult)
-	HTTPSPipelineChanged        func(*HTTPSPipelineDetail)
 }
 
 func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
@@ -82,7 +81,6 @@ func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks Sta
 			}
 			return fmt.Errorf("%w: %s", errStartNotActivated, start.Kind())
 		}
-		owner.lifecycle.SetHTTPSPipelineChanged(hooks.HTTPSPipelineChanged)
 		return nil
 	})
 	if errors.Is(err, errStartNotActivated) {
@@ -189,7 +187,7 @@ func executeStartLoop(
 	}
 }
 
-func cleanRuntime(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, []CleanupFailureDetail, error) {
+func cleanRuntime(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, []CleanupFailure, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, nil, err

@@ -20,21 +20,16 @@ type facadeContext struct {
 	route httpsfacade.Route
 }
 
-// New constructs one CA-bound proxy handler. Gateway owns handler generation
-// publication and lifecycle; liveFacade independently publishes current
-// forwarding to every generation that shares it.
+// New constructs one immutable traffic handler. Gateway publishes it together
+// with the matching PAC projection.
 func New(
 	transport *http.Transport,
 	certificate *tls.Certificate,
-	liveFacade *httpsfacade.Live,
+	facades httpsfacade.Projection,
 ) http.Handler {
 	if transport == nil {
 		panic("proxy: Transport is required")
 	}
-	if liveFacade == nil {
-		panic("proxy: live HTTPS Facade is required")
-	}
-
 	handler := goproxy.NewProxyHttpServer()
 	handler.Tr = transport
 
@@ -67,7 +62,7 @@ func New(
 		req *http.Request,
 		ctx *goproxy.ProxyCtx,
 	) (*http.Request, *http.Response) {
-		if route, ok := liveFacade.Forward(req); ok {
+		if route, ok := facades.Forward(req); ok {
 			ctx.UserData = facadeContext{route: route}
 		}
 		return req, nil

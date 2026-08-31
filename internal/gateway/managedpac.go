@@ -11,8 +11,9 @@ import (
 // serialization remain private to that feature.
 type managedPACModule interface {
 	Inspect(context.Context) (managedpac.Snapshot, error)
-	InstallProjection(context.Context, []string, string, string) (managedpac.InstallResult, error)
-	PublishProjection(string)
+	Install(context.Context, []string, string) (managedpac.InstallResult, error)
+	Deliver()
+	RoutingReady(context.Context, string) (bool, []managedpac.ObservationIssue, error)
 	ReconciliationResults() <-chan managedpac.ReconciliationResult
 	CleanupActiveState(context.Context) (managedpac.CleanupResult, error)
 	Uninstall(context.Context) (managedpac.CleanupResult, error)

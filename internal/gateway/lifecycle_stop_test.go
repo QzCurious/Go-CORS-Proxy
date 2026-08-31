@@ -132,11 +132,15 @@ func (*blockingCleanupSettings) Inspect(context.Context) (managedpac.Snapshot, e
 	return managedpac.Snapshot{}, nil
 }
 
-func (*blockingCleanupSettings) InstallProjection(context.Context, []string, string, string) (managedpac.InstallResult, error) {
+func (*blockingCleanupSettings) Install(context.Context, []string, string) (managedpac.InstallResult, error) {
 	return managedpac.InstallResult{}, nil
 }
 
-func (*blockingCleanupSettings) PublishProjection(string) {}
+func (*blockingCleanupSettings) Deliver() {}
+
+func (*blockingCleanupSettings) RoutingReady(context.Context, string) (bool, []managedpac.ObservationIssue, error) {
+	return false, nil, nil
+}
 
 func (*blockingCleanupSettings) ReconciliationResults() <-chan managedpac.ReconciliationResult {
 	return make(chan managedpac.ReconciliationResult)

@@ -4,8 +4,8 @@ package upstreamlist
 // Gateway-owned Upstream List Creation.
 const DefaultContents = `# One upstream host or origin per line.
 #
-# Host selectors always match HTTP on any port. Their HTTPS routes become
-# active only when at least one valid HTTPS origin selector appears below:
+# Host selectors match HTTP on any port. Gateway also routes HTTPS for them
+# while the installed User CA is usable:
 # api.dev.example.com          # Exact hostname
 # *.test.example.com           # One-label wildcard
 # localhost                    # Local hostname
@@ -127,15 +127,4 @@ func deduplicate(parsed parsedUpstreamList) Projection {
 		}
 	}
 	return Projection{HostSelectors: hosts, OriginSelectors: origins, Warnings: parsed.Warnings}
-}
-
-// HTTPSIntent reports whether the projection contains at least one HTTPS Origin
-// Selector.
-func (u Projection) HTTPSIntent() bool {
-	for _, selector := range u.OriginSelectors {
-		if selector.Scheme == "https" {
-			return true
-		}
-	}
-	return false
 }

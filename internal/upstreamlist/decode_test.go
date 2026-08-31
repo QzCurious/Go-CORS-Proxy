@@ -31,16 +31,6 @@ http://[::1]:3000
 	}
 }
 
-func TestHTTPSIntentIgnoresHostAndHTTPSelectors(t *testing.T) {
-	list := Projection{
-		HostSelectors:   []HostSelector{{Hostname: "api.example.test"}},
-		OriginSelectors: []OriginSelector{{Scheme: "http", Hostname: "plain.example.test", Port: 80}},
-	}
-	if list.HTTPSIntent() {
-		t.Fatal("HTTP-only entries should not express HTTPS intent")
-	}
-}
-
 func TestDecodeNormalizesExplicitAndDefaultPorts(t *testing.T) {
 	decoded, err := decode([]byte(`
 HTTPS://user:password@EXAMPLE.TEST:0443/

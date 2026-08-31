@@ -123,8 +123,7 @@ func TestStartCommandRendersUpstreamWarningsAfterHumanSummary(t *testing.T) {
 	var out bytes.Buffer
 	renderStartResult(&out, gateway.Started{Guidance: gateway.StartGuidance{
 		ManagedPAC: gateway.ManagedPACStartDetail{
-			ServiceSet:     []string{"Wi-Fi"},
-			PublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
+			ServiceSet: []string{"Wi-Fi"},
 		},
 		UpstreamLists: []gateway.UpstreamListSourceDetail{{
 			Kind: gateway.UpstreamListSourceGlobal,
@@ -139,7 +138,7 @@ func TestStartCommandRendersUpstreamWarningsAfterHumanSummary(t *testing.T) {
 		}},
 	}})
 
-	summaryEnd := strings.Index(out.String(), "Proxy configuration URL:")
+	summaryEnd := strings.Index(out.String(), "  - Wi-Fi")
 	warning := strings.Index(out.String(), "warning: global")
 	if summaryEnd < 0 || warning < summaryEnd {
 		t.Fatalf("upstream warning interrupted start summary:\n%s", out.String())
@@ -237,9 +236,15 @@ func TestStartCommandRendersHumanSummary(t *testing.T) {
 			{Kind: gateway.UpstreamListSourceDirectory, Path: "/project/upstreams.txt"},
 		},
 		ManagedPAC: gateway.ManagedPACStartDetail{
-			ServiceSet:     []string{"Ethernet", "Wi-Fi"},
-			PublicationURL: "http://127.0.0.1:62409/seamless-cors.pac?v=1",
+			ServiceSet: []string{"Ethernet", "Wi-Fi"},
 		},
+		Traffic: gateway.TrafficStatusDetail{
+			ProjectionCurrent: true,
+			HTTPCORS:          gateway.TrafficFeatureInactive,
+			HTTPSCORS:         gateway.TrafficFeatureInactive,
+			HTTPSFacade:       gateway.TrafficFeatureInactive,
+		},
+		InstalledCA: gateway.InstalledCAStatusDetail{Health: gateway.CAHealthUsable},
 	}})
 
 	want := "" +
@@ -247,11 +252,14 @@ func TestStartCommandRendersHumanSummary(t *testing.T) {
 		"Upstream lists:\n" +
 		"  Global: /config/seamless-cors/upstreams.txt\n" +
 		"  Directory: /project/upstreams.txt\n" +
-		"HTTPS interception is off.\n" +
+		"traffic-routing-ready: false\n" +
+		"traffic-projection-current: true\n" +
+		"http-cors: inactive\n" +
+		"https-cors: inactive\n" +
+		"https-facade: inactive\n" +
 		"Services selected for automatic proxy management:\n" +
 		"  - Ethernet\n" +
-		"  - Wi-Fi\n" +
-		"Proxy configuration URL: http://127.0.0.1:62409/seamless-cors.pac?v=1\n"
+		"  - Wi-Fi\n"
 	if out.String() != want {
 		t.Fatalf("start output:\n%s\nwant:\n%s", out.String(), want)
 	}
@@ -272,7 +280,7 @@ func TestStopCommandRendersCleanupFailure(t *testing.T) {
 	err := stopGatewayWithCommand(context.Background(), &out, func(context.Context) (gateway.StopResult, error) {
 		return gateway.StopResult{
 			Kind: gateway.StopResultCleanupFailed,
-			CleanupFailures: []gateway.CleanupFailureDetail{{
+			CleanupFailures: []gateway.CleanupFailure{{
 				Subject:    gateway.CleanupSubjectManagedPAC,
 				Diagnostic: "cleanup denied",
 			}},
@@ -353,29 +361,27 @@ func TestStatusRendersUserCARenewalDueFact(t *testing.T) {
 	}
 }
 
-func TestStatusRendersUnmetHTTPSIntent(t *testing.T) {
+func TestStatusRendersBlockedHTTPSCORSWithInstallGuidance(t *testing.T) {
 	var out bytes.Buffer
 	renderStatus(&out, gateway.StatusResult{
 		Kind: gateway.StatusResultReported,
 		StatusReport: gateway.StatusReport{
-			State: gateway.GatewayStatusRunning,
+			State:       gateway.GatewayStatusRunning,
+			InstalledCA: gateway.InstalledCAStatusDetail{Health: gateway.CAHealthNotUsable},
 			Runtime: &gateway.RuntimeStatusDetail{
-				HTTPSPipeline: &gateway.HTTPSPipelineDetail{
-					Phase:     gateway.HTTPSPipelineSettled,
-					Readiness: gateway.HTTPSReadinessNotReady,
-					UnmetIntent: &gateway.UnmetHTTPSIntentDetail{
-						Diagnostic: "HTTPS was requested but the Installed User CA is missing.",
-						Action:     "Run `seamless-cors install`.",
-					},
+				Traffic: gateway.TrafficStatusDetail{
+					ProjectionCurrent: true,
+					HTTPCORS:          gateway.TrafficFeatureInactive,
+					HTTPSCORS:         gateway.TrafficFeatureBlocked,
+					HTTPSFacade:       gateway.TrafficFeatureInactive,
 				},
 			},
 		},
 	})
 	status := out.String()
 	for _, expected := range []string{
-		"https: inactive",
-		"warning: HTTPS was requested but the Installed User CA is missing.",
-		"action: Run `seamless-cors install`.",
+		"https-cors: blocked",
+		"action: Run `seamless-cors install` to install or repair the User CA.",
 	} {
 		if !strings.Contains(status, expected) {
 			t.Fatalf("status output = %q, want %q", status, expected)
@@ -485,35 +491,24 @@ func TestStartRendersManagedPACObservationIssues(t *testing.T) {
 	}
 }
 
-func TestLiveHTTPSPipelineRendererPrintsOnlyChangedDetails(t *testing.T) {
+func TestStatusRendersUserCAAssessmentIssueWithoutInstallGuidance(t *testing.T) {
 	var out bytes.Buffer
-	renderer := &liveHTTPSPipelineRenderer{stdout: &out}
-	initial := &gateway.HTTPSPipelineDetail{
-		Phase:     gateway.HTTPSPipelineSettled,
-		Readiness: gateway.HTTPSReadinessNotReady,
-		UnmetIntent: &gateway.UnmetHTTPSIntentDetail{
-			Diagnostic: "UserCA is not usable.",
-			Action:     "Run install.",
+	renderStatus(&out, gateway.StatusResult{
+		Kind: gateway.StatusResultReported,
+		StatusReport: gateway.StatusReport{
+			State:       gateway.GatewayStatusRunning,
+			InstalledCA: gateway.InstalledCAStatusDetail{Health: gateway.CAHealthNotUsable},
+			UserCAAssessmentIssue: &gateway.UserCAAssessmentIssue{
+				Cause: "trust store unavailable",
+			},
 		},
-	}
-	renderer.Render(initial)
-	renderer.Render(initial)
-	changed := &gateway.HTTPSPipelineDetail{
-		Phase:     gateway.HTTPSPipelineSettled,
-		Readiness: gateway.HTTPSReadinessNotReady,
-		UserCAAssessmentIssue: &gateway.UserCAAssessmentIssue{
-			Cause: "trust store unavailable",
-		},
-	}
-	renderer.Render(changed)
-	renderer.Render(nil)
+	})
 
-	if got := strings.Count(out.String(), "warning:"); got != 2 {
-		t.Fatalf("rendered warning count = %d, output %q", got, out.String())
+	if !strings.Contains(out.String(), "userca-assessment-issue: trust store unavailable") {
+		t.Fatalf("status output = %q", out.String())
 	}
-	if !strings.Contains(out.String(), initial.UnmetIntent.Diagnostic) ||
-		!strings.Contains(out.String(), changed.UserCAAssessmentIssue.Cause) {
-		t.Fatalf("renderer output = %q", out.String())
+	if strings.Contains(out.String(), "seamless-cors install") {
+		t.Fatalf("assessment issue claimed install would repair it: %q", out.String())
 	}
 }
 

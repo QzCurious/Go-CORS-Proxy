@@ -98,7 +98,7 @@ func (o *owner) Run(ctx context.Context, afterPublish func(context.Context) erro
 	}
 }
 
-type ownerStopCleanupError struct{ failures []CleanupFailureDetail }
+type ownerStopCleanupError struct{ failures []CleanupFailure }
 
 func (ownerStopCleanupError) Error() string { return "owner stop left gateway cleanup residue" }
 
@@ -106,7 +106,7 @@ func (o *owner) stopAndClose(cause error) error {
 	result, stopErr := o.lifecycle.Stop(context.Background())
 	closeErr := o.router.Close(context.Background())
 	if result.Fulfillment() == CommandUnfulfilled {
-		stopErr = errors.Join(stopErr, ownerStopCleanupError{failures: append([]CleanupFailureDetail(nil), result.CleanupFailures...)})
+		stopErr = errors.Join(stopErr, ownerStopCleanupError{failures: append([]CleanupFailure(nil), result.CleanupFailures...)})
 	}
 	return errors.Join(cause, stopErr, closeErr)
 }

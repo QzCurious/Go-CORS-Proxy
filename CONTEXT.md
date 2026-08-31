@@ -25,12 +25,68 @@ A user-facing interaction surface through which a Gateway Control Command is iss
 _Avoid_: Inbound Adapter, Gateway Module interface, transport protocol
 
 **Gateway Feature Orchestration**:
-A rule that only the Gateway Module orders and combines file-observation facts, Upstream List Projections, HTTPS Pipeline work, PAC Projections, HTTPS Facade Projections, UserCA facts, Managed PAC mutations, and Gateway Runtime state; feature modules never initiate another feature's lifecycle. HTTPS Intent admits or removes the whole HTTPS Pipeline, while Gateway separately projects current Origin Selectors through HTTPS Facade without making the Upstream List Proxy request-admission or per-host interception policy or allowing it to initiate UserCA mutation.
+A rule that only the Gateway Module combines module-owned facts into HTTP CORS Demand, HTTPS CORS Demand, and active traffic outcomes, then orders the required projections and mutations; feature modules never initiate another feature's lifecycle. Selector, UserCA, and routing facts remain owned by their source modules while Gateway owns their cross-feature consequences.
 _Avoid_: feature-owned lifecycle orchestration, per-request Upstream List gate, duplicated selector translation, ordering-means-waiting
 
+**Gateway Traffic Demand**:
+A current Gateway-derived boolean instructing it whether to produce one family of traffic routes from separately retained module-owned facts. It is a decision rather than user intent or selector scope and may change when its input facts change.
+_Avoid_: user intent, configuration flag, route set, selector projection, active feature, module-owned fact
+
+**HTTP CORS Demand**:
+The boolean Gateway Traffic Demand produced by HTTP Origin Selectors and Host Selectors for browser HTTP requests to reach Proxy under the fixed CORS policy. Selector facts remain separate and supply routing scope.
+_Avoid_: selector-specific demand, HTTPS Facade demand, active HTTP CORS
+
+**HTTPS CORS Demand**:
+The boolean Gateway Traffic Demand produced unconditionally by HTTPS Origin Selectors and produced by Host Selectors only while UserCA is usable, for browser HTTPS requests to reach Proxy under the fixed CORS policy. Selector facts remain separate and supply routing scope.
+_Avoid_: HTTPS Intent, HTTPS Facade demand, active HTTPS CORS, unconditional Host Selector HTTPS demand
+
+**Traffic Routing Ready**:
+A current Gateway fact that the PAC Endpoint and Proxy are serving and the latest Managed PAC observation establishes at least one Network Service with an enabled, seamless-cors-owned PAC URL identifying this Gateway Runtime's PAC endpoint. Any delivery-generation query for that current host, port, and owned path remains valid, while a marker-owned URL for a previous runtime does not; no end-to-end browser probe is required. Managed PAC reconciliation and Read-Only Status refresh the observation without polling.
+_Avoid_: runtime active, proxy listener ready, Traffic Projection Current, warning-free PAC delivery, manual proxy availability
+
+**Traffic Projection**:
+The complete Gateway-composed traffic state containing one PAC Projection and its matching Proxy and HTTPS Facade configuration. Gateway derives its latest desired Traffic Projection from current demands and module facts, then switches the PAC Endpoint and traffic behavior together to make that projection served.
+_Avoid_: PAC-only projection, Network Service delivery state, independently published Proxy configuration
+
+**Served Traffic Projection**:
+The Traffic Projection currently exposed by Gateway's PAC Endpoint and matching Proxy and HTTPS Facade configuration. Switching it retires the previous served configuration; obsolete browser-cached PAC contents are outside its coherence invariant. Network Service PAC delivery succeeds or fails independently and never changes which projection Gateway serves.
+_Avoid_: latest desired projection, browser PAC cache state, per-service PAC setting, delivery rollout
+
+**Traffic Projection Current**:
+A synchronization and diagnostic fact that the Served Traffic Projection is semantically equivalent to Gateway's latest desired Traffic Projection. Equivalence includes PAC routes, HTTP and HTTPS CORS behavior, HTTPS Facade mappings, interception behavior, and UserCA identity, while selector order, source text, warnings, byte identity, PAC URL generation, and Network Service delivery state do not determine it.
+_Avoid_: Traffic Routing Ready, PAC delivery status, publication generation, byte identity, retry active
+
+**Traffic Projection Switch**:
+The Gateway Runtime transition that first composes and validates a complete Traffic Projection, then atomically replaces the PAC Endpoint contents and matching Proxy and HTTPS Facade configuration before requesting per-service PAC delivery. Failure preserves the previous Served Traffic Projection, leaves Traffic Projection Current false, and starts no delivery for the rejected projection.
+_Avoid_: PAC-first publication, independently visible proxy update, Network Service transaction, partial served projection
+
+**HTTP CORS Active**:
+The aggregate active traffic outcome present when the Served Traffic Projection contains at least one HTTP CORS route and Traffic Routing Ready holds. It describes served behavior rather than current HTTP CORS Demand or Traffic Projection Current; per-service PAC delivery failures do not deactivate it while a working managed route remains.
+_Avoid_: HTTP CORS Demand, selector-specific HTTP outcome, proxy ability
+
+**HTTP CORS Blocked**:
+The aggregate traffic outcome present when HTTP CORS Demand holds but HTTP CORS Active does not. It reports demanded behavior that is not currently served through working managed routing.
+_Avoid_: inactive HTTP CORS, PAC delivery warning, selector-specific blockage
+
+**HTTP CORS Inactive**:
+The aggregate traffic outcome present when neither HTTP CORS Active nor HTTP CORS Blocked holds.
+_Avoid_: blocked HTTP CORS, absent route alone
+
+**HTTPS CORS Active**:
+The aggregate active traffic outcome present when Traffic Routing Ready holds, the Served Traffic Projection contains at least one HTTPS CORS route, and the current usable UserCA identity matches that projection's interception identity. It describes usable served behavior rather than current HTTPS CORS Demand or Traffic Projection Current; per-service PAC delivery failures do not deactivate it while a working managed route remains.
+_Avoid_: HTTPS CORS Demand, HTTPS Facade, selector-specific HTTPS outcome, proxy ability
+
+**HTTPS CORS Blocked**:
+The aggregate traffic outcome present when HTTPS CORS Demand holds but HTTPS CORS Active does not. Its concrete cause may be not-usable UserCA, a UserCA Assessment Issue, mismatch between the current usable UserCA identity and the Served Traffic Projection, absent working managed routing, or demanded behavior not yet served.
+_Avoid_: inactive HTTPS CORS, generic HTTPS failure, PAC delivery warning
+
+**HTTPS CORS Inactive**:
+The aggregate traffic outcome present when neither HTTPS CORS Active nor HTTPS CORS Blocked holds.
+_Avoid_: blocked HTTPS CORS, absent route alone
+
 **Independent Feature Serialization**:
-A concurrency rule where Gateway serializes UserCA lifecycle work and conditionally coordinates one active HTTPS Pipeline, while other feature modules serialize only their own mutations. Gateway atomically publishes CA-bound MITM or direct Proxy generations during intent, UserCA, expiry, and uninstall transitions and independently publishes current HTTPS Facade forwarding without holding Managed PAC serialization; PAC publication remains independent.
-_Avoid_: global lifecycle lock, PAC-blocked UserCA mutation, list-coupled UserCA adoption
+A concurrency rule where Gateway serializes UserCA lifecycle work and conditionally coordinates one required HTTPS Pipeline, while other feature modules serialize their private mutations. Switching the Served Traffic Projection must nevertheless keep its PAC Endpoint contents and matching Proxy and HTTPS Facade behavior coherent; per-service PAC delivery remains independent from that runtime switch.
+_Avoid_: mismatched published PAC and proxy behavior, global lifecycle lock, list-coupled UserCA adoption
 
 **Surface-Neutral Command Result**:
 The authoritative semantic outcome of a Gateway Module operation, describing successful, blocked, retryable, and next-action-required command outcomes without terminal text, HTTP status codes, or surface-specific formatting. Every anticipated command condition produces such a result, while an error means the Gateway could not produce a semantic outcome; every Inbound Adapter translates results and errors into its Gateway Control Surface representation.
@@ -65,7 +121,7 @@ The process-bootstrap role that establishes and keeps a Gateway Owner available 
 _Avoid_: CLI-owned Start semantics, implicit serve command, HTTP process bootstrap, Gateway Runtime
 
 **Gateway Runtime**:
-The live traffic-serving engine that owns the proxy listener and server, Gateway-owned outbound proxy transport, active Proxy generation and HTTPS Facade forwarding, PAC listener and server, independent continuous observations and projections for each Upstream List, their current Effective Upstream List, source-specific File Sync and Projection Issues, optional HTTPS Pipeline Detail, current PAC Projection, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. It begins only after initial observation has established both source states; feature degradation never ends it, while explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
+The live traffic-serving engine that owns the proxy listener and server, Gateway-owned outbound proxy transport, Served Traffic Projection, PAC listener and server, current UserCA Current State, Gateway Traffic Demands and active outcomes, independent continuous observations and projections for each Upstream List, their current Effective Upstream List, source-specific File Sync and Projection Issues, runtime close behavior, and fatal serving-error reporting without installing or unsetting OS PAC state. It begins only after initial observation and UserCA assessment have established their facts; feature degradation never ends it, while explicit Gateway stop or an irrecoverable proxy or PAC serving failure ends it coherently.
 _Avoid_: initializing runtime, retained observation result, retained raw contents, lifecycle facade, command router, OS proxy manager, cleanup owner
 
 **Router-Only Serve**:
@@ -105,12 +161,12 @@ A PAC Routing behavior where matched HTTPS traffic is routed through the gateway
 _Avoid_: routing unrepaired HTTPS, unnecessary HTTPS proxying
 
 **Generated PAC**:
-A runtime proxy auto-configuration artifact rendered from the current PAC Projection, not edited directly by the user.
+A runtime proxy auto-configuration artifact rendered from the PAC Projection inside the Served Traffic Projection, not edited directly by the user.
 _Avoid_: user-authored PAC, manual PAC rules
 
 **PAC Projection**:
-The complete PAC Routing interpretation derived from an adopted Upstream List Projection, HTTPS Pipeline state, and runtime routing endpoint for both the live PAC Endpoint and Managed PAC publication. PAC Routing owns its formation, Gateway publishes one for every adopted upstream transition, and Managed PAC does not reinterpret Upstream List semantics.
-_Avoid_: Managed PAC desired Upstream List, duplicated PAC derivation, semantic no-op suppression, user-authored PAC
+The PAC Routing component of a Traffic Projection, derived from Gateway's selector facts, demands, UserCA facts, and runtime routing endpoint. PAC Routing owns its formation, while Gateway composes it with matching Proxy and HTTPS Facade configuration and Managed PAC does not reinterpret its inputs.
+_Avoid_: complete Traffic Projection, Managed PAC desired Upstream List, duplicated PAC derivation, user-authored PAC
 
 **PAC Route Set**:
 The PAC Routes within a PAC Projection, derived inside the PAC Routing module from normalized Upstream List Entries and Managed HTTPS Routing. HTTP Origin Selectors always contribute their HTTP routes and contribute HTTPS Facade routes while Managed HTTPS Routing is active unless a more explicit HTTPS Origin Selector takes precedence; HTTPS Origin Selectors contribute routes only while managed HTTPS routing is active, and Host Selectors contribute HTTP routes always plus HTTPS routes only while managed HTTPS routing is active.
@@ -169,7 +225,7 @@ A CA lifecycle rule where valid UserCA material is reused, its missing trust or 
 _Avoid_: overlapping roots, proxy-failure-triggered replacement, trusting invalid material, start-time repair, UserCA-owned HTTPS coordination
 
 **UserCA Installation**:
-The explicit UserCA operation that ensures the current user's seamless-cors authority is usable by reusing, repairing, or renewing it and requests platform approval only when trust must be added or replaced. Its fulfilled outcome reports that postcondition without exposing which reconciliation path occurred; when a live Gateway has an active HTTPS Pipeline, Gateway settles and returns the resulting HTTPS Pipeline Detail separately, while install without HTTPS Intent has no runtime HTTPS consequence.
+The explicit UserCA operation that ensures the current user's seamless-cors authority is usable by reusing, repairing, or renewing it and requests platform approval only when trust must be added or replaced. Its fulfilled outcome reports that postcondition without exposing which reconciliation path occurred; a live Gateway adopts the resulting UserCA Current State and recomputes its demands and active outcomes.
 _Avoid_: start-time CA installation, activation-owned CA setup, asynchronous live-install reconciliation, list-bound install result, mutation-reporting install outcome, repeated trust prompt, implicit trust repair
 
 **Owner-Owned CA Mutation**:
@@ -193,19 +249,19 @@ An ownerless Read-Only Status behavior that briefly holds the Gateway Ownership 
 _Avoid_: Transient Gateway Owner for status, status-written discovery cache, unlocked multi-location CA assessment, status mutation
 
 **Settled-CA Start Admission**:
-An owner-coordinated startup boundary used only when initial HTTPS Intent admits the HTTPS Pipeline, where UserCA assessment is serialized with CA Lifecycle Commands so Gateway Runtime never loads authority facts from an in-progress mutation. Start without HTTPS Intent performs no runtime UserCA assessment.
-_Avoid_: runtime boot from mutating CA state, marker polling, UserCA-owned runtime coordination
+An owner-coordinated startup boundary where UserCA assessment is serialized with CA Lifecycle Commands so every Gateway Runtime begins with coherent UserCA Usability and never loads authority facts from an in-progress mutation.
+_Avoid_: conditional runtime UserCA assessment, runtime boot from mutating CA state, marker polling, UserCA-owned runtime coordination
 
 **Installed UserCA Pair**:
 The one seamless-cors-owned certificate and matching private key represented in current-user OS trust and local authority storage. A usable state has exactly one matching trusted identity; replacement does not preserve an overlapping old authority. UserCA exposes only current facts and retains no version, generation, or authority history.
 _Avoid_: authority history, active marker, permanent multiple UserCAs, overlapping trusted identities
 
 **UserCA Signing Material**:
-The immutable Installed UserCA Pair certificate and matching private signer that always accompanies a usable UserCA Current State. An active HTTPS Pipeline retains this material when HTTPS Readiness is ready and supplies it to Proxy; without HTTPS Intent, Gateway Runtime does not inspect or retain it, while goproxy owns per-host leaf generation and its connection-local failures.
+The immutable Installed UserCA Pair certificate and matching private signer that always accompanies a usable UserCA Current State. Gateway Runtime retains it as part of that coherent state independently of selectors and supplies it to Proxy while HTTPS work is active; goproxy owns per-host leaf generation and its connection-local failures.
 _Avoid_: HTTPS Certificate Provider, HTTPS Provider Source, list-bounded signer, selector certificate set, Gateway leaf generator
 
 **MITM Proxy Generation**:
-A goproxy handler bound to one UserCA Signing Material instance whose TLS identity and interception behavior remain fixed for its lifetime while it consults current HTTPS Facade forwarding at each decrypted request boundary. Gateway atomically replaces the handler behind its stable Proxy Listener for UserCA and HTTPS Readiness transitions; admitted connections may retain the previous proxy generation, while PAC changes only when HTTPS routes change.
+A goproxy handler bound to one UserCA Signing Material instance whose TLS identity and interception behavior remain fixed for its lifetime while it consults current HTTPS Facade forwarding at each decrypted request boundary. Gateway atomically replaces the handler behind its stable Proxy Listener for UserCA Current State and HTTPS Pipeline Required transitions; admitted connections may retain the previous proxy generation, while PAC changes only when HTTPS routes change.
 _Avoid_: mutable in-place CA swap, proxy-listener rotation, CA-rotation PAC rewrite
 
 **CA Material Integrity**:
@@ -221,59 +277,39 @@ A CA lifecycle behavior where otherwise-valid Installed User CA material with lo
 _Avoid_: permission-triggered CA rotation, loose CA key permissions
 
 **HTTPS Deadline Signal**:
-A signal emitted only while an active ready HTTPS Pipeline has a deadline timer, when that timer reaches the expiry reported by its adopted UserCA Current State. Gateway reconstructs current truth through a fresh UserCA inspection and changes HTTPS Readiness only when the current pipeline generation accepts that state, making a stale signal harmless; a signal arriving during admitted CA lifecycle mutation is deferred until that mutation and its conditional pipeline consequence settle.
+A signal emitted when Gateway Runtime's retained usable UserCA Current State reaches its reported expiry. Gateway performs one fresh assessment, accepts it only for the current state generation, and does not schedule retry after failure; the deadline is state invalidation rather than a background retry loop.
 _Avoid_: cached expiry truth, certificate-generation expiry callback, signal-carried UserCA state, silent renewal
 
-**HTTPS Intent**:
-An Upstream List state containing at least one valid HTTPS Origin Selector. Host Selectors and HTTP Origin Selectors do not express this intent.
-_Avoid_: Config File HTTPS toggle, inferred Host Selector HTTPS intent, invalid-line HTTPS intent
+**HTTPS Pipeline Required**:
+A Gateway-derived boolean that requires the internal HTTPS Pipeline while HTTPS CORS Demand exists or while an HTTP Origin Selector and usable UserCA Current State together activate HTTPS Facade. It is a mechanism requirement rather than user intent or a surface-visible feature state.
+_Avoid_: HTTPS Intent, HTTPS Facade Demand, UserCA Usability, public pipeline state
 
 **HTTPS Pipeline**:
-The Gateway Runtime coordination sequence admitted only while HTTPS Intent exists: assess UserCA from settled facts, derive HTTPS Readiness, select a direct or MITM Proxy generation, and derive managed HTTPS PAC routes. Without HTTPS Intent the pipeline is inactive, HTTPS Readiness has no value, Gateway does not retain UserCA Signing Material, Proxy direct-tunnels CONNECT requests, HTTPS routes are absent, and no HTTPS expiry deadline is scheduled. When intent appears during admitted CA mutation, Gateway adopts the Upstream List immediately but keeps direct tunneling and no HTTPS routes until that mutation settles and the pipeline can assess its post-mutation facts. When intent disappears, Gateway first adopts and serves the no-HTTPS PAC Projection and enqueues its publication without waiting for asynchronous Managed PAC Reconciliation, then publishes a direct Proxy generation, cancels the deadline, discards retained signing material, and removes the HTTPS Pipeline Detail; admitted requests are not drained.
-_Avoid_: always-on readiness, intent-independent MITM, parallel HTTPS capability state, UserCA lifecycle command
+The internal Gateway Runtime mechanism present only while HTTPS Pipeline Required holds, selecting a direct or UserCA-bound MITM Proxy configuration and deriving managed HTTPS PAC routes from retained module facts. Requirement transitions are exposed only by coherently switching the Served Traffic Projection, without exposing pipeline state through command results or status.
+_Avoid_: user-facing feature, public pipeline state, UserCA lifecycle command, always-on interception
 
-**Unmet HTTPS Intent**:
-An HTTPS Pipeline state where HTTPS Intent exists while HTTPS Readiness is not-ready without a UserCA Assessment Issue. Trusted HTTPS Interception remains inactive, the gateway continues serving HTTP, and Inbound Adapters receive actionable Gateway guidance to install UserCA.
-_Avoid_: blocked gateway, failed gateway start, implicit UserCA installation
+**Blocked HTTPS CORS Demand**:
+The active blocking condition where HTTPS CORS Demand exists but UserCA Usability is either `not-usable` or unavailable because of a UserCA Assessment Issue. Established not-usable facts expose explicit install guidance; an Assessment Issue instead exposes its concrete cause without claiming install will repair it.
+_Avoid_: Unmet HTTPS Intent, blocked gateway, failed gateway start, implicit UserCA installation, Host Selector HTTPS warning
 
 **UserCA Assessment Issue**:
-A current HTTPS Pipeline issue created when the pipeline's UserCA inspection returns an error and Gateway therefore cannot establish usable facts. Start remains fulfilled with direct tunneling, the issue retains its concrete presented cause for Inbound Adapters, and a later pipeline assessment replaces it or pipeline teardown removes it.
-_Avoid_: generic HTTPS warning, UserCA not-usable state, terminal error text, warning history, intent-filtered diagnostic
-
-**HTTPS Pipeline Detail**:
-An optional surface-neutral Gateway record present only while HTTPS Intent admits the HTTPS Pipeline. Its `assessing` phase has no HTTPS Readiness and keeps CONNECT direct with no HTTPS routes; its `settled` phase contains current readiness and exactly the source-specific current detail produced by a not-ready outcome—Unmet HTTPS Intent guidance or a UserCA Assessment Issue—without copying Installed User CA renewal facts or collecting generic warnings. Only the current pipeline inspection may settle the record; results from removed or replaced pipeline work are discarded.
-_Avoid_: always-present readiness, HTTPS warning array, duplicated Installed CA status, multiple simultaneous readiness causes, presentation prose
-
-**Live HTTPS Pipeline Delivery**:
-A foreground lifecycle callback that publishes the changed optional HTTPS Pipeline Detail, including absence when HTTPS Intent removes the pipeline. The CLI renders source-specific changes while HTTP clients read the same current record through status; delivery is current-state invalidation rather than warning or event history.
-_Avoid_: warning snapshot, per-warning callback, Gateway-owned terminal output, required HTTP event stream, pipeline event log
-
-**HTTPS Readiness**:
-The fact-only result of UserCA inspection inside an active HTTPS Pipeline, expressed as `ready` when a coherent UserCA Current State is usable and contains matching UserCA Signing Material or `not-ready` otherwise. Ready selects a CA-backed Proxy generation and enables managed HTTPS routes; not-ready selects direct tunneling and withholds those routes. Without HTTPS Intent, HTTPS Readiness is not established and has no value. A usable current state that omits signing material is invalid. Gateway alone schedules the adopted current state's expiry deadline and freshly inspects UserCA before changing readiness.
-_Avoid_: always-present runtime state, HTTPS Intent alias, proxy health, continuous trust-store polling, installed-file check, expiry warning as not-ready
-
-**HTTPS Readiness Loss**:
-A runtime fact transition from ready to not-ready HTTPS Readiness when a fresh UserCA inspection after an HTTPS Deadline Signal finds the authority expired or otherwise unusable, when that inspection fails and current usability therefore cannot be established, or after confirmed Live UserCA Uninstall. Gateway first adopts and serves the no-HTTPS PAC Projection without waiting for asynchronous Managed PAC Reconciliation, then atomically installs direct-tunnel CONNECT behavior, cancels the current state's deadline, and discards its retained signing material. The admitted pipeline remains settled not-ready with its source-specific detail. Inspection failure becomes a UserCA Assessment Issue while HTTP service and CA material or OS trust remain untouched; recovery requires explicit install.
-_Avoid_: proxy operational failure, failed gateway, continuous trust-store revalidation, status mutation
-
-**HTTPS Readiness Recovery**:
-A transition inside an active HTTPS Pipeline from not-ready to ready HTTPS Readiness immediately after a successful UserCA installation or repair returns a coherent assessment with matching signing material. Gateway then publishes a CA-backed Proxy generation and enables managed HTTPS routing; install without HTTPS Intent changes UserCA facts without creating runtime readiness or proxy consequences. A failed pipeline assessment has no automatic retry loop: successful explicit install, Gateway restart, or pipeline re-entry after intent disappears supplies the next assessment.
-_Avoid_: readiness without intent, restart-required fact recovery, delayed readiness after successful install, Config File toggle
+A current Gateway Runtime issue created when UserCA inspection fails and Gateway therefore cannot establish UserCA Usability. Gateway continues serving HTTP, exposes the concrete cause without install guidance, and reassesses after install, Gateway restart, or an adopted Upstream List update without running a timer-based retry loop.
+_Avoid_: generic HTTPS warning, UserCA not-usable state, terminal error text, warning history, pipeline issue
 
 **Managed HTTPS Routing**:
-The PAC Routing consequence of an active HTTPS Pipeline whose HTTPS Readiness is ready. HTTPS Origin Selectors and Host Selectors then contribute managed HTTPS routes, and HTTP Origin Selectors contribute HTTPS Facade routes without creating HTTPS Intent; otherwise PAC Routing excludes HTTPS routes.
-_Avoid_: HTTPS Intent alone, not-ready routing, per-host proxy admission
+The PAC Routing consequence produced while HTTPS Pipeline Required holds and UserCA is usable. HTTPS CORS Demand contributes native HTTPS routes and HTTP Origin Selectors contribute HTTPS Facade routes; otherwise PAC Routing excludes HTTPS routes.
+_Avoid_: pipeline requirement alone, unusable-UserCA routing, per-host proxy admission
 
 **Trusted HTTPS Interception**:
-A runtime behavior present only while the HTTPS Pipeline is active and HTTPS Readiness is ready. Proxy then asks goproxy to intercept every CONNECT reaching the loopback proxy and generate its leaf certificate from the retained UserCA Signing Material; connection-local signing or handshake failure does not change Gateway state. HTTPS Origin Selectors and Host Selectors produce managed HTTPS routes only through Managed HTTPS Routing.
+A runtime behavior present only while HTTPS Pipeline Required holds and UserCA is usable. Proxy then asks goproxy to intercept every CONNECT reaching the loopback proxy and generate its leaf certificate from the retained UserCA Signing Material; connection-local signing or handshake failure does not change Gateway state.
 _Avoid_: Upstream List proxy admission, list-bounded certificate signing, separate interception state, Config File HTTPS toggle
 
-**Intent-Gated HTTPS Interception**:
-A lifecycle rule where HTTPS Intent admits the HTTPS Pipeline and ready HTTPS Readiness then activates Trusted HTTPS Interception and Managed HTTPS Routing without a separate configuration toggle. Intent does not install, repair, or substitute for UserCA capability.
-_Avoid_: intent-independent proxy activation, Config File HTTPS toggle, intent-as-capability, silent trust installation
+**Gateway-Gated HTTPS Interception**:
+A lifecycle rule where HTTPS Pipeline Required and UserCA Usability together activate Trusted HTTPS Interception and Managed HTTPS Routing without a separate configuration toggle. Gateway derives both inputs from retained facts without installing, repairing, or substituting UserCA implicitly.
+_Avoid_: HTTPS Intent, Config File HTTPS toggle, capability-as-demand, silent trust installation
 
 **Upstream List Projection**:
-The decoded and normalized interpretation of observed Upstream List contents, containing Host Selectors, Origin Selectors, and Upstream List Warnings. The Upstream List module owns projection formation without owning continuous observation, application path policy, file issues, rejection consequences, or PAC publication policy.
+The decoded and normalized interpretation of observed Upstream List contents, containing Host Selectors, Origin Selectors, and Upstream List Warnings. The Upstream List module owns projection formation without owning continuous observation, application path policy, file issues, rejection consequences, Traffic Projection composition, or PAC delivery policy.
 _Avoid_: Upstream List Source, raw contents, file snapshot, PAC Route Set, semantic identity
 
 **Rejected Upstream List Contents**:
@@ -289,7 +325,7 @@ A source-specific optional Gateway Runtime-owned current problem whose kind is F
 _Avoid_: Upstream List Sync State, Upstream List Projection, content validity, parser state, PAC availability, watcher uncertainty, raw watcher error
 
 **Upstream List Projection Issue**:
-A source-specific optional Gateway Runtime-owned current problem containing the presented cause of Rejected Upstream List Contents. A successful source projection clears it, rejection selects the Empty Upstream List for that source, and its appearance, change, and clearing remain available for Inbound Adapter presentation independently from the resulting Effective Upstream List and PAC publication.
+A source-specific optional Gateway Runtime-owned current problem containing the presented cause of Rejected Upstream List Contents. A successful source projection clears it, rejection selects the Empty Upstream List for that source, and its appearance, change, and clearing remain available for Inbound Adapter presentation independently from the resulting Effective Upstream List and Traffic Projection.
 _Avoid_: Upstream List Projection Error State, combined Upstream List State, raw error identity, failure event history, file sync issue
 
 **Gateway Control Command**:
@@ -297,11 +333,11 @@ A user-facing command that controls gateway-owned state or reports on it, includ
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, establishes independent continuous observation and initial Gateway-owned state for both Upstream Lists even when a source is unavailable, forms the Effective Upstream List, conditionally admits the HTTPS Pipeline and assesses HTTPS Readiness only when that state contains HTTPS Intent, and then attempts Gateway Activation. Direct start holds Gateway Ownership while removing stale state and publishing its discovery cache, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
+The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, establishes independent continuous observation and initial Gateway-owned state for both Upstream Lists even when a source is unavailable, forms the Effective Upstream List, establishes coherent UserCA Usability, derives Gateway Traffic Demands, and then attempts Gateway Activation. Direct start holds Gateway Ownership while removing stale state and publishing its discovery cache, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
 _Avoid_: start-time CA installation, public raw activation, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
-The internal operation that discovers the automatically manageable Network Services, begins serving Gateway Runtime with its optional HTTPS Pipeline Detail and current projections, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, Upstream List observation establishment, conditional pipeline assessment, Managed PAC Configuration Protection, or traffic-before-PAC ordering.
+The internal operation that discovers the automatically manageable Network Services, begins serving Gateway Runtime with its retained facts, demands, active outcomes, and current projections, installs managed PAC state, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, fact establishment, Managed PAC Configuration Protection, or traffic-before-PAC ordering.
 _Avoid_: public activation command, CA installation, CA Trust Consent, lifecycle activation, runtime startup, command rendering, lifecycle orchestration package
 
 **Automatic Listeners**:
@@ -397,15 +433,15 @@ An idempotent Managed PAC lifecycle teardown that closes reconciliation admissio
 _Avoid_: Gateway Footprint Cleanup, cleanup-only operation, caller-owned teardown sequence, partial uninstall success
 
 **Managed PAC Service Set**:
-The successfully observed empty or marker-owned Network Services automatically fixed during Gateway Activation for PAC Routing installation and later Managed PAC Reconciliation. Initially foreign or unobservable services remain outside the set; selected services remain members through later absence, drift, or observation issues and can recover on a later PAC Projection, while excluded or newly appearing services wait until another start.
+The successfully observed empty or marker-owned Network Services automatically fixed during Gateway Activation for PAC Routing installation and later Managed PAC Reconciliation. Initially foreign or unobservable services remain outside the set; selected services remain members through later absence, drift, or observation issues and can recover on a later PAC delivery request, while excluded or newly appearing services wait until another start.
 _Avoid_: accepted service set, user-selected services, all visible services, initially foreign service, initially unobservable service, currently controlled service subset, live service discovery for expansion, implicit service expansion, removal-on-disappearance, removal-on-drift, removal-on-observation-issue
 
 **Managed PAC Installation**:
-A Gateway Activation mutation that attempts the desired PAC URL on every currently manageable visible member of the fixed Managed PAC Service Set. The set remains fixed even when a member becomes absent, foreign, or unobservable before mutation; per-service exceptions produce Managed PAC Warnings, mutation failures retry while Gateway Runtime continues serving, and observation issues wait for a later PAC Projection.
-_Avoid_: all-or-nothing PAC installation, failure-narrowed service set, silent partial installation, Gateway termination on transient PAC publication failure, observation-issue retry loop
+A Gateway Activation mutation that attempts the current Generated PAC URL on every currently manageable visible member of the fixed Managed PAC Service Set. The set remains fixed even when a member becomes absent, foreign, or unobservable before mutation; each service succeeds or fails independently, per-service exceptions produce Managed PAC Warnings, successful services are not rolled back, mutation failures retry while Gateway Runtime continues serving, and observation issues wait for a later PAC delivery request.
+_Avoid_: all-or-nothing PAC installation, failure-narrowed service set, silent partial installation, Gateway termination on transient PAC delivery failure, observation-issue retry loop
 
 **Managed PAC Runtime State**:
-A Gateway Runtime's latched record of the fixed Managed PAC Service Set and the latest Managed PAC publication URL after Managed PAC installation. Its absence means the runtime has no active Managed PAC configuration and is not a live observation of operating-system proxy settings.
+A Gateway Runtime's latched record of the fixed Managed PAC Service Set and latest Managed PAC delivery URL after Managed PAC installation. Its absence means the runtime has no active Managed PAC configuration and is not a live observation of operating-system proxy settings.
 _Avoid_: Managed PAC Session, Managed PAC lease state, live PAC snapshot, attempted PAC URL
 
 **Managed PAC Active**:
@@ -413,19 +449,19 @@ A status fact derived from the presence of Managed PAC Runtime State, meaning th
 _Avoid_: all-services-controlled, live OS PAC verification, warning-free Managed PAC, Managed PAC lease held
 
 **Managed PAC Mutation Sequence**:
-Managed PAC's private ordering rule where installation, PAC Projection publication, reconciliation, and uninstall execute one at a time independently from Upstream List observation and Gateway CA mutation serialization. A newer accepted PAC Projection replaces older pending publication input without interrupting an active attempt; mutation failures retain the last successfully published PAC and retry the newest projection, observation issues complete the attempt without retry, and uninstall waits for the current writer before cleaning successfully observed marker-owned PAC state.
+Managed PAC's private ordering rule where installation, PAC URL delivery, reconciliation, and uninstall execute one at a time independently from Upstream List observation and Gateway CA mutation serialization. A newer delivery request replaces older pending input without interrupting an active attempt; each service update succeeds or fails independently, successful services are not rolled back, mutation failures retain that service's previous setting and retry the newest delivery, observation issues complete the attempt without retry, and uninstall waits for the current writer before cleaning successfully observed marker-owned PAC state.
 _Avoid_: caller-owned PAC lock, operation-success wait, concurrent PAC writes, refresh-cleanup race, post-stop PAC install, uninstall racing an old writer, global lifecycle mutex
 
 **Managed PAC Reconciliation**:
-A PAC update behavior that independently evaluates each visible member of the fixed Managed PAC Service Set: marker-owned and empty observed settings receive the current PAC URL, foreign settings are preserved with a warning, and absent or unobservable services wait for a later PAC Projection. Observation issues complete the current attempt without internal retry, and reconciliation does not inspect or expand to services outside the fixed set.
+A PAC delivery behavior that independently evaluates each visible member of the fixed Managed PAC Service Set: marker-owned and empty observed settings receive the current PAC URL, an update failure leaves that service's previous working setting unchanged, successful services are never rolled back because another service failed, foreign settings are preserved with a warning, and absent or unobservable services wait for a later request. Observation issues complete the current attempt without internal retry, and reconciliation does not inspect or expand to services outside the fixed set.
 _Avoid_: Managed PAC lease check, all-or-nothing refresh, idle watcher, new-service adoption, foreign PAC replacement, missing-service failure, observation-issue retry loop
 
 **Managed PAC Reconciliation Request**:
-The complete PAC Projection published by Gateway for every adopted Upstream List or HTTPS Pipeline transition. Managed PAC owns publication generation, serial platform attempts, current warning delivery, and retry without receiving or reinterpreting the Upstream List or HTTPS Readiness.
-_Avoid_: Upstream List desired state, semantic no-op suppression, duplicate PAC derivation, PAC URL command, delta, event history, Gateway-owned PAC generation
+The request to deliver the Served Traffic Projection's Generated PAC URL across the fixed Managed PAC Service Set. Managed PAC owns URL generation, serial platform attempts, per-service warnings, and retry without determining Traffic Projection Current or reinterpreting module facts and Gateway Traffic Demands.
+_Avoid_: Traffic Projection publication, feature activation, all-or-nothing rollout, duplicate PAC derivation, event history
 
 **Managed PAC Publication Generation**:
-The Managed PAC-owned monotonic generation allocated before each new PAC Projection publication attempt. A failed attempt consumes its generation, so gaps are valid; retries allocate a new generation and use the newest pending projection.
+The Managed PAC-owned monotonic generation allocated before each attempt to deliver a new Generated PAC URL to Network Services. A failed or partially successful attempt consumes its generation, so gaps and different service URLs are valid; retries allocate a new generation and deliver the currently served PAC without determining Traffic Projection Current.
 _Avoid_: Gateway PAC version, routing revision, rollback generation, transaction sequence, reclaimed failed version
 
 **Managed PAC Drift**:
@@ -433,7 +469,7 @@ A nonfatal condition where a visible member of the fixed Managed PAC Service Set
 _Avoid_: Managed PAC Lease Lost, consent-stale warning, fatal PAC drift, forced PAC restoration, foreign PAC takeover, silent proxy escape
 
 **Managed PAC Update Failure**:
-A nonfatal condition where platform mutation of a selected service fails during Managed PAC Reconciliation. Managed PAC preserves the failure's diagnostic without classifying its cause, retains the last successfully published PAC, keeps the newest pending projection, consumes the failed publication generation, and retries internally; PAC Setting Observation failure is instead a Managed PAC Observation Issue.
+A nonfatal service-specific condition where platform mutation of a selected service fails during Managed PAC Reconciliation. Managed PAC preserves the failure's diagnostic without classifying its cause, leaves that service's previous PAC setting unchanged, does not roll back successful services, and retries the newest delivery internally; it does not change Traffic Projection Current or feature activation. PAC Setting Observation failure is instead a Managed PAC Observation Issue.
 _Avoid_: fatal PAC refresh, PAC URL rollback, whole-runtime failure, silent partial update
 
 **Managed PAC Warning**:
@@ -465,7 +501,7 @@ A fingerprint-bound user decision required when Gateway assesses the fixed path 
 _Avoid_: combined Start consent, CLI-invented consent, consent error, overwrite authorization, runtime bootstrap, implicit default creation
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after automatic PAC assessment and installation have been attempted and Gateway Runtime is serving. It reports the fixed Managed PAC Service Set together with its current exceptions and includes the optional HTTPS Pipeline Detail, current Upstream List File Sync Issue, Upstream List Projection Issue, excluded or unobservable service facts, and Managed PAC publication warnings when applicable; transient initial PAC publication failure remains internal and is retried. Guidance never presents service selection as proof that every selected service is currently configured.
+A start-time user-facing output behavior shown only after automatic PAC assessment and installation have been attempted and Gateway Runtime is serving. It reports active traffic outcomes, Blocked HTTPS CORS Demand, Traffic Projection Current, UserCA Assessment Issue, the fixed Managed PAC Service Set and its current exceptions, current Upstream List issues, excluded or unobservable service facts, and per-service Managed PAC delivery warnings when applicable. Guidance never exposes HTTPS Pipeline or presents service selection as proof that every selected service is currently configured.
 _Avoid_: PAC consent preview, pre-activation PAC promise, pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -517,7 +553,7 @@ A lifecycle boundary where CA Trust Consent and Installed User CA mutation occur
 _Avoid_: start-time CA trust, stop-cancelled CA command, intent-triggered installation, route-dependent trust setup
 
 **Start Sequence Order**:
-A startup lifecycle order where Gateway Footprint Cleanup, the fixed Upstream List Creation Consent stage, immediate best-effort consented creation, and Upstream List observation establishment precede automatic Managed PAC assessment. Initial HTTPS Intent conditionally admits the HTTPS Pipeline, whose HTTPS Readiness is assessed without mutating trust before Gateway Runtime serves; without intent that assessment is skipped. Gateway Runtime begins serving before Managed PAC installation, whose unhealthy initial publication remains Managed PAC-owned retry work.
+A startup lifecycle order where Gateway Footprint Cleanup, the fixed Upstream List Creation Consent stage, immediate best-effort consented creation, Upstream List observation establishment, and settled UserCA assessment precede automatic Managed PAC assessment. Gateway derives demands and HTTPS Pipeline Required from those facts, switches its initial Served Traffic Projection, then begins Managed PAC installation; failed initial delivery keeps Traffic Routing Ready false only when no working current-runtime PAC setting exists while Managed PAC retries.
 _Avoid_: start-time CA installation, PAC-before-runtime serving, PAC-first start, cleanup-after-approval, start guidance before PAC installation
 
 **Minimal Command Surface**:
@@ -525,11 +561,11 @@ The user-facing command model where normal operation is limited to starting, sto
 _Avoid_: command-heavy configuration, flag-driven operation
 
 **CA Lifecycle Commands**:
-Top-level user-facing commands that explicitly install, repair, or remove the Installed User CA outside the normal start/stop gateway loop. Install may settle or recover an active HTTPS Pipeline but has no runtime HTTPS consequence without intent, while uninstall remains available during gateway operation and requires confirmation only when Trusted HTTPS Interception is active.
+Top-level user-facing commands that explicitly install, repair, or remove the Installed User CA outside the normal start/stop gateway loop. A live Gateway adopts their resulting UserCA Current State and recomputes demands, HTTPS Pipeline Required, and active outcomes; uninstall requires confirmation only when Trusted HTTPS Interception is active.
 _Avoid_: nested CA command tree, hidden CA removal, per-start CA trust, config editing command, separate readiness command
 
 **Upstream-Independent CA Install**:
-A CA lifecycle command boundary where installing or repairing the Installed User CA does not read, require, create, or modify the Upstream List. When a Gateway has an active HTTPS Pipeline, it adopts the returned assessment into HTTPS Readiness and Proxy; without HTTPS Intent, install changes UserCA facts without creating runtime readiness or proxy consequences.
+A CA lifecycle command boundary where installing or repairing the Installed User CA does not read, require, create, or modify the Upstream List. A live Gateway adopts the returned UserCA Current State and independently recomputes selector consequences.
 _Avoid_: install-time configuration bootstrap, intent-dependent install, separate readiness endpoint, restart-required recovery
 
 **UserCA Install Reconciliation**:
@@ -537,20 +573,20 @@ An install behavior that reuses valid UserCA Signing Material, repairs its missi
 _Avoid_: proxy failure-triggered CA replacement, overlapping trusted roots, partial replacement, UserCA-owned runtime coordination
 
 **Idempotent CA Install**:
-A CA lifecycle command behavior where installing reuses valid UserCA trust without requesting platform approval or changing CA material, while Gateway withdraws and refreshes a live HTTPS Pipeline only when HTTPS Intent exists.
+A CA lifecycle command behavior where installing reuses valid UserCA trust without requesting platform approval or changing CA material, while Gateway withdraws and refreshes Trusted HTTPS Interception only when it is active.
 _Avoid_: reinstalling valid CA, proxy failure-triggered rotation, noisy no-op install, repeated trust approval
 
 **Active HTTPS Uninstall Consent**:
-A confirmation required before UserCA uninstall disables active Trusted HTTPS Interception and removes the Installed UserCA Pair. Consent authorizes that identity-independent consequence rather than a certificate fingerprint; declining leaves HTTPS Readiness and all UserCA state unchanged, and no confirmation is required when interception is already inactive.
+A confirmation required before UserCA uninstall disables active Trusted HTTPS Interception and removes the Installed UserCA Pair. Consent authorizes that identity-independent consequence rather than a certificate fingerprint; declining leaves all UserCA facts and active outcomes unchanged, and no confirmation is required when interception is already inactive.
 _Avoid_: certificate-bound consent, active-runtime uninstall block, unconditional uninstall prompt, partial UserCA removal, implicit consent
 
 **Live UserCA Uninstall**:
-A confirmed UserCA uninstall behavior where Gateway first adopts and serves the no-HTTPS PAC Projection, then atomically installs direct-tunnel CONNECT behavior and cancels its deadline timer before UserCA removes owned CA material and OS trust. Gateway does not wait for asynchronous Managed PAC Reconciliation before deactivating the proxy. Successful verified removal establishes the absent UserCA state; failed or incomplete removal leaves HTTPS not-ready without restoring the previous signing material, and recovery requires explicit install or an uninstall retry.
+A confirmed UserCA uninstall behavior where Gateway first adopts and serves the no-HTTPS PAC Projection, then atomically installs direct-tunnel CONNECT behavior and cancels its deadline timer before UserCA removes owned CA material and OS trust. Successful verified removal establishes not-usable UserCA; failed assessment establishes a UserCA Assessment Issue, and neither case restores previous signing material automatically.
 _Avoid_: trust removal before proxy deactivation, automatic signing-material restoration, partial-failure HTTPS recovery, uninstall-owned PAC coordination
 
 **Upstream-Independent CA Uninstall**:
 A CA lifecycle command boundary where removing the Installed User CA does not modify the Upstream List.
-_Avoid_: uninstall editing HTTPS Intent, config-coupled removal
+_Avoid_: uninstall editing Gateway Traffic Demand inputs, config-coupled removal
 
 **Idempotent CA Uninstall**:
 A CA lifecycle command behavior where uninstalling reports the absent postcondition as one fulfilled outcome whether or not seamless-cors-owned CA trust or local CA material was present. It does not change configuration or require repair.
@@ -569,7 +605,7 @@ A command invocation that asks an existing Gateway Owner to perform user-facing 
 _Avoid_: detached owner, fake foreground control, remote Ctrl-C ownership
 
 **Owner-Routed CA Lifecycle Command**:
-A CA Lifecycle Command behavior where work is sent to an existing Gateway Owner or publishes a Transient Gateway Owner when none exists. This keeps UserCA mutation available during a long-running gateway while the owner coordinates HTTPS Readiness and Managed PAC consequences.
+A CA Lifecycle Command behavior where work is sent to an existing Gateway Owner or publishes a Transient Gateway Owner when none exists. This keeps UserCA mutation available during a long-running gateway while the owner coordinates retained UserCA facts, demands, active outcomes, and Managed PAC consequences.
 _Avoid_: bypassing owner command authority, ownerless local mutation, separate CA Mutation Lease, separate readiness endpoint, blanket active-runtime rejection
 
 **Gateway Footprint Cleanup**:
@@ -584,24 +620,24 @@ _Avoid_: previous-state rollback, proxy restoration, corporate PAC reconstructio
 A status output intended for interactive DEV/QA use rather than machine-readable automation.
 _Avoid_: JSON status, scripting API
 
-**Human HTTPS Status**:
-A compact Human Status rendering of `https: inactive` when the HTTPS Pipeline is absent or its HTTPS Readiness is not-ready, and `https: active` when the admitted pipeline is ready, followed by diagnostics originating from that pipeline. Machine status omits HTTPS Readiness when the pipeline is absent; Installed User CA status remains an independent read model rather than implying runtime readiness.
-_Avoid_: absent-means-not-ready, `https-interception-health`, `trusted-https-active`, generic warning collection, internal state dump
+**Human Traffic Status**:
+A compact Human Status rendering of HTTP CORS and HTTPS CORS as `active`, `blocked`, or `inactive`, and HTTPS Facade as `active` or `inactive`. Active outcomes describe the Served Traffic Projection through working managed routing; Traffic Projection Current separately reports whether it matches Gateway's latest desired projection, while Managed PAC Warnings report per-service delivery failures. Blocking detail comes from absent working managed routing, established not-usable UserCA guidance, UserCA Assessment Issue, or a demanded feature not yet served, without exposing HTTPS Pipeline.
+_Avoid_: Human HTTPS Status, pipeline status, generic HTTPS active, internal state dump
 
 **Read-Only Status**:
-A status behavior that reports gateway, cleanup-needed, Installed User CA, Human HTTPS Status, and stale Gateway State Cache detection without latching HTTPS Readiness Loss or changing proxy settings, CA trust, local CA material, runtime files, or discovery state. An existing owner reports its latched UserCA Current State, an ownerless command uses Ownership-Protected Status Assessment, and admitted CA work is reported as `userca: mutating`.
+A status behavior that freshly observes managed routing and reports gateway, cleanup-needed, Installed User CA, Human Traffic Status, Traffic Projection Current, per-service Managed PAC Warnings, UserCA Assessment Issue, and stale Gateway State Cache detection without changing proxy settings, CA trust, local CA material, runtime files, or discovery state. The fresh observation may update Gateway's retained Traffic Routing Ready fact but never mutates OS routing; Managed PAC reconciliation performs the same observation without a polling loop.
 _Avoid_: status-triggered cleanup, mutating status command
 
 **Gateway Status State**:
-A read-only gateway status vocabulary that describes whether the Gateway Owner and Gateway Runtime are absent, stale, router-only, ending, starting, or running without encoding Command Fulfillment, cleanup, HTTPS Readiness, or UserCA Usability. A Status Result keeps its Operation-Specific Result Kind separate from this state: `reported` is fulfilled for every reported state, while an ownership-transition result is unfulfilled and has no reported state.
+A read-only gateway status vocabulary that describes whether the Gateway Owner and Gateway Runtime are absent, stale, router-only, ending, starting, or running without encoding Command Fulfillment, cleanup, traffic outcomes, or UserCA Usability. A Status Result keeps its Operation-Specific Result Kind separate from this state: `reported` is fulfilled for every reported state, while an ownership-transition result is unfulfilled and has no reported state.
 _Avoid_: status-as-command-failure, cleanup status, UserCA state, start result, runtime state file truth
 
 **UserCA Usability**:
-A two-state assessment where UserCA is `usable` only when one valid Installed UserCA Pair has matching current-user OS trust, and is otherwise `not-usable`. Renewal due is an independent fact; private reconciliation facts do not cross the UserCA seam, assessment failure is an error, and `mutating` belongs to Gateway command coordination rather than UserCA state.
+A two-state module-owned fact where UserCA is `usable` only when one valid Installed UserCA Pair has matching current-user OS trust, and is otherwise `not-usable`; Gateway establishes and maintains it throughout every running Gateway Runtime independently of current selectors. An adopted Upstream List update reassesses only a current not-usable fact or UserCA Assessment Issue, while usable state waits for lifecycle work or its expiry deadline.
 _Avoid_: public missing/expired/mismatched state taxonomy, unknown UserCA state, public cleanup state, mutation-as-UserCA-state
 
 **UserCA Current State**:
-One coherent current UserCA result exposing UserCA Usability, expiry, and renewal due and, exactly when usable, matching opaque UserCA Signing Material. UserCA freshly derives it from the Installed UserCA Pair and current-user OS trust and validates authority structure, validity, constraints, self-signature, and key correspondence so Gateway never reconstructs or matches signing material itself. Gateway may retain an admitted Current State but UserCA never caches one.
+One coherent current UserCA result exposing UserCA Usability, expiry, and renewal due and, exactly when usable, matching opaque UserCA Signing Material. UserCA freshly derives it from the Installed UserCA Pair and current-user OS trust; Gateway Runtime retains the complete result independently of selectors while UserCA never caches one.
 _Avoid_: UserCA Snapshot, UserCA Assessment value, independently loaded status and signer, raw PEM, CA storage paths, cached UserCA state, live CA watcher, usable state without signing material
 
 **Diagnostic Runtime Endpoint**:
@@ -633,7 +669,7 @@ A valid Upstream List state with no active entries, including a file that contai
 _Avoid_: startup failure for no active entries, proxy-all fallback
 
 **Upstream List Warning**:
-A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing produce adopted Upstream List Projections and request Managed PAC publication even when effective routes are unchanged.
+A persistent line-level diagnostic for an invalid Upstream List line that is ignored while other valid Upstream List Entries remain active. Warning appearance, change, and clearing produce adopted Upstream List Projections; semantically unchanged Traffic Projections remain current without making PAC delivery status part of feature activation.
 _Avoid_: silent invalid entry, fatal line error, transient log warning, semantic no-op, unpublished warning transition
 
 **Upstream List Observation Failure**:
@@ -645,7 +681,7 @@ A normalized routing value decoded by the Upstream List module as either a Host 
 _Avoid_: source-text-bearing entry, rule, matcher expression
 
 **Host Selector**:
-An Upstream List Entry variant containing a lowercase ASCII hostname without a scheme or port, selecting that exact hostname over HTTP on any port and additionally over HTTPS on any port only while Managed HTTPS Routing is active, unless its source uses `*.` to select a Single-Label Wildcard. Host Selectors do not themselves express HTTPS Intent; wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
+An Upstream List Entry variant containing a lowercase ASCII hostname without a scheme or port, producing HTTP CORS Demand on any port and additionally producing HTTPS CORS Demand only while UserCA is usable, unless its source uses `*.` to select a Single-Label Wildcard. Wildcard syntax is interpreted only for this variant, and IP literal spelling is not canonicalized.
 _Avoid_: Domain Selector, Hostname Selector, Hostname Shorthand, scheme-less origin, port-qualified domain
 
 **PAC Route**:
@@ -657,11 +693,11 @@ An Upstream List Entry variant containing an HTTP(S) scheme, lowercase ASCII hos
 _Avoid_: Full Origin, URL selector, scheme-qualified domain, wildcard-bearing origin
 
 **HTTPS Facade**:
-The browser-routing and TLS-terminating reverse-proxy feature for HTTP origins, active when at least one HTTP Origin Selector exists and independently established HTTPS Intent has ready HTTPS Readiness. Each unshadowed HTTP Origin Selector contributes an HTTPS Facade Route whose intercepted requests are sent to that selector's HTTP upstream; the outbound request authority identifies that selected HTTP origin while the browser URL and browser-origin headers remain façade-facing. The HTTP origin need not know that the façade is HTTPS, so the proxy keeps origin-generated navigation on the browser-facing HTTPS origin without rewriting response bodies; HTTPS Routing Specificity resolves overlaps, and current selector changes take effect at each decrypted request boundary. HTTPS Facade has no independent lifecycle or status state because activation is derived entirely from its Projection and HTTPS Readiness.
+The automatic browser-routing and TLS-terminating reverse-proxy ability for HTTP origins, active when Traffic Routing Ready holds, the Served Traffic Projection contains at least one unshadowed HTTPS Facade Route with matching forwarding behavior, and the current usable UserCA identity matches that projection's interception identity. It has no demand or blocked state; not-usable UserCA, UserCA Assessment Issue, or identity mismatch makes it inactive, while HTTP CORS remains independent. Intercepted browser HTTPS requests are sent to the selected HTTP upstream, with Traffic Projection Current and per-service PAC delivery warnings reported separately.
 _Avoid_: HTTP Origin HTTPS Facade, HTTP selector HTTPS Intent, implicit HTTPS selector, HTTPS upstream, TLS passthrough, scheme alias
 
 **HTTPS Facade Projection**:
-The complete immutable HTTPS Facade interpretation of current Origin Selectors, containing the unshadowed browser HTTPS origin to HTTP upstream mappings selected by HTTPS Routing Specificity independently of current HTTPS Readiness. Gateway forms the Projection once for PAC Routing and atomically publishes it through HTTPS Facade's request-boundary lookup shared by every Proxy generation, so browser selection and intercepted forwarding cannot derive different mappings; selector changes preserve the active generation and certificate cache while CA changes may still replace the whole generation.
+The complete immutable HTTPS Facade interpretation of Origin Selectors, containing the unshadowed browser HTTPS origin to HTTP upstream mappings selected by HTTPS Routing Specificity independently of UserCA Usability. Gateway forms the projection once for PAC Routing and includes matching forwarding behavior in the same coherent traffic publication, so browser selection and intercepted forwarding cannot derive different mappings.
 _Avoid_: Proxy-owned selector filtering, PAC-only façade routes, readiness-coupled projection, duplicated façade policy
 
 **HTTPS Facade Route**:
@@ -848,11 +884,11 @@ QA engineer: "Every supported platform needs a managed PAC adapter; platforms wi
 
 Developer: "After I update the Upstream List, do I need to restart the gateway?"
 
-QA engineer: "No, Gateway continuously observes the file, adopts every successfully decoded Upstream List Projection, and publishes the resulting PAC Projection to Managed PAC."
+QA engineer: "No, Gateway continuously observes the file, adopts every successfully decoded Upstream List Projection, switches to the resulting Traffic Projection, and asks Managed PAC to deliver its PAC URL independently to each managed Network Service."
 
 Developer: "What happens if I save an invalid config file while the gateway is running?"
 
-QA engineer: "Rejected Upstream List Contents produce an Upstream List Projection Issue while Gateway selects an Empty Upstream List, publishes that adopted projection, and continues observing for a valid correction."
+QA engineer: "Rejected Upstream List Contents produce an Upstream List Projection Issue while Gateway selects an Empty Upstream List, serves the resulting Traffic Projection, and continues observing for a valid correction."
 
 Developer: "What if my config still has removed listener or managed-proxy settings?"
 

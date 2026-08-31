@@ -5,26 +5,26 @@ import (
 	"fmt"
 )
 
-func cleanManagedPACActiveState(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailureDetail) {
+func cleanManagedPACActiveState(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailure) {
 	result, err := pac.CleanupActiveState(ctx)
 	issues := managedPACObservationIssueDetails(result.ObservationIssues())
 	if err != nil {
-		return issues, &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
+		return issues, &CleanupFailure{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
 	return issues, nil
 }
 
-func uninstallManagedPAC(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailureDetail) {
+func uninstallManagedPAC(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailure) {
 	result, err := pac.Uninstall(ctx)
 	issues := managedPACObservationIssueDetails(result.ObservationIssues())
 	if err != nil {
-		return issues, &CleanupFailureDetail{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
+		return issues, &CleanupFailure{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
 	return issues, nil
 }
 
-func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coordinator, ownedCache *stateCache) ([]ManagedPACObservationIssue, []CleanupFailureDetail) {
-	var failures []CleanupFailureDetail
+func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coordinator, ownedCache *stateCache) ([]ManagedPACObservationIssue, []CleanupFailure) {
+	var failures []CleanupFailure
 	issues, failure := cleanManagedPACActiveState(ctx, pac)
 	if failure != nil {
 		failures = append(failures, *failure)
@@ -32,7 +32,7 @@ func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coo
 	return issues, append(failures, cleanGatewayStateCache(coord, ownedCache)...)
 }
 
-func cleanGatewayStateCache(coord *coordinator, ownedCache *stateCache) []CleanupFailureDetail {
+func cleanGatewayStateCache(coord *coordinator, ownedCache *stateCache) []CleanupFailure {
 	var err error
 	if ownedCache == nil {
 		err = coord.Remove()
@@ -42,7 +42,7 @@ func cleanGatewayStateCache(coord *coordinator, ownedCache *stateCache) []Cleanu
 	if err == nil {
 		return nil
 	}
-	return []CleanupFailureDetail{{
+	return []CleanupFailure{{
 		Subject:    CleanupSubjectGatewayStateCache,
 		Diagnostic: fmt.Errorf("gateway state cache cleanup failed: %w", err).Error(),
 	}}

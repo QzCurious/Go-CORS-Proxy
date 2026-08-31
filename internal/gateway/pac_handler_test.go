@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-func TestLivePACHandlerServesLatestContent(t *testing.T) {
-	handler := newLivePACHandler("initial PAC")
-	handler.Set("latest PAC")
+func TestLiveTrafficProjectionServesPACFromCurrentProjection(t *testing.T) {
+	handler := newLiveTrafficProjection()
+	handler.Store(&servedTrafficProjection{pacContent: "latest PAC", proxy: http.NotFoundHandler()})
 
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/seamless-cors.pac", nil)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	handler.servePAC(response, request)
 
 	if response.Code != http.StatusOK || response.Body.String() != "latest PAC" {
 		t.Fatalf("handler response = %d %q", response.Code, response.Body.String())

@@ -95,9 +95,6 @@ func status(ctx context.Context, pac managedPACModule, ca userCAModule) (StatusR
 	if err != nil {
 		return StatusResult{}, err
 	}
-	if lifecycle.userCAAssessmentErr != nil {
-		return StatusResult{}, lifecycle.userCAAssessmentErr
-	}
 	return lifecycle.Status(ctx, target.kind == targetStale)
 }
 

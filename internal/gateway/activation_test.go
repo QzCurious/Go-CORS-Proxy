@@ -5,145 +5,55 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
-func TestExecuteStartAutomaticallyFixesManageableServicesWithoutBindingPACURLs(t *testing.T) {
+func TestExecuteStartComposesTrafficAndDeliversPAC(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	configDir := filepath.Join(home, ".seamless-cors")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
+	globalPath := filepath.Join(home, "upstreams.txt")
+	if err := os.WriteFile(globalPath, []byte("api.example.test\nhttp://plain.example.test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), nil, 0o600); err != nil {
-		t.Fatal(err)
+	settings := &lifecycleTestSystemSettings{
+		services:     []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		routingReady: true,
 	}
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{
-		{Name: "Wi-Fi", Enabled: true, URL: "http://corp.example/a.pac", Ownership: managedpac.OwnershipForeign},
-		{Name: "Ethernet", Ownership: managedpac.OwnershipEmpty},
-		{Name: "USB", Ownership: managedpac.OwnershipEmpty},
-	}}
-	installResult := managedpac.NewInstallResult(
-		managedpac.NewRuntimeState([]string{"Ethernet", "USB"}, "ignored by assertion"),
-		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Ethernet", Diagnostic: "foreign PAC state is active"}},
-	)
-	settings.installResult = &installResult
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(filepath.Join(configDir, "runtime")), "")
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
+	lifecycle.globalUpstreamListPath = globalPath
 
 	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
 	started, ok := result.(Started)
 	if !ok {
 		t.Fatalf("start = %#v", result)
 	}
-	if got := started.Guidance.ManagedPAC.ServiceSet; len(got) != 2 || got[0] != "Ethernet" || got[1] != "USB" {
-		t.Fatalf("fixed service set = %v", got)
+	if settings.applied != 1 || started.Guidance.Traffic.HTTPCORS != TrafficFeatureActive {
+		t.Fatalf("PAC installs = %d, traffic = %#v", settings.applied, started.Guidance.Traffic)
 	}
-	if len(started.Guidance.ManagedPAC.Warnings) != 1 || started.Guidance.ManagedPAC.Warnings[0].ServiceName != "Ethernet" {
-		t.Fatalf("managed PAC warnings = %#v", started.Guidance.ManagedPAC.Warnings)
-	}
-	if started.Guidance.ManagedPAC.PublicationURL != "ignored by assertion" {
-		t.Fatalf("Managed PAC publication URL = %q", started.Guidance.ManagedPAC.PublicationURL)
-	}
-	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-}
-
-func TestManagedPACStartDetailShowsUnobservableServiceAsExcluded(t *testing.T) {
-	issue := managedpac.ObservationIssue{ServiceName: "VPN", Diagnostic: "PAC query failed"}
-	detail := managedPACStartDetail(managedpac.NewSnapshot([]managedpac.Service{
-		{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty},
-		{Name: "VPN", Ownership: managedpac.OwnershipUnknown, ObservationIssue: &issue},
-	}))
-
-	if len(detail.CurrentPACState) != 2 || detail.CurrentPACState[0].ServiceName != "VPN" {
-		t.Fatalf("current PAC state = %#v", detail.CurrentPACState)
-	}
-	if detail.CurrentPACState[0].Ownership != PACOwnershipUnknown || detail.CurrentPACState[0].Manageable {
-		t.Fatalf("unobservable service state = %#v", detail.CurrentPACState[0])
-	}
-	if len(detail.ObservationIssues) != 1 || detail.ObservationIssues[0].ServiceName != "VPN" {
-		t.Fatalf("observation issues = %#v", detail.ObservationIssues)
-	}
-	if len(detail.ServiceSet) != 1 || detail.ServiceSet[0] != "Wi-Fi" {
-		t.Fatalf("service set = %#v", detail.ServiceSet)
-	}
-}
-
-func TestStatusAdoptsLatestManagedPACReconciliationSnapshot(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	configDir := filepath.Join(home, ".seamless-cors")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	results := make(chan managedpac.ReconciliationResult, 1)
-	settings := &lifecycleTestSystemSettings{
-		services:              []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
-		reconciliationResults: results,
-	}
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(filepath.Join(configDir, "runtime")), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
-	if _, err := executeAcceptedStart(t, lifecycle); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-
-	results <- managedpac.NewReconciliationResult(
-		managedpac.NewRuntimeState([]string{"Wi-Fi"}, "http://127.0.0.1/seamless-cors.pac?v=2"),
-		[]managedpac.Warning{{Kind: managedpac.WarningDrift, ServiceName: "Wi-Fi", Diagnostic: "foreign PAC state is active"}},
-		managedpac.ObservationIssue{ServiceName: "VPN", Diagnostic: "PAC query failed"},
-	)
-	deadline := time.Now().Add(time.Second)
-	for {
-		status, statusErr := lifecycle.Status(context.Background(), false)
-		if statusErr != nil {
-			t.Fatal(statusErr)
-		}
-		if status.Runtime != nil && status.Runtime.ManagedPACPublicationURL == "http://127.0.0.1/seamless-cors.pac?v=2" {
-			if len(status.Runtime.ManagedPACWarnings) != 1 || status.Runtime.ManagedPACWarnings[0].Kind != ManagedPACWarningDrift {
-				t.Fatalf("Managed PAC warnings = %#v", status.Runtime.ManagedPACWarnings)
-			}
-			if len(status.Runtime.ManagedPACObservationIssues) != 1 || status.Runtime.ManagedPACObservationIssues[0].ServiceName != "VPN" {
-				t.Fatalf("Managed PAC observation issues = %#v", status.Runtime.ManagedPACObservationIssues)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("status did not adopt reconciliation: %#v", status.Runtime)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if started.Guidance.Traffic.HTTPSCORS != TrafficFeatureInactive ||
+		started.Guidance.Traffic.HTTPSFacade != TrafficFeatureInactive {
+		t.Fatalf("unexpected HTTPS outcomes = %#v", started.Guidance.Traffic)
 	}
 }
 
 func TestExecuteStartLoadsGlobalAndDirectoryUpstreamLists(t *testing.T) {
-	globalPath := filepath.Join(t.TempDir(), "seamless-cors", "upstreams.txt")
-	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	globalPath := filepath.Join(t.TempDir(), "upstreams.txt")
 	if err := os.WriteFile(globalPath, []byte("global.example.test\nshared.example.test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	workingDirectory := t.TempDir()
-	directoryPath := filepath.Join(workingDirectory, "upstreams.txt")
-	if err := os.WriteFile(directoryPath, []byte("shared.example.test\ndirectory.example.test\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(workingDirectory, "upstreams.txt"), []byte("shared.example.test\ndirectory.example.test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
@@ -152,590 +62,140 @@ func TestExecuteStartLoadsGlobalAndDirectoryUpstreamLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	lifecycle.globalUpstreamListPath = globalPath
-
 	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: workingDirectory})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-	started, ok := result.(Started)
-	if !ok || len(started.Guidance.UpstreamLists) != 2 {
-		t.Fatalf("start result = %#v", result)
+	if _, ok := result.(Started); !ok {
+		t.Fatalf("start = %#v", result)
 	}
 	status, err := lifecycle.Status(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Runtime == nil || status.Runtime.UpstreamCount != 3 ||
-		status.Runtime.UpstreamLists[0].Path != globalPath || status.Runtime.UpstreamLists[1].Path != directoryPath {
-		t.Fatalf("runtime source state = %#v", status.Runtime)
+	if status.Runtime == nil || status.Runtime.UpstreamCount != 3 || len(status.Runtime.UpstreamLists) != 2 {
+		t.Fatalf("runtime = %#v", status.Runtime)
 	}
 }
 
-func TestExecuteStartRequiresCreationConsentThenCreatesBeforeAutomaticPACActivation(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	lifecycle, err := newLifecycle(
-		&lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}},
-		emptyTestUserCA{}, newCoordinator(filepath.Join(home, "runtime")), "",
-	)
+func TestStartReportsBlockedHTTPSAndAssessmentIssue(t *testing.T) {
+	globalPath := filepath.Join(t.TempDir(), "upstreams.txt")
+	if err := os.WriteFile(globalPath, []byte("https://secure.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings := &lifecycleTestSystemSettings{
+		services:     []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		routingReady: true,
+	}
+	ca := &fakeUserCA{inspectErr: errors.New("trust store unavailable")}
+	lifecycle, err := newLifecycle(settings, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lifecycle.globalUpstreamListPath = filepath.Join(t.TempDir(), "seamless-cors", "upstreams.txt")
-	first, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
+	lifecycle.globalUpstreamListPath = globalPath
+	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
-	}
-	creation, ok := first.(StartUpstreamListCreationConsentRequired)
-	if !ok {
-		t.Fatalf("first = %#v", first)
-	}
-	second, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{
-		Decision: UpstreamListCreationAccepted, Fingerprint: creation.Consent.Fingerprint,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := second.(Started); !ok {
-		t.Fatalf("second = %#v", second)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-	if _, err := os.Stat(creation.Consent.Path); err != nil {
-		t.Fatalf("created file: %v", err)
+	started := result.(Started)
+	if started.Guidance.Traffic.HTTPSCORS != TrafficFeatureBlocked || started.Guidance.UserCAIssue == nil {
+		t.Fatalf("guidance = %#v", started.Guidance)
 	}
 }
 
-func TestExecuteStartReportsEarlyCleanupFailureAsStructuredOutcome(t *testing.T) {
-	settings := &lifecycleTestSystemSettings{
-		clearErr: errors.New("cleanup denied"),
-	}
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
+func TestInstallSwitchesActiveRuntimeToMatchingUserCAProjection(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileContents("https://secure.example.test\nhttp://plain.example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	result, err := executeAcceptedStart(t, lifecycle)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	cleanup, ok := result.(StartCleanupFailed)
-	if !ok || len(cleanup.Failures) != 1 {
-		t.Fatalf("start result = %#v", result)
-	}
-	if settings.cleanupCalls != 1 || settings.uninstallCalls != 0 {
-		t.Fatalf("cleanup calls = %d, uninstall calls = %d", settings.cleanupCalls, settings.uninstallCalls)
-	}
-}
-
-func TestExecuteStartStopsWhenNoManageablePACServiceExists(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
-		Name: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true, Ownership: managedpac.OwnershipForeign,
-	}}}
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	noServices, ok := result.(StartNoManageablePACServices)
-	if !ok || lifecycle.RuntimeActive() {
-		t.Fatalf("start result = %#v runtime active = %t", result, lifecycle.RuntimeActive())
-	}
-	if len(noServices.Detail.ServiceSet) != 0 {
-		t.Fatalf("service assessment = %#v", noServices.Detail)
-	}
-	if settings.applied != 0 {
-		t.Fatalf("PAC writes = %d, want none", settings.applied)
-	}
-}
-
-func TestExecuteStartReportsWarningsWhenManagedPACInstallationReachesNoService(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	settings := &lifecycleTestSystemSettings{
-		services:   []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
-		installErr: errors.New("managed PAC install updated no services"),
-	}
-	installResult := managedpac.NewInstallResult(
-		managedpac.NewRuntimeState([]string{"Wi-Fi"}, ""),
-		[]managedpac.Warning{{Kind: managedpac.WarningUpdateFailed, ServiceName: "Wi-Fi", Diagnostic: "PAC write denied"}},
-	)
-	settings.installResult = &installResult
-	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycle.globalUpstreamListPath = filepath.Join(home, "upstreams.txt")
-
-	result, err := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir(), UpstreamListCreationConsent: &UpstreamListCreationConsentInput{Decision: UpstreamListCreationDeclined}})
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	failed, ok := result.(StartManagedPACInstallationFailed)
-	if !ok || len(failed.Warnings) != 1 {
-		t.Fatalf("start result = %#v", result)
-	}
-	if warning := failed.Warnings[0]; warning.ServiceName != "Wi-Fi" || warning.Kind != ManagedPACWarningUpdateFailed {
-		t.Fatalf("Managed PAC warning = %#v", warning)
-	}
-}
-
-func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	ca := &fakeUserCA{
-		installState: testUserCAState(t, time.Now().Add(24*time.Hour), false),
-	}
-	lifecycle, err := newLifecycle(
-		&lifecycleTestSystemSettings{},
-		ca,
-		newCoordinator(filepath.Join(home, ".seamless-cors", "runtime")),
-		"",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	globalPath := filepath.Join(t.TempDir(), "seamless-cors", "upstreams.txt")
-	lifecycle.globalUpstreamListPath = globalPath
-
-	result, err := lifecycle.Install(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.HTTPSPipeline != nil {
-		t.Fatalf("install without HTTPS Intent returned pipeline detail: %#v", result.HTTPSPipeline)
-	}
-	if ca.installCalls != 1 {
-		t.Fatalf("UserCA install calls = %d", ca.installCalls)
-	}
-	if _, err := os.Stat(globalPath); !os.IsNotExist(err) {
-		t.Fatalf("install touched Upstream List source: %v", err)
-	}
-}
-
-func TestInstallRecoversHTTPSInActiveRuntime(t *testing.T) {
-	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	engine.SetInitialHTTPSAssessment(userCAState{}, nil)
+	defer closeTrafficTestRuntime(runtime)
 	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
 	ca := &fakeUserCA{installState: installed}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+	active := &activeRuntime{engine: runtime, ctx: context.Background(), phase: runtimePhaseRunning}
+	lifecycle.runtime = active
 
 	result, err := lifecycle.Install(context.Background())
-
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != InstallResultInstalled || pipelineReadiness(engine.snapshot().HTTPSPipeline) != HTTPSReadinessReady {
-		t.Fatalf("install result = %#v runtime = %#v", result, engine.snapshot())
+	state := runtime.snapshot()
+	if result.Kind != InstallResultInstalled || !state.ServedHTTPSCORS || !state.ServedHTTPSFacade || !state.UserCAIdentityMatches {
+		t.Fatalf("result = %#v, traffic = %#v", result, state)
 	}
 }
 
 func TestInstallWithdrawsHTTPSBeforeUserCAMutation(t *testing.T) {
-	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, snapshot)
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileContents("https://secure.example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeTrafficTestRuntime(engine)
-	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
-	engine.SetInitialHTTPSAssessment(installed, nil)
-	var inactiveDuringInstall bool
-	ca := &fakeUserCA{
-		state: installed,
-		install: func(context.Context) (userCAState, error) {
-			inactiveDuringInstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
-			return installed, nil
-		},
-	}
+	defer closeTrafficTestRuntime(runtime)
+	current := testUserCAState(t, time.Now().Add(24*time.Hour), false)
+	runtime.AdoptUserCA(current, nil)
+	withdrawn := false
+	ca := &fakeUserCA{install: func(context.Context) (userCAState, error) {
+		withdrawn = !runtime.snapshot().ServedHTTPSCORS
+		return current, nil
+	}}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
-
-	result, err := lifecycle.Install(context.Background())
-
-	if err != nil {
+	lifecycle.runtime = &activeRuntime{engine: runtime, ctx: context.Background(), phase: runtimePhaseRunning}
+	if _, err := lifecycle.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != InstallResultInstalled || !inactiveDuringInstall || pipelineReadiness(engine.snapshot().HTTPSPipeline) != HTTPSReadinessReady {
-		t.Fatalf("install = %#v inactive during mutation %t runtime = %#v", result, inactiveDuringInstall, engine.snapshot())
+	if !withdrawn {
+		t.Fatal("UserCA mutation began before HTTPS traffic was withdrawn")
 	}
 }
 
-func TestInstallFailureLeavesHTTPSWithdrawn(t *testing.T) {
-	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, snapshot)
+func TestUserCADeadlineInvalidatesServedHTTPSBeforeReassessment(t *testing.T) {
+	runtime, err := newRuntime("/tmp/upstreams.txt", nil, fileContents("https://secure.example.test\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeTrafficTestRuntime(engine)
-	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
-	engine.SetInitialHTTPSAssessment(installed, nil)
-	wantErr := errors.New("trust mutation failed")
-	ca := &fakeUserCA{state: installed, installErr: wantErr}
-	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
-
-	if _, err := lifecycle.Install(context.Background()); !errors.Is(err, wantErr) {
-		t.Fatalf("install error = %v", err)
-	}
-	state := engine.snapshot()
-	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessNotReady || state.HTTPSPipeline.UserCAAssessmentIssue == nil {
-		t.Fatalf("failed install runtime = %#v", state)
-	}
-}
-
-func TestDeadlineSignalReassessesAndWithdrawsUnusableHTTPS(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCAState(t, time.Now().Add(time.Hour), false)
-	engine.SetInitialHTTPSAssessment(assessment, nil)
-	select {
-	case <-engine.PACProjections():
-	default:
-	}
+	defer closeTrafficTestRuntime(runtime)
+	current := testUserCAState(t, time.Now().Add(time.Hour), false)
+	runtime.AdoptUserCA(current, nil)
 	ca := &fakeUserCA{}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
+	active := &activeRuntime{engine: runtime, ctx: context.Background(), phase: runtimePhaseRunning}
 	lifecycle.runtime = active
+	lifecycle.userCAState = current
 
-	lifecycle.handleHTTPSDeadline(active, engine.snapshot().HTTPSGeneration)
-
-	state := engine.snapshot()
-	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessNotReady {
-		t.Fatalf("deadline state = %#v", state)
-	}
-	select {
-	case desired := <-engine.PACProjections():
-		if strings.Contains(desired, "api.example.test") {
-			t.Fatalf("deadline retained HTTPS PAC route: %s", desired)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("deadline did not publish PAC withdrawal")
+	lifecycle.handleUserCADeadline(active, runtime.snapshot().UserCARevision)
+	if runtime.snapshot().ServedHTTPSCORS {
+		t.Fatal("expired UserCA left HTTPS routes served")
 	}
 }
 
-func TestStaleDeadlineSignalLeavesFreshUsableHTTPSAlone(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCAState(t, time.Now().Add(time.Hour), false)
-	engine.SetInitialHTTPSAssessment(assessment, nil)
-	select {
-	case <-engine.PACProjections():
-	default:
-	}
-	ca := &fakeUserCA{state: assessment}
+func TestInstallUsesOnlyUserCAAndDoesNotCreateUpstreamList(t *testing.T) {
+	ca := &fakeUserCA{installState: testUserCAState(t, time.Now().Add(24*time.Hour), false)}
 	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
-	lifecycle.runtime = active
-
-	lifecycle.handleHTTPSDeadline(active, engine.snapshot().HTTPSGeneration)
-
-	state := engine.snapshot()
-	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessReady {
-		t.Fatalf("stale deadline changed usable HTTPS: %#v", state)
+	globalPath := filepath.Join(t.TempDir(), "upstreams.txt")
+	lifecycle.globalUpstreamListPath = globalPath
+	if _, err := lifecycle.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(globalPath); !os.IsNotExist(err) {
+		t.Fatalf("install touched Upstream List: %v", err)
 	}
 }
 
-func TestDeadlineAssessmentFailureWithdrawsHTTPSAndReportsReadinessError(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCAState(t, time.Now().Add(time.Hour), false)
-	engine.SetInitialHTTPSAssessment(assessment, nil)
-	select {
-	case <-engine.PACProjections():
-	default:
-	}
-	ca := &fakeUserCA{inspectErr: errors.New("trust store unavailable")}
-	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
-	lifecycle.runtime = active
-
-	lifecycle.handleHTTPSDeadline(active, engine.snapshot().HTTPSGeneration)
-
-	state := engine.snapshot()
-	if pipelineReadiness(state.HTTPSPipeline) != HTTPSReadinessNotReady {
-		t.Fatalf("assessment failure state = %#v", state)
-	}
-	if state.HTTPSPipeline.UserCAAssessmentIssue == nil || !strings.Contains(state.HTTPSPipeline.UserCAAssessmentIssue.Cause, "trust store unavailable") {
-		t.Fatalf("assessment failure detail = %#v", state.HTTPSPipeline)
-	}
-	select {
-	case desired := <-engine.PACProjections():
-		if strings.Contains(desired, "api.example.test") {
-			t.Fatalf("assessment failure retained HTTPS PAC route: %s", desired)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("assessment failure did not publish PAC withdrawal")
-	}
-}
-
-func TestGatewayDeadlineTimerReassessesAndWithdrawsHTTPS(t *testing.T) {
-	source, upstreams, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, upstreams)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	assessment := testUserCAState(t, time.Now().Add(75*time.Millisecond), false)
-	engine.SetInitialHTTPSAssessment(assessment, nil)
-	select {
-	case <-engine.PACProjections():
-	default:
-	}
-	var inspectCalls atomic.Int32
-	ca := &fakeUserCA{
-		inspect: func(context.Context) (userCAState, error) {
-			if inspectCalls.Add(1) == 1 {
-				return assessment, nil
-			}
-			return userCAState{}, nil
-		},
-	}
-	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := &activeRuntime{engine: engine, phase: runtimePhaseRunning}
-	lifecycle.runtime = active
-	lifecycle.scheduleHTTPSDeadline(active, assessment)
-
-	deadline := time.NewTimer(2 * time.Second)
-	defer deadline.Stop()
-	for {
-		state := engine.snapshot()
-		if pipelineReadiness(state.HTTPSPipeline) == HTTPSReadinessNotReady && inspectCalls.Load() >= 2 {
-			break
-		}
-		select {
-		case <-deadline.C:
-			t.Fatal("Gateway deadline timer did not deactivate HTTPS")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-}
-
-func TestCAAdmissionFailsFastAndStatusReportsMutating(t *testing.T) {
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userCAState, error) {
-			if ctx.Err() != nil {
-				return userCAState{}, ctx.Err()
-			}
-			close(entered)
-			<-release
-			return userCAState{}, nil
-		},
-	}
-	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := lifecycle.Install(context.Background())
-		done <- err
-	}()
-	<-entered
-
-	competing, err := lifecycle.Install(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if competing.Kind != InstallResultAlreadyMutating {
-		t.Fatalf("competing install result = %#v", competing)
-	}
-	status, err := lifecycle.Status(context.Background(), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.InstalledCA.Health != CAHealthMutating {
-		t.Fatalf("status health = %s", status.InstalledCA.Health)
-	}
-	close(release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestAdmittedCAOperationIgnoresRequestCancellation(t *testing.T) {
-	requestCtx, cancel := context.WithCancel(context.Background())
-	observed := make(chan error, 1)
-	ca := &fakeUserCA{
-		install: func(ctx context.Context) (userCAState, error) {
-			cancel()
-			observed <- ctx.Err()
-			return userCAState{}, nil
-		},
-	}
-	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := lifecycle.Install(requestCtx); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-observed; err != nil {
-		t.Fatalf("owner-owned operation inherited request cancellation: %v", err)
-	}
-}
-
-func TestLiveUninstallRequiresConsentThenDeactivatesBeforeRemoval(t *testing.T) {
-	source, snapshot, path := createTrafficConfig(t, "https://api.example.test\n")
-	engine, err := newRuntime(path, source, snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTrafficTestRuntime(engine)
-	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
-	engine.SetInitialHTTPSAssessment(installed, nil)
-	var inactiveDuringUninstall bool
-	ca := &fakeUserCA{
-		state: installed,
-		uninstall: func(context.Context) error {
-			inactiveDuringUninstall = pipelineReadiness(engine.snapshot().HTTPSPipeline) == HTTPSReadinessNotReady
-			return nil
-		},
-	}
-	lifecycle, err := newLifecycle(&lifecycleTestSystemSettings{}, ca, newCoordinator(t.TempDir()), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycle.runtime = &activeRuntime{engine: engine, phase: runtimePhaseRunning}
-
-	first, err := lifecycle.Uninstall(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Kind != UninstallResultConsentRequired || ca.uninstallCalls != 0 {
-		t.Fatalf("unconfirmed uninstall = %#v calls %d", first, ca.uninstallCalls)
-	}
-	second, err := lifecycle.UninstallWithConsent(context.Background(), first.ConsentFingerprint)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Kind != UninstallResultUninstalled || !inactiveDuringUninstall {
-		t.Fatalf("accepted uninstall = %#v inactive during removal %t", second, inactiveDuringUninstall)
-	}
-}
-
-func TestStartReportsUnmetHTTPSIntentWithoutInstallingUserCA(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	configDir := filepath.Join(home, ".seamless-cors")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), []byte("https://api.example.test\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
-	ca := &fakeUserCA{}
-	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
-	result, err := executeAcceptedStart(t, lifecycle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-	started, ok := result.(Started)
-	if !ok || pipelineReadiness(started.Guidance.HTTPSPipeline) != HTTPSReadinessNotReady ||
-		started.Guidance.HTTPSPipeline.UnmetIntent == nil {
-		t.Fatalf("start result = %#v", result)
-	}
-	if ca.installCalls != 0 {
-		t.Fatal("start implicitly installed UserCA")
-	}
-}
-
-func TestStartWithoutHTTPSIntentSkipsRuntimeUserCAInspection(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	configDir := filepath.Join(home, ".seamless-cors")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "upstreams.txt"), []byte("api.example.test\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	installed := testUserCAState(t, time.Now().Add(24*time.Hour), false)
-	ca := &fakeUserCA{state: installed}
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
-	lifecycle, err := newLifecycle(settings, ca, newCoordinator(filepath.Join(configDir, "runtime")), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	inspectionsAtConstruction := ca.inspectCalls
-
-	lifecycle.globalUpstreamListPath = filepath.Join(configDir, "upstreams.txt")
-	result, err := executeAcceptedStart(t, lifecycle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background()) })
-	started, ok := result.(Started)
-	if !ok || started.Guidance.HTTPSPipeline != nil {
-		t.Fatalf("start result = %#v", result)
-	}
-	if ca.inspectCalls != inspectionsAtConstruction {
-		t.Fatalf("start UserCA inspections = %d, want construction-only %d", ca.inspectCalls, inspectionsAtConstruction)
-	}
-}
-
-func pipelineReadiness(pipeline *HTTPSPipelineDetail) HTTPSReadinessStatus {
-	if pipeline == nil {
-		return ""
-	}
-	return pipeline.Readiness
-}
+func fileContents(value string) fileobservation.Contents { return fileobservation.Contents(value) }
 
 type fakeUserCA struct {
 	mu             sync.Mutex
@@ -754,12 +214,14 @@ type fakeUserCA struct {
 
 func (f *fakeUserCA) Inspect(ctx context.Context) (userCAState, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.inspectCalls++
-	if f.inspect != nil {
-		return f.inspect(ctx)
+	operation := f.inspect
+	state, err := f.state, f.inspectErr
+	f.mu.Unlock()
+	if operation != nil {
+		return operation(ctx)
 	}
-	return f.state, f.inspectErr
+	return state, err
 }
 
 func (f *fakeUserCA) Install(ctx context.Context) (userCAState, error) {
@@ -788,15 +250,9 @@ func (f *fakeUserCA) Uninstall(ctx context.Context) error {
 
 type emptyTestUserCA struct{}
 
-func (emptyTestUserCA) Inspect(context.Context) (userCAState, error) {
-	return userCAState{}, nil
-}
-func (emptyTestUserCA) Install(context.Context) (userCAState, error) {
-	return userCAState{}, nil
-}
-func (emptyTestUserCA) Uninstall(context.Context) error {
-	return nil
-}
+func (emptyTestUserCA) Inspect(context.Context) (userCAState, error) { return userCAState{}, nil }
+func (emptyTestUserCA) Install(context.Context) (userCAState, error) { return userCAState{}, nil }
+func (emptyTestUserCA) Uninstall(context.Context) error              { return nil }
 
 type lifecycleTestSystemSettings struct {
 	services              []managedpac.Service
@@ -810,6 +266,7 @@ type lifecycleTestSystemSettings struct {
 	uninstallCalls        int
 	cleanupResult         managedpac.CleanupResult
 	reconciliationResults <-chan managedpac.ReconciliationResult
+	routingReady          bool
 }
 
 func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
@@ -819,18 +276,19 @@ func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snaps
 	return managedpac.NewSnapshot(f.services), nil
 }
 
-func (f *lifecycleTestSystemSettings) InstallProjection(_ context.Context, services []string, pacListen, _ string) (managedpac.InstallResult, error) {
+func (f *lifecycleTestSystemSettings) Install(_ context.Context, services []string, _ string) (managedpac.InstallResult, error) {
 	f.applied++
 	if f.installResult != nil {
 		return *f.installResult, f.installErr
 	}
-	return managedpac.NewInstallResult(
-		managedpac.NewRuntimeState(append([]string(nil), services...), "http://"+pacListen+"/seamless-cors.pac?v=1"),
-		nil,
-	), f.installErr
+	return managedpac.NewInstallResult(managedpac.NewRuntimeState(services), nil), f.installErr
 }
 
-func (*lifecycleTestSystemSettings) PublishProjection(string) {}
+func (*lifecycleTestSystemSettings) Deliver() {}
+
+func (f *lifecycleTestSystemSettings) RoutingReady(context.Context, string) (bool, []managedpac.ObservationIssue, error) {
+	return f.routingReady, nil, nil
+}
 
 func (f *lifecycleTestSystemSettings) ReconciliationResults() <-chan managedpac.ReconciliationResult {
 	return f.reconciliationResults
@@ -839,19 +297,13 @@ func (f *lifecycleTestSystemSettings) ReconciliationResults() <-chan managedpac.
 func (f *lifecycleTestSystemSettings) CleanupActiveState(context.Context) (managedpac.CleanupResult, error) {
 	f.cleared++
 	f.cleanupCalls++
-	if f.clearErr != nil {
-		return f.cleanupResult, f.clearErr
-	}
-	return f.cleanupResult, nil
+	return f.cleanupResult, f.clearErr
 }
 
 func (f *lifecycleTestSystemSettings) Uninstall(context.Context) (managedpac.CleanupResult, error) {
 	f.cleared++
 	f.uninstallCalls++
-	if f.clearErr != nil {
-		return f.cleanupResult, f.clearErr
-	}
-	return f.cleanupResult, nil
+	return f.cleanupResult, f.clearErr
 }
 
 func executeAcceptedStart(t *testing.T, lifecycle *lifecycle) (StartResult, error) {

@@ -9,10 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/httpsfacade"
 	"github.com/QzCurious/seamless-cors/internal/lib/pacsettings"
-	"github.com/QzCurious/seamless-cors/internal/pacrouting"
-	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
 type fakeSettings struct {
@@ -172,7 +169,41 @@ func TestInspectDoesNotClassifyCancellationAsObservationIssue(t *testing.T) {
 	}
 }
 
-func TestInstallProjectionSkipsObservationIssueWithoutRetry(t *testing.T) {
+func TestRoutingReadyRequiresAnEnabledOwnedURLForCurrentRuntime(t *testing.T) {
+	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := openWithSettings(settings)
+	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		url     string
+		enabled bool
+		want    bool
+	}{
+		{name: "current endpoint with older generation", url: "http://127.0.0.1:8081/seamless-cors.pac?v=1", enabled: true, want: true},
+		{name: "previous runtime endpoint", url: "http://127.0.0.1:8080/seamless-cors.pac?v=9", enabled: true},
+		{name: "different path", url: "http://127.0.0.1:8081/other.pac", enabled: true},
+		{name: "disabled", url: "http://127.0.0.1:8081/seamless-cors.pac?v=2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			settings.mu.Lock()
+			settings.states[0].URL = tt.url
+			settings.states[0].Enabled = tt.enabled
+			settings.mu.Unlock()
+			got, _, err := module.RoutingReady(context.Background(), "127.0.0.1:8081")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("RoutingReady() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstallSkipsObservationIssueWithoutRetry(t *testing.T) {
 	settings := &fakeSettings{
 		states: []fakeServiceState{
 			{ServiceName: "Wi-Fi"},
@@ -182,12 +213,9 @@ func TestInstallProjectionSkipsObservationIssueWithoutRetry(t *testing.T) {
 	}
 	module := openWithSettings(settings)
 
-	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi", "VPN"}, "127.0.0.1:49152", "projection")
+	result, err := module.Install(context.Background(), []string{"Wi-Fi", "VPN"}, "127.0.0.1:49152")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if result.State().PACURL() == "" {
-		t.Fatal("observation issue prevented successful publication")
 	}
 	if len(result.Warnings()) != 0 {
 		t.Fatalf("warnings = %#v", result.Warnings())
@@ -196,7 +224,7 @@ func TestInstallProjectionSkipsObservationIssueWithoutRetry(t *testing.T) {
 	if len(issues) != 1 || issues[0].ServiceName != "VPN" {
 		t.Fatalf("observation issues = %#v", issues)
 	}
-	time.Sleep(2 * projectionPublicationRetry)
+	time.Sleep(2 * deliveryRetry)
 	settings.mu.Lock()
 	writes := append([]string(nil), settings.writes...)
 	settings.mu.Unlock()
@@ -240,7 +268,7 @@ func TestSnapshotDistinguishesOwnedURLFromActiveOwnedState(t *testing.T) {
 func TestCleanupActiveStateRejectsOpenReconciliation(t *testing.T) {
 	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", "DIRECT"); err != nil {
+	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -349,22 +377,20 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 	}
 }
 
-func TestProjectionChangeAdvancesGenerationBeforePublication(t *testing.T) {
-	first := mustDesiredList(t, "api.example.test\n")
-	second := mustDesiredList(t, "other.example.test\n")
+func TestDeliveryRequestAdvancesGeneration(t *testing.T) {
 	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projectPAC(first)); err != nil {
+	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
 		t.Fatal(err)
 	}
-	module.PublishProjection(projectPAC(second))
+	module.Deliver()
 	waitForWrite(t, settings, "v=2")
-	if got := publicationGeneration(module); got != 2 {
-		t.Fatalf("publication generation = %d, want 2", got)
+	if got := deliveryGeneration(module); got != 2 {
+		t.Fatalf("delivery generation = %d, want 2", got)
 	}
 }
 
-func TestPublicationPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
+func TestDeliveryPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
 	settings := &fakeSettings{
 		states: []fakeServiceState{{ServiceName: "Wi-Fi"}},
 		beforeLookup: func(settings *fakeSettings) {
@@ -373,7 +399,7 @@ func TestPublicationPreservesForeignStateThatAppearsAfterInspection(t *testing.T
 	}
 	module := openWithSettings(settings)
 
-	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", "DIRECT")
+	result, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +413,7 @@ func TestPublicationPreservesForeignStateThatAppearsAfterInspection(t *testing.T
 	}
 }
 
-func TestPublicationUpdatesFreshlyObservedOwnedState(t *testing.T) {
+func TestDeliveryUpdatesFreshlyObservedOwnedState(t *testing.T) {
 	settings := &fakeSettings{
 		states: []fakeServiceState{{ServiceName: "Wi-Fi"}},
 		beforeLookup: func(settings *fakeSettings) {
@@ -395,7 +421,7 @@ func TestPublicationUpdatesFreshlyObservedOwnedState(t *testing.T) {
 		},
 	}
 	module := openWithSettings(settings)
-	result, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", "DIRECT")
+	result, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,22 +431,20 @@ func TestPublicationUpdatesFreshlyObservedOwnedState(t *testing.T) {
 	waitForWrite(t, settings, "seamless-cors.pac?v=1")
 }
 
-func TestPartialProjectionPublicationFailureIsRetried(t *testing.T) {
-	first := mustDesiredList(t, "api.example.test\n")
-	second := mustDesiredList(t, "other.example.test\n")
+func TestPartialDeliveryFailureIsRetriedWithoutRollingBackSuccess(t *testing.T) {
 	settings := &fakeSettings{states: []fakeServiceState{
 		{ServiceName: "Ethernet"},
 		{ServiceName: "Wi-Fi"},
 	}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Ethernet", "Wi-Fi"}, "127.0.0.1:8081", projectPAC(first)); err != nil {
+	if _, err := module.Install(context.Background(), []string{"Ethernet", "Wi-Fi"}, "127.0.0.1:8081"); err != nil {
 		t.Fatal(err)
 	}
 
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Ethernet": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(projectPAC(second))
+	module.Deliver()
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
@@ -429,25 +453,22 @@ func TestPartialProjectionPublicationFailureIsRetried(t *testing.T) {
 	waitForWrite(t, settings, "Ethernet=http://127.0.0.1:8081/seamless-cors.pac?v=3")
 }
 
-func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *testing.T) {
-	first := mustDesiredList(t, "api.example.test\n")
-	second := mustDesiredList(t, "second.example.test\n")
-	third := mustDesiredList(t, "third.example.test\n")
+func TestFailedDeliveryConsumesGenerationAndRetries(t *testing.T) {
 	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	if _, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projectPAC(first)); err != nil {
+	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
 		t.Fatal(err)
 	}
 	settings.mu.Lock()
 	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(projectPAC(second))
+	module.Deliver()
 	waitForGeneration(t, module, 2)
 
 	settings.mu.Lock()
 	settings.applyErrors = nil
 	settings.mu.Unlock()
-	module.PublishProjection(projectPAC(third))
+	module.Deliver()
 	waitForGeneration(t, module, 3)
 	waitForWrite(t, settings, "v=3")
 	settings.mu.Lock()
@@ -456,54 +477,44 @@ func TestFailedProjectionPublicationConsumesGenerationAndRetriesLatestState(t *t
 	if len(writes) < 2 {
 		t.Fatalf("writes after retry = %v", writes)
 	}
-	if got := publicationGeneration(module); got < 3 {
+	if got := deliveryGeneration(module); got < 3 {
 		t.Fatalf("retry did not consume a new generation: %d", got)
 	}
 }
 
 func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testing.T) {
-	first := mustDesiredList(t, "api.example.test\n")
-	second := mustDesiredList(t, "second.example.test\n")
 	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
 	module := openWithSettings(settings)
-	install, err := module.InstallProjection(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081", projectPAC(first))
+	_, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081")
 	if err != nil {
 		t.Fatal(err)
 	}
-	initialURL := install.State().PACURL()
+	initialURL := settings.states[0].URL
 
 	settings.mu.Lock()
 	settings.states[0].URL = "http://corp.example/proxy.pac"
 	settings.mu.Unlock()
-	module.PublishProjection(projectPAC(second))
+	module.Deliver()
 	drift := receiveReconciliation(t, module.ReconciliationResults())
 	if warnings := drift.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
 		t.Fatalf("drift warnings = %#v", warnings)
-	}
-	if drift.State().PACURL() == initialURL {
-		t.Fatalf("drift publication URL did not advance: %q", drift.State().PACURL())
 	}
 
 	settings.mu.Lock()
 	settings.states[0].URL = initialURL
 	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
 	settings.mu.Unlock()
-	module.PublishProjection(projectPAC(second))
+	module.Deliver()
 	failed := receiveReconciliation(t, module.ReconciliationResults())
 	if warnings := failed.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningUpdateFailed {
 		t.Fatalf("failure warnings = %#v", warnings)
 	}
-	failedURL := failed.State().PACURL()
-
 	settings.mu.Lock()
 	settings.applyErrors = nil
 	settings.mu.Unlock()
 	recovered := receiveReconciliation(t, module.ReconciliationResults())
 	if warnings := recovered.Warnings(); len(warnings) != 0 {
 		t.Fatalf("recovery warnings = %#v, want cleared", warnings)
-	}
-	if recovered.State().PACURL() == failedURL {
-		t.Fatalf("retry did not publish a new generation: %q", recovered.State().PACURL())
 	}
 }
 
@@ -516,24 +527,6 @@ func receiveReconciliation(t *testing.T, results <-chan ReconciliationResult) Re
 		t.Fatal("timed out waiting for Managed PAC reconciliation result")
 		return ReconciliationResult{}
 	}
-}
-
-func mustDesiredList(t *testing.T, contents string) upstreamlist.Projection {
-	t.Helper()
-	list, err := upstreamlist.Project([]byte(contents))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return list
-}
-
-func projectPAC(upstreams upstreamlist.Projection) string {
-	return pacrouting.Project(
-		upstreams,
-		httpsfacade.Project(upstreams.OriginSelectors),
-		false,
-		"127.0.0.1:8080",
-	)
 }
 
 func waitForWrite(t *testing.T, settings *fakeSettings, fragment string) {
@@ -557,16 +550,16 @@ func waitForGeneration(t *testing.T, module *ManagedPAC, want uint64) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if publicationGeneration(module) >= want {
+		if deliveryGeneration(module) >= want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("publication generation did not reach %d", want)
+	t.Fatalf("delivery generation did not reach %d", want)
 }
 
-func publicationGeneration(module *ManagedPAC) uint64 {
+func deliveryGeneration(module *ManagedPAC) uint64 {
 	module.mu.Lock()
 	defer module.mu.Unlock()
-	return module.publicationGeneration
+	return module.deliveryGeneration
 }

@@ -26,14 +26,9 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		if request.WorkingDirectory != "/project" {
 			t.Fatalf("request = %#v", request)
 		}
-		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true, Guidance: &StartGuidanceDetail{
-			HTTPSPipeline: &HTTPSPipelineDetail{
-				Phase:     HTTPSPipelineSettled,
-				Readiness: HTTPSReadinessNotReady,
-				UserCAAssessmentIssue: &UserCAAssessmentIssue{
-					Cause: "trust store unavailable",
-				},
-			},
+		_ = json.NewEncoder(w).Encode(startSuccessBody{Changed: true, Guidance: &StartGuidance{
+			Traffic:     TrafficStatusDetail{HTTPSCORS: TrafficFeatureBlocked},
+			UserCAIssue: &UserCAAssessmentIssue{Cause: "trust store unavailable"},
 		}})
 	}))
 	defer server.Close()
@@ -47,9 +42,8 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	started, ok := result.(Started)
-	if !ok || started.Guidance.HTTPSPipeline == nil ||
-		started.Guidance.HTTPSPipeline.UserCAAssessmentIssue == nil ||
-		started.Guidance.HTTPSPipeline.UserCAAssessmentIssue.Cause != "trust store unavailable" {
+	if !ok || started.Guidance.Traffic.HTTPSCORS != TrafficFeatureBlocked ||
+		started.Guidance.UserCAIssue == nil || started.Guidance.UserCAIssue.Cause != "trust store unavailable" {
 		t.Fatalf("result = %s", result.Kind())
 	}
 }

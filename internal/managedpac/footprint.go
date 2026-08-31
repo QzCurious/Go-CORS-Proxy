@@ -11,7 +11,7 @@ import (
 const footprintFileName = "seamless-cors.pac"
 
 // pacURL constructs the stable Managed PAC URL for a PAC listener endpoint
-// (for example, "127.0.0.1:49152") and a run-local publication generation. The marker
+// (for example, "127.0.0.1:49152") and a run-local delivery generation. The marker
 // path is owned here so Gateway does not need to know the footprint filename.
 func pacURL(pacListen string, generation uint64) string {
 	u := url.URL{

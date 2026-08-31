@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/userca"
@@ -14,11 +16,19 @@ type userCAState struct {
 	Usable     bool
 	ExpiresAt  time.Time
 	RenewalDue bool
+	Identity   string
 
 	signingMaterial *tls.Certificate
 }
 
 func (s userCAState) SigningMaterial() *tls.Certificate { return s.signingMaterial }
+
+func (s userCAState) SigningMaterialIf(enabled bool) *tls.Certificate {
+	if !enabled {
+		return nil
+	}
+	return s.signingMaterial
+}
 
 // userCAModule is the Gateway-owned behavioral seam for UserCA facts and
 // mutations needed by Gateway lifecycle coordination.
@@ -47,10 +57,16 @@ func (u systemUserCA) Uninstall(ctx context.Context) error {
 }
 
 func adaptUserCAState(current userca.State) userCAState {
+	identity := ""
+	if current.SigningMaterial != nil && len(current.SigningMaterial.Certificate) > 0 {
+		sum := sha256.Sum256(current.SigningMaterial.Certificate[0])
+		identity = hex.EncodeToString(sum[:])
+	}
 	return userCAState{
 		Usable:          current.Usable,
 		ExpiresAt:       current.ExpiresAt,
 		RenewalDue:      current.RenewalDue,
+		Identity:        identity,
 		signingMaterial: current.SigningMaterial,
 	}
 }

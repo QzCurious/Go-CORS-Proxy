@@ -1,5 +1,7 @@
 # HTTPS Facade
 
+The independent live HTTPS Facade projection publication model is superseded by [ADR-0011](./0011-gateway-traffic-projection-and-pac-delivery.md). HTTPS Facade mappings now switch as part of the coherent Served Traffic Projection. The route derivation, specificity, forwarding, and response-adaptation decisions below remain in force.
+
 HTTPS Facade gives selected HTTP origins browser-facing HTTPS through PAC Routing and Proxy while leaving HTTPS Pipeline admission dependent on independently established HTTPS Intent and ready HTTPS Readiness. An HTTP Origin Selector keeps its HTTP PAC Route and, while Managed HTTPS Routing is active, derives an exact HTTPS Facade Route: its hostname is preserved, HTTP port 80 maps to browser HTTPS port 443, every other port is preserved, and forwarding targets the selector's normalized HTTP origin.
 
 HTTPS Facade projects all current Origin Selectors once so PAC Routing and Proxy share the same mappings and specificity: a native HTTPS Origin Selector wins over an HTTP façade, an unchanged-port HTTP façade wins over the special port-80-to-443 translation, and an exact HTTP façade wins over a Host Selector. Gateway publishes each immutable projection to the live request-boundary lookup shared by all Proxy generations, preserving established connections and the certificate cache across selector changes while CA transitions still replace whole generations.

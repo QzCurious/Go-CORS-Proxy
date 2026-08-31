@@ -2,8 +2,8 @@ package managedpac
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -95,22 +95,16 @@ func (s Snapshot) HasActiveOwnedState() bool {
 
 type RuntimeState struct {
 	serviceNames []string
-	pacURL       string
 }
 
 // NewRuntimeState returns read-only state for a fixed Managed PAC Service Set.
-func NewRuntimeState(serviceNames []string, pacURL string) RuntimeState {
-	return RuntimeState{
-		serviceNames: sortedUniqueStrings(serviceNames),
-		pacURL:       pacURL,
-	}
+func NewRuntimeState(serviceNames []string) RuntimeState {
+	return RuntimeState{serviceNames: sortedUniqueStrings(serviceNames)}
 }
 
 func (s RuntimeState) ServiceNames() []string {
 	return s.serviceNames
 }
-
-func (s RuntimeState) PACURL() string { return s.pacURL }
 
 type WarningKind string
 
@@ -132,7 +126,7 @@ type InstallResult struct {
 }
 
 // ReconciliationResult is the latest complete Managed PAC runtime snapshot
-// produced by one publication attempt. Warnings replace the preceding
+// produced by one delivery attempt. Warnings replace the preceding
 // snapshot; they are not an event history.
 type ReconciliationResult struct {
 	state             RuntimeState
@@ -177,8 +171,8 @@ func (r CleanupResult) ObservationIssues() []ObservationIssue {
 	return r.observationIssues
 }
 
-// ManagedPAC owns PAC Projection publication generation, latest-value
-// reconciliation, serial mutation policy, and complete active-state teardown.
+// ManagedPAC owns per-service PAC URL delivery, serial mutation policy,
+// retry, routing observation, and complete active-state teardown.
 type ManagedPAC struct {
 	settings pacsettings.Settings
 
@@ -189,34 +183,33 @@ type ManagedPAC struct {
 	admissionGeneration uint64
 	activeCancel        context.CancelFunc
 
-	projectionPublisher   conflatedstream.Publisher[string]
-	projectionStream      conflatedstream.Stream[string]
-	resultPublisher       conflatedstream.Publisher[ReconciliationResult]
-	resultStream          conflatedstream.Stream[ReconciliationResult]
-	projectionWorkerDone  chan struct{}
-	projectionWorkerStop  chan struct{}
-	latestProjection      *string
-	pacListen             string
-	publicationGeneration uint64
-	serviceNames          []string
-	runtimeState          RuntimeState
+	deliveryPublisher  conflatedstream.Publisher[struct{}]
+	deliveryStream     conflatedstream.Stream[struct{}]
+	resultPublisher    conflatedstream.Publisher[ReconciliationResult]
+	resultStream       conflatedstream.Stream[ReconciliationResult]
+	deliveryWorkerDone chan struct{}
+	deliveryWorkerStop chan struct{}
+	pacListen          string
+	deliveryGeneration uint64
+	serviceNames       []string
+	runtimeState       RuntimeState
 }
 
-const projectionPublicationRetry = 100 * time.Millisecond
+const deliveryRetry = 100 * time.Millisecond
 
 func Open() *ManagedPAC {
 	return openWithSettings(pacsettings.New())
 }
 
 func openWithSettings(settings pacsettings.Settings) *ManagedPAC {
-	projectionPublisher, projectionStream := conflatedstream.New[string]()
+	deliveryPublisher, deliveryStream := conflatedstream.New[struct{}]()
 	resultPublisher, resultStream := conflatedstream.New[ReconciliationResult]()
 	return &ManagedPAC{
-		settings:            settings,
-		projectionPublisher: projectionPublisher,
-		projectionStream:    projectionStream,
-		resultPublisher:     resultPublisher,
-		resultStream:        resultStream,
+		settings:          settings,
+		deliveryPublisher: deliveryPublisher,
+		deliveryStream:    deliveryStream,
+		resultPublisher:   resultPublisher,
+		resultStream:      resultStream,
 	}
 }
 
@@ -246,9 +239,31 @@ func (m *ManagedPAC) Inspect(ctx context.Context) (Snapshot, error) {
 	return NewSnapshot(services), nil
 }
 
-// InstallProjection performs the initial publication for a PAC Projection.
-// Its generated URL is owned by Managed PAC's publication generation.
-func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []string, pacListen, projection string) (InstallResult, error) {
+// RoutingReady freshly observes whether any fixed managed service points to
+// the PAC endpoint served by the current Gateway Runtime.
+func (m *ManagedPAC) RoutingReady(ctx context.Context, pacListen string) (bool, []ObservationIssue, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	snapshot, err := m.Inspect(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+	m.mu.Lock()
+	selected := stringSet(m.serviceNames)
+	m.mu.Unlock()
+	for _, service := range snapshot.services {
+		if _, ok := selected[service.Name]; !ok || service.ObservationIssue != nil {
+			continue
+		}
+		if service.Enabled && service.Ownership == OwnershipOwned && servesRuntimePAC(service.URL, pacListen) {
+			return true, snapshot.ObservationIssues(), nil
+		}
+	}
+	return false, snapshot.ObservationIssues(), nil
+}
+
+// Install fixes the managed service set and delivers the currently served PAC.
+func (m *ManagedPAC) Install(ctx context.Context, serviceNames []string, pacListen string) (InstallResult, error) {
 	selected := sortedUniqueStrings(serviceNames)
 	if len(selected) == 0 {
 		return InstallResult{}, fmt.Errorf("managed PAC service set is empty")
@@ -268,71 +283,63 @@ func (m *ManagedPAC) InstallProjection(ctx context.Context, serviceNames []strin
 	defer m.opMu.Unlock()
 
 	m.mu.Lock()
-	m.publicationGeneration++
-	generation := m.publicationGeneration
+	m.deliveryGeneration++
+	generation := m.deliveryGeneration
 	m.mu.Unlock()
 	pacURL := pacURL(pacListen, generation)
 
-	warnings, observationIssues, publicationErr := m.attemptPublication(ctx, selected, pacURL)
-	state := NewRuntimeState(selected, "")
-	if publicationErr == nil {
-		state = NewRuntimeState(selected, pacURL)
-	}
+	warnings, observationIssues, deliveryFailed := m.attemptDelivery(ctx, selected, pacURL)
+	state := NewRuntimeState(selected)
 	result := NewInstallResult(state, warnings, observationIssues...)
 
 	m.mu.Lock()
-	m.latestProjection = &projection
 	m.pacListen = pacListen
 	m.serviceNames = selected
 	m.runtimeState = state
-	if publicationErr != nil {
-		m.projectionPublisher.Publish(projection)
+	if deliveryFailed {
+		m.deliveryPublisher.Publish(struct{}{})
 	}
 	if m.admissionGeneration == admissionGeneration {
 		m.accepting = true
 	}
-	startWorker := m.accepting && m.projectionWorkerDone == nil
+	startWorker := m.accepting && m.deliveryWorkerDone == nil
 	var workerDoneToStart chan struct{}
 	var workerStopToStart chan struct{}
 	if startWorker {
-		workerDoneToStart, workerStopToStart = m.startProjectionWorkerLocked()
+		workerDoneToStart, workerStopToStart = m.startDeliveryWorkerLocked()
 	}
 	m.mu.Unlock()
 	if workerDoneToStart != nil {
-		go m.runProjectionReconciliation(workerDoneToStart, workerStopToStart)
+		go m.runDelivery(workerDoneToStart, workerStopToStart)
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	// Initial publication failures are retained inside Managed PAC and retried
-	// by its projection worker. Gateway can continue serving its runtime.
+	// Per-service delivery failures are warnings and retry work; Gateway keeps
+	// serving the already-switched Traffic Projection.
 	return result, nil
 }
 
-// ReconciliationResults delivers latest-value publication outcomes to the
-// Gateway Runtime. Managed PAC remains the sole owner of reconciliation and
-// publication generation.
+// ReconciliationResults delivers the latest per-service delivery outcome.
 func (m *ManagedPAC) ReconciliationResults() <-chan ReconciliationResult {
 	return m.resultStream.Updates()
 }
 
-// PublishProjection records the newest changed PAC Projection and returns
-// immediately. Managed PAC serializes and retries publication in its own worker.
-func (m *ManagedPAC) PublishProjection(projection string) {
+// Deliver requests cache-busting delivery of the currently served PAC URL.
+func (m *ManagedPAC) Deliver() {
 	m.mu.Lock()
 	if !m.accepting {
 		m.mu.Unlock()
 		return
 	}
-	m.latestProjection = &projection
-	m.projectionPublisher.Publish(projection)
-	if m.projectionWorkerDone != nil {
+	m.deliveryPublisher.Publish(struct{}{})
+	if m.deliveryWorkerDone != nil {
 		m.mu.Unlock()
 		return
 	}
-	workerDone, workerStop := m.startProjectionWorkerLocked()
+	workerDone, workerStop := m.startDeliveryWorkerLocked()
 	m.mu.Unlock()
-	go m.runProjectionReconciliation(workerDone, workerStop)
+	go m.runDelivery(workerDone, workerStop)
 }
 
 // CleanupActiveState disables marker-owned PAC settings without changing
@@ -364,22 +371,21 @@ func (m *ManagedPAC) Uninstall(ctx context.Context) (CleanupResult, error) {
 		m.mu.Lock()
 		m.runtimeState = RuntimeState{}
 		m.serviceNames = nil
-		m.latestProjection = nil
 		m.pacListen = ""
 		m.mu.Unlock()
 	}
 	return result, err
 }
 
-func (m *ManagedPAC) startProjectionWorkerLocked() (chan struct{}, chan struct{}) {
+func (m *ManagedPAC) startDeliveryWorkerLocked() (chan struct{}, chan struct{}) {
 	done := make(chan struct{})
 	stop := make(chan struct{})
-	m.projectionWorkerDone = done
-	m.projectionWorkerStop = stop
+	m.deliveryWorkerDone = done
+	m.deliveryWorkerStop = stop
 	return done, stop
 }
 
-func (m *ManagedPAC) runProjectionReconciliation(done chan struct{}, stop <-chan struct{}) {
+func (m *ManagedPAC) runDelivery(done chan struct{}, stop <-chan struct{}) {
 	var retry *time.Timer
 	var retryC <-chan time.Time
 	defer func() {
@@ -387,8 +393,8 @@ func (m *ManagedPAC) runProjectionReconciliation(done chan struct{}, stop <-chan
 			retry.Stop()
 		}
 		m.mu.Lock()
-		if m.projectionWorkerDone == done {
-			m.projectionWorkerDone = nil
+		if m.deliveryWorkerDone == done {
+			m.deliveryWorkerDone = nil
 		}
 		m.mu.Unlock()
 		close(done)
@@ -398,8 +404,8 @@ func (m *ManagedPAC) runProjectionReconciliation(done chan struct{}, stop <-chan
 		select {
 		case <-stop:
 			return
-		case <-m.projectionStream.Updates():
-			succeeded := m.reconcileLatestProjection()
+		case <-m.deliveryStream.Updates():
+			succeeded := m.reconcileDelivery()
 			if succeeded {
 				if retry != nil {
 					retry.Stop()
@@ -412,7 +418,7 @@ func (m *ManagedPAC) runProjectionReconciliation(done chan struct{}, stop <-chan
 		case <-retryC:
 			retry = nil
 			retryC = nil
-			if m.reconcileLatestProjection() {
+			if m.reconcileDelivery() {
 				continue
 			}
 			retry, retryC = resetRetryTimer(retry)
@@ -431,16 +437,16 @@ func resetRetryTimer(previous *time.Timer) (*time.Timer, <-chan time.Time) {
 	if previous != nil {
 		previous.Stop()
 	}
-	timer := time.NewTimer(projectionPublicationRetry)
+	timer := time.NewTimer(deliveryRetry)
 	return timer, timer.C
 }
 
-func (m *ManagedPAC) reconcileLatestProjection() bool {
+func (m *ManagedPAC) reconcileDelivery() bool {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 
 	m.mu.Lock()
-	if !m.accepting || m.latestProjection == nil {
+	if !m.accepting || m.pacListen == "" {
 		m.mu.Unlock()
 		return true
 	}
@@ -448,38 +454,34 @@ func (m *ManagedPAC) reconcileLatestProjection() bool {
 	serviceNames := m.serviceNames
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	m.publicationGeneration++
-	generation := m.publicationGeneration
+	m.deliveryGeneration++
+	generation := m.deliveryGeneration
 	m.activeCancel = cancel
 	m.mu.Unlock()
 	pacURL := pacURL(pacListen, generation)
-	warnings, observationIssues, err := m.attemptPublication(ctx, serviceNames, pacURL)
+	warnings, observationIssues, failed := m.attemptDelivery(ctx, serviceNames, pacURL)
 	cancel()
 
 	m.mu.Lock()
 	m.activeCancel = nil
 	state := m.runtimeState
-	if err == nil {
-		state = NewRuntimeState(serviceNames, pacURL)
-		m.runtimeState = state
-	}
 	m.mu.Unlock()
 	m.resultPublisher.Publish(NewReconciliationResult(state, warnings, observationIssues...))
-	return err == nil
+	return !failed
 }
 
-func (m *ManagedPAC) attemptPublication(ctx context.Context, serviceNames []string, pacURL string) ([]Warning, []ObservationIssue, error) {
+func (m *ManagedPAC) attemptDelivery(ctx context.Context, serviceNames []string, pacURL string) ([]Warning, []ObservationIssue, bool) {
 	snapshot, err := m.Inspect(ctx)
 	if err != nil {
-		return []Warning{{Kind: WarningUpdateFailed, Diagnostic: err.Error()}}, nil, err
+		return []Warning{{Kind: WarningUpdateFailed, Diagnostic: err.Error()}}, nil, true
 	}
 	warnings, observationIssues := m.applyEligible(ctx, snapshot, serviceNames, pacURL)
 	for _, warning := range warnings {
 		if warning.Kind == WarningUpdateFailed {
-			return warnings, observationIssues, errors.New("managed PAC publication failed")
+			return warnings, observationIssues, true
 		}
 	}
-	return warnings, observationIssues, nil
+	return warnings, observationIssues, false
 }
 
 func (m *ManagedPAC) applyEligible(ctx context.Context, snapshot Snapshot, selected []string, pacURL string) ([]Warning, []ObservationIssue) {
@@ -651,19 +653,27 @@ func ownershipForURL(raw string) Ownership {
 	return OwnershipForeign
 }
 
+func servesRuntimePAC(raw, pacListen string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "http" || parsed.Host != pacListen {
+		return false
+	}
+	return parsed.Path == "/seamless-cors.pac"
+}
+
 func (m *ManagedPAC) closeReconciliationAdmission() (uint64, <-chan struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.accepting = false
 	m.admissionGeneration++
-	if m.projectionWorkerStop != nil {
-		close(m.projectionWorkerStop)
-		m.projectionWorkerStop = nil
+	if m.deliveryWorkerStop != nil {
+		close(m.deliveryWorkerStop)
+		m.deliveryWorkerStop = nil
 	}
 	if m.activeCancel != nil {
 		m.activeCancel()
 	}
-	return m.admissionGeneration, m.projectionWorkerDone
+	return m.admissionGeneration, m.deliveryWorkerDone
 }
 
 func stringSet(values []string) map[string]struct{} {

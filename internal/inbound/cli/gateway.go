@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/QzCurious/seamless-cors/internal/gateway"
@@ -56,18 +54,11 @@ func start(stdin io.Reader, stdout, _ io.Writer) error {
 
 func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Writer, command startCommand) error {
 	stdout = writerOrDiscard(stdout)
-	liveHTTPS := &liveHTTPSPipelineRenderer{stdout: stdout}
 	hooks := gateway.StartHooks{
 		ConfirmUpstreamListCreation: func(ctx context.Context, detail gateway.UpstreamListCreationConsent) (bool, error) {
 			return confirmUpstreamListCreation(ctx, stdin, stdout, detail)
 		},
-		Started: func(result gateway.StartResult) {
-			renderStartResultWithoutHTTPSPipeline(stdout, result)
-			if started, ok := result.(gateway.Started); ok {
-				liveHTTPS.Seed(started.Guidance.HTTPSPipeline)
-			}
-		},
-		HTTPSPipelineChanged: liveHTTPS.Render,
+		Started: func(result gateway.StartResult) { renderStartResult(stdout, result) },
 	}
 	result, err := command(ctx, hooks)
 	if err != nil {
@@ -305,14 +296,6 @@ func readYes(ctx context.Context, stdin io.Reader, defaultYes bool) (bool, error
 }
 
 func renderStartResult(stdout io.Writer, result gateway.StartResult) {
-	renderStartResultWithHTTPSPipeline(stdout, result, true)
-}
-
-func renderStartResultWithoutHTTPSPipeline(stdout io.Writer, result gateway.StartResult) {
-	renderStartResultWithHTTPSPipeline(stdout, result, false)
-}
-
-func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartResult, includeHTTPSPipeline bool) {
 	if result == nil {
 		return
 	}
@@ -323,11 +306,10 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 			guidance := started.Guidance
 			fmt.Fprintln(stdout, "seamless-cors is running.")
 			renderStartUpstreamListSources(stdout, guidance.UpstreamLists)
-			fmt.Fprintf(stdout, "HTTPS interception is %s.\n", humanOnOffState(guidance.HTTPSPipeline))
-			if includeHTTPSPipeline {
-				renderHTTPSPipelineIssue(stdout, guidance.HTTPSPipeline)
-			}
-			if guidance.InstalledCA != nil && guidance.InstalledCA.RenewalDue {
+			renderTrafficStatus(stdout, guidance.Traffic)
+			renderUserCAAssessmentIssue(stdout, guidance.UserCAIssue)
+			renderUserCAInstallGuidance(stdout, guidance.InstalledCA, guidance.UserCAIssue)
+			if guidance.InstalledCA.RenewalDue {
 				fmt.Fprintln(stdout, "installed-ca-renewal: due")
 				fmt.Fprintln(stdout, "action: Run `seamless-cors install` to renew it.")
 			}
@@ -335,9 +317,6 @@ func renderStartResultWithHTTPSPipeline(stdout io.Writer, result gateway.StartRe
 				fmt.Fprintln(stdout, "Services selected for automatic proxy management:")
 				for _, service := range guidance.ManagedPAC.ServiceSet {
 					fmt.Fprintf(stdout, "  - %s\n", service)
-				}
-				if guidance.ManagedPAC.PublicationURL != "" {
-					fmt.Fprintf(stdout, "Proxy configuration URL: %s\n", guidance.ManagedPAC.PublicationURL)
 				}
 			}
 			renderManagedPACExcludedServices(stdout, guidance.ManagedPAC)
@@ -384,43 +363,6 @@ func renderManagedPACExcludedServices(stdout io.Writer, detail gateway.ManagedPA
 	}
 }
 
-type liveHTTPSPipelineRenderer struct {
-	mu          sync.Mutex
-	stdout      io.Writer
-	initialized bool
-	current     string
-}
-
-func (r *liveHTTPSPipelineRenderer) Seed(detail *gateway.HTTPSPipelineDetail) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	encoded, _ := json.Marshal(detail)
-	r.initialized = true
-	r.current = string(encoded)
-	renderHTTPSPipelineIssue(r.stdout, detail)
-}
-
-func (r *liveHTTPSPipelineRenderer) Render(detail *gateway.HTTPSPipelineDetail) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	encoded, _ := json.Marshal(detail)
-	next := string(encoded)
-	if r.initialized && next == r.current {
-		return
-	}
-	r.initialized = true
-	r.current = next
-	fmt.Fprintf(r.stdout, "HTTPS interception is %s.\n", humanOnOffState(detail))
-	renderHTTPSPipelineIssue(r.stdout, detail)
-}
-
-func humanOnOffState(pipeline *gateway.HTTPSPipelineDetail) string {
-	if pipeline != nil && pipeline.Readiness == gateway.HTTPSReadinessReady {
-		return "on"
-	}
-	return "off"
-}
-
 func homeRelativePath(path string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -457,10 +399,6 @@ func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
 	switch result.Kind {
 	case gateway.InstallResultInstalled:
 		fmt.Fprintln(stdout, "User CA is installed.")
-	}
-	if result.HTTPSPipeline != nil {
-		fmt.Fprintf(stdout, "https-readiness: %s\n", result.HTTPSPipeline.Readiness)
-		renderHTTPSPipelineIssue(stdout, result.HTTPSPipeline)
 	}
 	if !result.InstalledCAExpires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCAExpires.Format("2006-01-02"))
@@ -516,13 +454,9 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		if len(result.Runtime.ManagedPACServices) > 0 {
 			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
 		}
-		if result.Runtime.ManagedPACPublicationURL != "" {
-			fmt.Fprintf(stdout, "managed-pac-publication-url: %s\n", result.Runtime.ManagedPACPublicationURL)
-		}
 		renderManagedPACWarnings(stdout, result.Runtime.ManagedPACWarnings)
 		renderManagedPACObservationIssues(stdout, result.Runtime.ManagedPACObservationIssues)
-		fmt.Fprintf(stdout, "https: %s\n", humanHTTPSState(result.Runtime.HTTPSPipeline))
-		renderHTTPSPipelineIssue(stdout, result.Runtime.HTTPSPipeline)
+		renderTrafficStatus(stdout, result.Runtime.Traffic)
 	}
 	fmt.Fprintf(stdout, "installed-ca: %s\n", result.InstalledCA.Health)
 	if !result.InstalledCA.Expires.IsZero() {
@@ -537,6 +471,8 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 			fmt.Fprintf(stdout, "action: %s\n", result.InstalledCA.CleanupIssue.Action)
 		}
 	}
+	renderUserCAAssessmentIssue(stdout, result.UserCAAssessmentIssue)
+	renderUserCAInstallGuidance(stdout, result.InstalledCA, result.UserCAAssessmentIssue)
 	if result.Cleanup.State == gateway.CleanupStatusNeeded {
 		fmt.Fprintln(stdout, "cleanup-needed: run `seamless-cors stop` to clean seamless-cors-owned gateway footprint")
 	} else if result.Cleanup.State == gateway.CleanupStatusUnknown {
@@ -549,31 +485,23 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 	}
 }
 
-func humanHTTPSState(pipeline *gateway.HTTPSPipelineDetail) string {
-	if pipeline != nil && pipeline.Readiness == gateway.HTTPSReadinessReady {
-		return "active"
-	}
-	return "inactive"
+func renderTrafficStatus(stdout io.Writer, status gateway.TrafficStatusDetail) {
+	fmt.Fprintf(stdout, "traffic-routing-ready: %t\n", status.RoutingReady)
+	fmt.Fprintf(stdout, "traffic-projection-current: %t\n", status.ProjectionCurrent)
+	fmt.Fprintf(stdout, "http-cors: %s\n", status.HTTPCORS)
+	fmt.Fprintf(stdout, "https-cors: %s\n", status.HTTPSCORS)
+	fmt.Fprintf(stdout, "https-facade: %s\n", status.HTTPSFacade)
 }
 
-func renderHTTPSPipelineIssue(stdout io.Writer, pipeline *gateway.HTTPSPipelineDetail) {
-	if pipeline == nil {
-		return
+func renderUserCAAssessmentIssue(stdout io.Writer, issue *gateway.UserCAAssessmentIssue) {
+	if issue != nil {
+		fmt.Fprintf(stdout, "userca-assessment-issue: %s\n", issue.Cause)
 	}
-	var diagnostic, action string
-	switch {
-	case pipeline.UnmetIntent != nil:
-		diagnostic = pipeline.UnmetIntent.Diagnostic
-		action = pipeline.UnmetIntent.Action
-	case pipeline.UserCAAssessmentIssue != nil:
-		diagnostic = "Installed User CA assessment failed: " + pipeline.UserCAAssessmentIssue.Cause
-		action = pipeline.UserCAAssessmentIssue.Action
-	}
-	if diagnostic != "" {
-		fmt.Fprintf(stdout, "warning: %s\n", diagnostic)
-	}
-	if action != "" {
-		fmt.Fprintf(stdout, "action: %s\n", action)
+}
+
+func renderUserCAInstallGuidance(stdout io.Writer, installed gateway.InstalledCAStatusDetail, issue *gateway.UserCAAssessmentIssue) {
+	if issue == nil && installed.Health == gateway.CAHealthNotUsable {
+		fmt.Fprintln(stdout, "action: Run `seamless-cors install` to install or repair the User CA.")
 	}
 }
 
@@ -589,6 +517,10 @@ func renderManagedPACWarnings(stdout io.Writer, warnings []gateway.ManagedPACWar
 
 func renderManagedPACObservationIssues(stdout io.Writer, issues []gateway.ManagedPACObservationIssue) {
 	for _, issue := range issues {
+		if issue.ServiceName == "" {
+			fmt.Fprintf(stdout, "managed-pac-observation-issue: %s\n", issue.Diagnostic)
+			continue
+		}
 		fmt.Fprintf(stdout, "managed-pac-observation-issue: %s: %s\n", issue.ServiceName, issue.Diagnostic)
 	}
 }
@@ -665,7 +597,7 @@ func renderUpstreamListProjectionIssue(stdout io.Writer, source gateway.Upstream
 	fmt.Fprintf(stdout, "warning: %s %s contents rejected: %s\n", source, path, issue.Cause)
 }
 
-func cleanupFailureText(failures []gateway.CleanupFailureDetail) string {
+func cleanupFailureText(failures []gateway.CleanupFailure) string {
 	var parts []string
 	for _, failure := range failures {
 		if failure.Diagnostic != "" {

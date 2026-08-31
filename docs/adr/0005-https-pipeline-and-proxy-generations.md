@@ -1,5 +1,7 @@
 # HTTPS Pipeline and Proxy generations
 
+The HTTPS Intent admission model and independent Proxy-generation, PAC, and HTTPS Facade publication ordering are superseded by [ADR-0011](./0011-gateway-traffic-projection-and-pac-delivery.md). Gateway now derives traffic demands and switches one coherent Served Traffic Projection. The Proxy/goproxy ownership and connection-local failure decisions below remain in force where they do not conflict with ADR-0011.
+
 Only an effective HTTPS Origin Selector creates HTTPS Intent and admits an HTTPS Pipeline. Without intent, Gateway performs no UserCA assessment for runtime use, retains no signing material or expiry deadline, publishes no MITM generation, and includes no HTTPS PAC routes. When an intent-admitted pipeline is ready, HTTPS Origin Selectors and Host Selectors contribute their HTTPS routes and HTTP Origin Selectors may contribute HTTPS Facade Routes; those HTTP selectors do not themselves create HTTPS Intent.
 
 An admitted pipeline assesses coherent UserCA facts asynchronously and is either assessing or settled. UserCA guarantees that every usable assessment contains matching signing material, which Gateway uses to publish an immutable CA-backed Proxy generation before adding HTTPS PAC routes; an unmet capability or assessment failure keeps CONNECT direct and exposes exactly one source-specific current detail without making Start unfulfilled.

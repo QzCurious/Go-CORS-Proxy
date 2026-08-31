@@ -64,12 +64,12 @@ func TestProjectAppliesHTTPSRoutingSpecificity(t *testing.T) {
 	}
 }
 
-func TestLiveForwardUsesSelectedHTTPAuthority(t *testing.T) {
-	live := httpsfacade.NewLive(httpsfacade.Project([]upstreamlist.OriginSelector{
+func TestProjectionForwardUsesSelectedHTTPAuthority(t *testing.T) {
+	projection := httpsfacade.Project([]upstreamlist.OriginSelector{
 		{Scheme: "http", Hostname: "api.test", Port: 80},
 		{Scheme: "http", Hostname: "local.test", Port: 3000},
 		{Scheme: "http", Hostname: "::1", Port: 3000},
-	}))
+	})
 	tests := []struct {
 		target   string
 		wantURL  string
@@ -83,7 +83,7 @@ func TestLiveForwardUsesSelectedHTTPAuthority(t *testing.T) {
 		t.Run(tt.target, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
 			req.Header.Set("Origin", "https://app.test")
-			if _, ok := live.Forward(req); !ok {
+			if _, ok := projection.Forward(req); !ok {
 				t.Fatal("request did not match HTTPS Facade")
 			}
 			if got := req.URL.String(); got != tt.wantURL {
@@ -99,28 +99,12 @@ func TestLiveForwardUsesSelectedHTTPAuthority(t *testing.T) {
 	}
 }
 
-func TestLivePublishesProjectionAtRequestBoundary(t *testing.T) {
-	live := httpsfacade.NewLive(httpsfacade.Projection{})
-	before := httptest.NewRequest(http.MethodGet, "https://api.test/items", nil)
-	if _, ok := live.Forward(before); ok {
-		t.Fatal("empty projection matched request")
-	}
-
-	live.Set(httpsfacade.Project([]upstreamlist.OriginSelector{
-		{Scheme: "http", Hostname: "api.test", Port: 80},
-	}))
-	after := httptest.NewRequest(http.MethodGet, "https://api.test/items", nil)
-	if _, ok := live.Forward(after); !ok {
-		t.Fatal("published projection did not match request")
-	}
-}
-
 func TestRouteRewritesOnlySelectedOriginAbsoluteLocation(t *testing.T) {
-	live := httpsfacade.NewLive(httpsfacade.Project([]upstreamlist.OriginSelector{
+	projection := httpsfacade.Project([]upstreamlist.OriginSelector{
 		{Scheme: "http", Hostname: "api.test", Port: 80},
-	}))
+	})
 	req := httptest.NewRequest(http.MethodGet, "https://api.test/login", nil)
-	route, ok := live.Forward(req)
+	route, ok := projection.Forward(req)
 	if !ok {
 		t.Fatal("request did not match HTTPS Facade")
 	}

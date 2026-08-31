@@ -60,7 +60,7 @@ func newRouterError(status int, message string, errs ...error) *gatewayErrorResp
 
 type startSuccessBody struct {
 	Changed                     bool                               `json:"changed"`
-	Guidance                    *StartGuidanceDetail               `json:"guidance,omitempty"`
+	Guidance                    *StartGuidance                     `json:"guidance,omitempty"`
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail `json:"upstreamListCreationWarning,omitempty"`
 }
 
@@ -70,7 +70,7 @@ type startFailureDetails struct {
 	ManagedPAC                  *ManagedPACStartDetail             `json:"managedPac,omitempty"`
 	ManagedPACWarnings          []ManagedPACWarningDetail          `json:"managedPacWarnings,omitempty"`
 	Diagnostic                  string                             `json:"diagnostic,omitempty"`
-	CleanupFailures             []CleanupFailureDetail             `json:"cleanupFailures,omitempty"`
+	CleanupFailures             []CleanupFailure                   `json:"cleanupFailures,omitempty"`
 }
 
 type stopSuccessBody struct {
@@ -82,17 +82,15 @@ type stopSuccessBody struct {
 type stopFailureDetails struct {
 	Warnings                    []CommandWarning             `json:"warnings,omitempty"`
 	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
-	CleanupFailures             []CleanupFailureDetail       `json:"cleanupFailures,omitempty"`
+	CleanupFailures             []CleanupFailure             `json:"cleanupFailures,omitempty"`
 }
 
 type installSuccessBody struct {
-	InstalledCAExpires time.Time            `json:"installedCAExpires"`
-	HTTPSPipeline      *HTTPSPipelineDetail `json:"httpsPipeline,omitempty"`
+	InstalledCAExpires time.Time `json:"installedCAExpires"`
 }
 
 type installFailureDetails struct {
-	InstalledCAExpires time.Time            `json:"installedCAExpires,omitempty"`
-	HTTPSPipeline      *HTTPSPipelineDetail `json:"httpsPipeline,omitempty"`
+	InstalledCAExpires time.Time `json:"installedCAExpires,omitempty"`
 }
 
 type uninstallSuccessBody struct{}
@@ -192,19 +190,19 @@ func (dto stopFailureDetails) semantic(kind StopResultKind) StopResult {
 }
 
 func installSuccessBodyFrom(result InstallResult) installSuccessBody {
-	return installSuccessBody{InstalledCAExpires: result.InstalledCAExpires, HTTPSPipeline: result.HTTPSPipeline}
+	return installSuccessBody{InstalledCAExpires: result.InstalledCAExpires}
 }
 
 func (dto installSuccessBody) semantic() InstallResult {
-	return InstallResult{Kind: InstallResultInstalled, InstalledCAExpires: dto.InstalledCAExpires, HTTPSPipeline: dto.HTTPSPipeline}
+	return InstallResult{Kind: InstallResultInstalled, InstalledCAExpires: dto.InstalledCAExpires}
 }
 
 func installFailureDetailsFrom(result InstallResult) installFailureDetails {
-	return installFailureDetails{result.InstalledCAExpires, result.HTTPSPipeline}
+	return installFailureDetails{InstalledCAExpires: result.InstalledCAExpires}
 }
 
 func (dto installFailureDetails) semantic(kind InstallResultKind) InstallResult {
-	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires, HTTPSPipeline: dto.HTTPSPipeline}
+	return InstallResult{Kind: kind, InstalledCAExpires: dto.InstalledCAExpires}
 }
 
 func uninstallSuccessBodyFrom(result UninstallResult) uninstallSuccessBody {

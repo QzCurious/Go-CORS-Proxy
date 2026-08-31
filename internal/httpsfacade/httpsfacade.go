@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
@@ -109,26 +108,9 @@ func (p Projection) resolve(hostname string, port uint16) (Route, bool) {
 	return p.routes[index], true
 }
 
-// Live owns the atomically published current Projection shared by Proxy
-// generations. Set takes effect at the next request lookup.
-type Live struct {
-	current atomic.Pointer[Projection]
-}
-
-func NewLive(initial Projection) *Live {
-	live := &Live{}
-	live.Set(initial)
-	return live
-}
-
-// Set publishes one complete immutable Projection.
-func (l *Live) Set(next Projection) {
-	l.current.Store(&next)
-}
-
 // Forward adapts a matching browser HTTPS request to its selected HTTP origin
 // and returns the admitting Route for response adaptation.
-func (l *Live) Forward(req *http.Request) (Route, bool) {
+func (p Projection) Forward(req *http.Request) (Route, bool) {
 	if req == nil || req.URL == nil || !strings.EqualFold(req.URL.Scheme, "https") {
 		return Route{}, false
 	}
@@ -136,7 +118,7 @@ func (l *Live) Forward(req *http.Request) (Route, bool) {
 	if !ok {
 		return Route{}, false
 	}
-	route, ok := l.current.Load().resolve(req.URL.Hostname(), port)
+	route, ok := p.resolve(req.URL.Hostname(), port)
 	if !ok {
 		return Route{}, false
 	}

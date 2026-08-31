@@ -170,10 +170,10 @@ func TestHTTPSFacadeProvidesDefaultPortReverseProxy(t *testing.T) {
 		}
 		return (&net.Dialer{}).DialContext(ctx, network, upstreamURL.Host)
 	}
-	liveFacade := httpsfacade.NewLive(httpsfacade.Project([]upstreamlist.OriginSelector{
+	facades := httpsfacade.Project([]upstreamlist.OriginSelector{
 		{Scheme: "http", Hostname: "example.test", Port: 80},
-	}))
-	proxyServer, proxyURL, roots := trustedProxyServer(t, transport, liveFacade)
+	})
+	proxyServer, proxyURL, roots := trustedProxyServer(t, transport, facades)
 	defer proxyServer.Close()
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
@@ -204,33 +204,6 @@ func TestHTTPSFacadeProvidesDefaultPortReverseProxy(t *testing.T) {
 	}
 }
 
-func TestProxyUsesLatestHTTPSFacadeProjection(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "plain upstream")
-	}))
-	defer upstream.Close()
-	upstreamURL := mustParseURL(t, upstream.URL)
-	port := mustParsePort(t, upstreamURL.Port())
-	liveFacade := httpsfacade.NewLive(httpsfacade.Projection{})
-	handler := proxy.New(testTransport(t, upstream.Client()), nil, liveFacade)
-	target := "https://" + upstreamURL.Host + "/live"
-
-	before := httptest.NewRecorder()
-	handler.ServeHTTP(before, httptest.NewRequest(http.MethodGet, target, nil))
-	if before.Code < http.StatusInternalServerError {
-		t.Fatalf("unmatched HTTPS status = %d, want proxy failure", before.Code)
-	}
-
-	liveFacade.Set(httpsfacade.Project([]upstreamlist.OriginSelector{
-		{Scheme: "http", Hostname: upstreamURL.Hostname(), Port: port},
-	}))
-	after := httptest.NewRecorder()
-	handler.ServeHTTP(after, httptest.NewRequest(http.MethodGet, target, nil))
-	if after.Code != http.StatusOK || after.Body.String() != "plain upstream" {
-		t.Fatalf("matched response = (%d, %q)", after.Code, after.Body.String())
-	}
-}
-
 func TestProxyGeneratedFailureIsNotCORSRepaired(t *testing.T) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
@@ -252,18 +225,16 @@ func TestProxyGeneratedFailureIsNotCORSRepaired(t *testing.T) {
 	}
 }
 
-func emptyFacade() *httpsfacade.Live {
-	return httpsfacade.NewLive(httpsfacade.Projection{})
-}
+func emptyFacade() httpsfacade.Projection { return httpsfacade.Projection{} }
 
 func trustedProxyServer(
 	t *testing.T,
 	transport *http.Transport,
-	liveFacade *httpsfacade.Live,
+	facades httpsfacade.Projection,
 ) (*httptest.Server, *url.URL, *tls.Config) {
 	t.Helper()
 	certificate, certificatePEM := testHTTPSCertificate(t)
-	proxyServer := httptest.NewServer(proxy.New(transport, certificate, liveFacade))
+	proxyServer := httptest.NewServer(proxy.New(transport, certificate, facades))
 	proxyURL := mustParseURL(t, proxyServer.URL)
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(certificatePEM) {

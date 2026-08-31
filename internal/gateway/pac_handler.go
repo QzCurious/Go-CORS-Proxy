@@ -5,23 +5,25 @@ import (
 	"sync/atomic"
 )
 
-// livePACHandler serves the latest PAC content adopted by Gateway.
-type livePACHandler struct {
-	content atomic.Value
+type servedTrafficProjection struct {
+	pacContent string
+	proxy      http.Handler
 }
 
-func newLivePACHandler(initial string) *livePACHandler {
-	h := &livePACHandler{}
-	h.Set(initial)
-	return h
+type liveTrafficProjection struct {
+	current atomic.Pointer[servedTrafficProjection]
 }
 
-func (h *livePACHandler) Set(content string) {
-	h.content.Store(content)
+func newLiveTrafficProjection() *liveTrafficProjection { return &liveTrafficProjection{} }
+
+func (l *liveTrafficProjection) Store(next *servedTrafficProjection) { l.current.Store(next) }
+
+func (l *liveTrafficProjection) serveProxy(w http.ResponseWriter, req *http.Request) {
+	l.current.Load().proxy.ServeHTTP(w, req)
 }
 
-func (h *livePACHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+func (l *liveTrafficProjection) servePAC(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(h.content.Load().(string)))
+	_, _ = w.Write([]byte(l.current.Load().pacContent))
 }
