@@ -2,10 +2,11 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-`seamless-cors` lets a browser call selected development and QA upstreams as if
-they supported permissive CORS. Application URLs stay unchanged: a managed
-Proxy Auto-Configuration (PAC) file routes only the upstreams you select through
-a local gateway, while unrelated traffic stays direct.
+`seamless-cors` automatically fixes CORS issues in local development and QA, so
+browsers can call APIs across origins without changes to frontend URLs or API
+server CORS settings. A managed Proxy Auto-Configuration (PAC) file routes only
+the upstreams you select through a local gateway, while unrelated traffic stays
+direct.
 
 HTTP works without certificate setup. Native HTTPS and the HTTPS Facade use a
 seamless-cors development CA that you install explicitly.
