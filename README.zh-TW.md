@@ -2,9 +2,7 @@
 
 [English](README.md) | 繁體中文
 
-`seamless-cors` 會自動修復本機開發與 QA 環境中的 CORS 問題，讓瀏覽器可以直接對不同來源的 API 發送請求。前端原本使用的 URL 不必修改，API 伺服器的 CORS 設定也不必為了測試而調整。
-
-它會透過 Proxy Auto-Configuration（PAC）檔案，只把你指定的網域交給本機代理服務處理。HTTP 開箱即可使用；需要測試 HTTPS 時，也可以另外啟用攔截功能。
+讓 CORS 成為開發環境的問題，而不是應用程式的問題。`seamless-cors` 透過 PAC 自動將指定請求導流到本機 CORS proxy，讓前端維持 API URL 與請求邏輯，API Server 也不需要為測試環境額外配置 CORS。
 
 > [!NOTE]
 > 此專案仍在積極開發中。
