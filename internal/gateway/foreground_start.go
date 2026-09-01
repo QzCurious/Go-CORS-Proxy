@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
@@ -29,7 +31,7 @@ func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
 	return start(ctx, openSystemManagedPAC(), ca, hooks)
 }
 
-func start(ctx context.Context, pac managedPACModule, ca userCAModule, hooks StartHooks) (StartResult, error) {
+func start(ctx context.Context, pac managedPACCapabilities, ca userCAModule, hooks StartHooks) (StartResult, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, err
@@ -101,7 +103,7 @@ func Serve(ctx context.Context, ready func()) error {
 	return serve(ctx, openSystemManagedPAC(), ca, ready)
 }
 
-func serve(ctx context.Context, pac managedPACModule, ca userCAModule, ready func()) error {
+func serve(ctx context.Context, pac managedPACCapabilities, ca userCAModule, ready func()) error {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return err
@@ -178,7 +180,7 @@ func executeStartLoop(
 			request.UpstreamListCreationConsent = input
 		case Started, AlreadyRunning,
 			StartStopCancelled, StartCleanupFailed, StartAlreadyMutating,
-			StartNoManageablePACServices, StartManagedPACInstallationFailed,
+			StartNoManageablePACServices, StartManagedPACSetFailed,
 			StartOwnerTransition:
 			return result, nil
 		default:
@@ -187,7 +189,7 @@ func executeStartLoop(
 	}
 }
 
-func cleanRuntime(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, []CleanupFailure, error) {
+func cleanRuntime(ctx context.Context, pac managedpac.Footprint) ([]ManagedPACObservationIssue, []CleanupFailure, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, nil, err

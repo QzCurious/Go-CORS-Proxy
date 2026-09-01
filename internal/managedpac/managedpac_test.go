@@ -7,22 +7,26 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/lib/pacsettings"
+	"github.com/QzCurious/seamless-cors/internal/lib/networkservice"
 )
 
-type fakeSettings struct {
+type fakeServices struct {
 	mu            sync.Mutex
 	states        []fakeServiceState
-	snapshotErr   error
-	lookupErrors  map[string]error
-	applyErrors   map[string]error
-	beforeLookup  func(*fakeSettings)
-	beforeDisable func(*fakeSettings)
+	discoveryErr  error
+	observeErrors map[string]error
+	setErrors     map[string]error
+	beforeObserve func(*fakeServices)
+	beforeDisable func(*fakeServices)
 	writes        []string
-	clearErr      error
+	disableErr    error
 	disableErrors map[string]error
+}
+
+type fakeService struct {
+	owner *fakeServices
+	name  string
 }
 
 type fakeServiceState struct {
@@ -31,75 +35,77 @@ type fakeServiceState struct {
 	Enabled     bool
 }
 
-func (f *fakeSettings) List(context.Context) ([]string, error) {
+func (f *fakeServices) List(context.Context) ([]networkservice.Service, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.snapshotErr != nil {
-		return nil, f.snapshotErr
+	if f.discoveryErr != nil {
+		return nil, f.discoveryErr
 	}
-	serviceNames := make([]string, 0, len(f.states))
+	services := make([]networkservice.Service, 0, len(f.states))
 	for _, state := range f.states {
-		serviceNames = append(serviceNames, state.ServiceName)
+		services = append(services, &fakeService{owner: f, name: state.ServiceName})
 	}
-	return serviceNames, nil
+	return services, nil
 }
 
-func (f *fakeSettings) Lookup(_ context.Context, serviceName string) (pacsettings.Setting, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.beforeLookup != nil {
-		beforeLookup := f.beforeLookup
-		f.beforeLookup = nil
-		beforeLookup(f)
+func (s *fakeService) Name() string { return s.name }
+
+func (s *fakeService) PAC(_ context.Context) (networkservice.PACSetting, error) {
+	s.owner.mu.Lock()
+	defer s.owner.mu.Unlock()
+	if s.owner.beforeObserve != nil {
+		beforeObserve := s.owner.beforeObserve
+		s.owner.beforeObserve = nil
+		beforeObserve(s.owner)
 	}
-	if err := f.lookupErrors[serviceName]; err != nil {
-		return pacsettings.Setting{}, err
+	if err := s.owner.observeErrors[s.name]; err != nil {
+		return networkservice.PACSetting{}, err
 	}
-	for _, state := range f.states {
-		if state.ServiceName == serviceName {
-			return pacsettings.Setting{URL: state.URL, Enabled: state.Enabled}, nil
+	for _, state := range s.owner.states {
+		if state.ServiceName == s.name {
+			return networkservice.PACSetting{URL: state.URL, Enabled: state.Enabled}, nil
 		}
 	}
-	return pacsettings.Setting{}, errors.New("network service not found")
+	return networkservice.PACSetting{}, errors.New("network service not found")
 }
 
-func (f *fakeSettings) SetURL(ctx context.Context, serviceName, pacURL string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+func (s *fakeService) SetPAC(ctx context.Context, pacURL string) error {
+	s.owner.mu.Lock()
+	defer s.owner.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := f.applyErrors[serviceName]; err != nil {
+	if err := s.owner.setErrors[s.name]; err != nil {
 		return err
 	}
-	for index := range f.states {
-		if f.states[index].ServiceName == serviceName {
-			f.states[index].URL = pacURL
-			f.states[index].Enabled = true
-			f.writes = append(f.writes, serviceName+"="+pacURL)
+	for index := range s.owner.states {
+		if s.owner.states[index].ServiceName == s.name {
+			s.owner.states[index].URL = pacURL
+			s.owner.states[index].Enabled = true
+			s.owner.writes = append(s.owner.writes, s.name+"="+pacURL)
 			return nil
 		}
 	}
 	return errors.New("network service not found")
 }
 
-func (f *fakeSettings) Disable(_ context.Context, serviceName string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.beforeDisable != nil {
-		beforeDisable := f.beforeDisable
-		f.beforeDisable = nil
-		beforeDisable(f)
+func (s *fakeService) DisablePAC(_ context.Context) error {
+	s.owner.mu.Lock()
+	defer s.owner.mu.Unlock()
+	if s.owner.beforeDisable != nil {
+		beforeDisable := s.owner.beforeDisable
+		s.owner.beforeDisable = nil
+		beforeDisable(s.owner)
 	}
-	if f.clearErr != nil {
-		return f.clearErr
+	if s.owner.disableErr != nil {
+		return s.owner.disableErr
 	}
-	if err := f.disableErrors[serviceName]; err != nil {
+	if err := s.owner.disableErrors[s.name]; err != nil {
 		return err
 	}
-	for index := range f.states {
-		state := &f.states[index]
-		if state.ServiceName != serviceName {
+	for index := range s.owner.states {
+		state := &s.owner.states[index]
+		if state.ServiceName != s.name {
 			continue
 		}
 		if state.Enabled {
@@ -111,70 +117,76 @@ func (f *fakeSettings) Disable(_ context.Context, serviceName string) error {
 }
 
 func TestInspectClassifiesOnlyEmptyAndOwnedServicesAsManageable(t *testing.T) {
-	module := openWithSettings(&fakeSettings{states: []fakeServiceState{
+	module := &ManagedPAC{listServices: (&fakeServices{states: []fakeServiceState{
 		{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true},
 		{ServiceName: "USB", URL: "", Enabled: false},
 		{ServiceName: "Ethernet", URL: "http://127.0.0.1:49152/seamless-cors.pac?v=1", Enabled: false},
-	}})
+	}}).List}
 
-	snapshot, err := module.Inspect(context.Background())
+	control, assessment, err := module.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := snapshot.ManageableServices(), []string{"Ethernet", "USB"}; !slices.Equal(got, want) {
+	t.Cleanup(func() { _, _ = control.Close() })
+	if got, want := assessment.ServiceSet, []string{"USB", "Ethernet"}; !slices.Equal(got, want) {
 		t.Fatalf("manageable services = %v, want %v", got, want)
 	}
-	services := snapshot.Services()
-	if services[2].Name != "Wi-Fi" || services[2].Ownership != OwnershipForeign {
-		t.Fatalf("services not sorted or classified: %#v", services)
+	services := assessment.Services
+	if services[0].ServiceName != "Wi-Fi" || services[0].Ownership != OwnershipForeign {
+		t.Fatalf("services not ordered or classified: %#v", services)
 	}
 }
 
 func TestInspectRetainsServiceWithPACObservationIssue(t *testing.T) {
-	settings := &fakeSettings{
+	settings := &fakeServices{
 		states: []fakeServiceState{
 			{ServiceName: "Wi-Fi"},
 			{ServiceName: "VPN"},
 		},
-		lookupErrors: map[string]error{"VPN": errors.New("PAC query failed")},
+		observeErrors: map[string]error{"VPN": errors.New("PAC query failed")},
 	}
 
-	snapshot, err := openWithSettings(settings).Inspect(context.Background())
+	control, assessment, err := (&ManagedPAC{listServices: settings.List}).Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := snapshot.ManageableServices(), []string{"Wi-Fi"}; !slices.Equal(got, want) {
+	t.Cleanup(func() { _, _ = control.Close() })
+	if got, want := assessment.ServiceSet, []string{"Wi-Fi"}; !slices.Equal(got, want) {
 		t.Fatalf("manageable services = %v, want %v", got, want)
 	}
-	services := snapshot.Services()
-	if len(services) != 2 || services[1].Name != "Wi-Fi" {
+	services := assessment.Services
+	if len(services) != 2 || services[1].ServiceName != "VPN" {
 		t.Fatalf("services = %#v", services)
 	}
-	issues := snapshot.ObservationIssues()
-	if len(issues) != 1 || issues[0].ServiceName != "VPN" || issues[0].Diagnostic != "PAC query failed" {
-		t.Fatalf("observation issues = %#v", issues)
+	if len(assessment.ObservationIssues) != 1 || assessment.ObservationIssues[0].Diagnostic != "PAC query failed" {
+		t.Fatalf("observation issues = %#v", assessment.ObservationIssues)
 	}
 }
 
 func TestInspectDoesNotClassifyCancellationAsObservationIssue(t *testing.T) {
-	settings := &fakeSettings{
-		states:       []fakeServiceState{{ServiceName: "Wi-Fi"}},
-		lookupErrors: map[string]error{"Wi-Fi": context.Canceled},
+	settings := &fakeServices{
+		states:        []fakeServiceState{{ServiceName: "Wi-Fi"}},
+		observeErrors: map[string]error{"Wi-Fi": context.Canceled},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := openWithSettings(settings).Inspect(ctx); !errors.Is(err, context.Canceled) {
+	if _, _, err := (&ManagedPAC{listServices: settings.List}).Begin(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("inspection error = %v", err)
 	}
 }
 
-func TestRoutingReadyRequiresAnEnabledOwnedURLForCurrentRuntime(t *testing.T) {
-	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
+func TestControlStateRequiresAnEnabledOwnedURLForCurrentEndpoint(t *testing.T) {
+	settings := &fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := &ManagedPAC{listServices: settings.List}
+	control, _, err := module.Begin(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := control.Deliver("127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = control.Close() })
 	tests := []struct {
 		name    string
 		url     string
@@ -192,113 +204,144 @@ func TestRoutingReadyRequiresAnEnabledOwnedURLForCurrentRuntime(t *testing.T) {
 			settings.states[0].URL = tt.url
 			settings.states[0].Enabled = tt.enabled
 			settings.mu.Unlock()
-			got, _, err := module.RoutingReady(context.Background(), "127.0.0.1:8081")
+			state, err := control.Observe()
 			if err != nil {
 				t.Fatal(err)
 			}
+			got := state.RoutesCurrentEndpoint
 			if got != tt.want {
-				t.Fatalf("RoutingReady() = %t, want %t", got, tt.want)
+				t.Fatalf("ControlsCurrentEndpoint() = %t, want %t", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestInstallSkipsObservationIssueWithoutRetry(t *testing.T) {
-	settings := &fakeSettings{
+func TestBeginFixesOnlyInitiallyManageableServices(t *testing.T) {
+	settings := &fakeServices{
 		states: []fakeServiceState{
 			{ServiceName: "Wi-Fi"},
 			{ServiceName: "VPN"},
 		},
-		lookupErrors: map[string]error{"VPN": errors.New("PAC query failed")},
+		observeErrors: map[string]error{"VPN": errors.New("PAC query failed")},
 	}
-	module := openWithSettings(settings)
-
-	result, err := module.Install(context.Background(), []string{"Wi-Fi", "VPN"}, "127.0.0.1:49152")
+	module := &ManagedPAC{listServices: settings.List}
+	control, assessment, err := module.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Warnings()) != 0 {
-		t.Fatalf("warnings = %#v", result.Warnings())
+	t.Cleanup(func() { _, _ = control.Close() })
+	if got, want := assessment.ServiceSet, []string{"Wi-Fi"}; !slices.Equal(got, want) {
+		t.Fatalf("manageable services = %v, want %v", got, want)
 	}
-	issues := result.ObservationIssues()
-	if len(issues) != 1 || issues[0].ServiceName != "VPN" {
-		t.Fatalf("observation issues = %#v", issues)
-	}
-	time.Sleep(2 * deliveryRetry)
 	settings.mu.Lock()
-	writes := append([]string(nil), settings.writes...)
+	settings.observeErrors = nil
 	settings.mu.Unlock()
-	if len(writes) != 1 || !strings.HasPrefix(writes[0], "Wi-Fi=") {
-		t.Fatalf("writes after observation issue = %#v", writes)
+	state, err := control.Deliver("127.0.0.1:49152")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := state.ServiceSet, []string{"Wi-Fi"}; !slices.Equal(got, want) {
+		t.Fatalf("controlled service set = %v, want %v", got, want)
+	}
+	if len(settings.writes) != 1 || !strings.HasPrefix(settings.writes[0], "Wi-Fi=") {
+		t.Fatalf("writes = %#v, want only Wi-Fi", settings.writes)
+	}
+}
+
+func TestControlLifetimeOutlivesNewContextAndCloseCleansOwnedState(t *testing.T) {
+	settings := &fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := &ManagedPAC{listServices: settings.List}
+	ctx, cancel := context.WithCancel(context.Background())
+	control, _, err := module.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	if _, err := control.Deliver("127.0.0.1:8081"); err != nil {
+		t.Fatalf("Set after creation context cancellation: %v", err)
+	}
+	if _, err := control.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	settings.mu.Lock()
+	enabled := settings.states[0].Enabled
+	settings.mu.Unlock()
+	if enabled {
+		t.Fatal("Close left marker-owned PAC active")
+	}
+
+}
+
+func TestClosedControlRejectsOperations(t *testing.T) {
+	module := &ManagedPAC{listServices: (&fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}).List}
+	control, _, err := module.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, setErr := control.Deliver("127.0.0.1:8081")
+	_, stateErr := control.Observe()
+	var closedErr controlClosedError
+	if !errors.As(setErr, &closedErr) || !errors.As(stateErr, &closedErr) {
+		t.Fatalf("Deliver error = %v, Observe error = %v; want controlClosedError", setErr, stateErr)
 	}
 }
 
 func TestCleanupSucceedsWithUnobservableOwnedPAC(t *testing.T) {
-	settings := &fakeSettings{
-		states:       []fakeServiceState{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}},
-		lookupErrors: map[string]error{"Wi-Fi": errors.New("PAC query failed")},
+	settings := &fakeServices{
+		states:        []fakeServiceState{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}},
+		observeErrors: map[string]error{"Wi-Fi": errors.New("PAC query failed")},
 	}
 
-	result, err := openWithSettings(settings).CleanupActiveState(context.Background())
+	report, err := (&ManagedPAC{listServices: settings.List}).Cleanup(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	issues := result.ObservationIssues()
-	if len(issues) != 1 || issues[0].ServiceName != "Wi-Fi" {
-		t.Fatalf("observation issues = %#v", issues)
+	if len(report.ObservationIssues) != 1 || report.ObservationIssues[0].ServiceName != "Wi-Fi" {
+		t.Fatalf("observation issues = %#v", report.ObservationIssues)
 	}
 	if !settings.states[0].Enabled {
 		t.Fatal("cleanup mutated an unobservable PAC setting")
 	}
 }
 
-func TestSnapshotDistinguishesOwnedURLFromActiveOwnedState(t *testing.T) {
-	snapshot := NewSnapshot([]Service{
-		{Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false, Ownership: OwnershipOwned},
-	})
-
-	if !snapshot.HasOwnedState() {
-		t.Fatal("disabled retained URL should remain classified as owned")
-	}
-	if snapshot.HasActiveOwnedState() {
-		t.Fatal("disabled retained URL must not require cleanup")
-	}
-}
-
-func TestCleanupActiveStateRejectsOpenReconciliation(t *testing.T) {
-	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
+func TestFootprintDistinguishesOwnedURLFromActiveOwnedState(t *testing.T) {
+	module := &ManagedPAC{listServices: (&fakeServices{states: []fakeServiceState{{
+		ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false,
+	}}}).List}
+	report, err := module.InspectFootprint(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	_, err := module.CleanupActiveState(context.Background())
-	var activeErr CleanupWhileReconciliationActiveError
-	if !errors.As(err, &activeErr) {
-		t.Fatalf("cleanup error = %v, want CleanupWhileReconciliationActiveError", err)
+	if report.State != FootprintNone {
+		t.Fatalf("footprint state = %q, want none for disabled retained URL", report.State)
 	}
 }
 
-func TestCleanupActiveStateContinuesAndReportsPerServiceFailures(t *testing.T) {
-	settings := &fakeSettings{
+func TestCleanupContinuesAndReportsPerServiceFailures(t *testing.T) {
+	settings := &fakeServices{
 		states: []fakeServiceState{
 			{ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
 			{ServiceName: "USB", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true},
 		},
 		disableErrors: map[string]error{"Wi-Fi": errors.New("permission denied")},
 	}
-	module := openWithSettings(settings)
+	module := &ManagedPAC{listServices: settings.List}
 
-	_, err := module.CleanupActiveState(context.Background())
-	var cleanupErr ActiveStateCleanupError
+	_, err := module.Cleanup(context.Background())
+	var cleanupErr activeStateCleanupError
 	if !errors.As(err, &cleanupErr) {
-		t.Fatalf("cleanup error = %v, want ActiveStateCleanupError", err)
+		t.Fatalf("cleanup error = %v, want activeStateCleanupError", err)
 	}
-	if len(cleanupErr.ServiceFailures) != 1 || cleanupErr.ServiceFailures[0].ServiceName != "Wi-Fi" {
-		t.Fatalf("service failures = %#v", cleanupErr.ServiceFailures)
+	if len(cleanupErr.serviceFailures) != 1 || cleanupErr.serviceFailures[0].serviceName != "Wi-Fi" {
+		t.Fatalf("service failures = %#v", cleanupErr.serviceFailures)
 	}
-	if !slices.Equal(cleanupErr.RemainingServices, []string{"Wi-Fi"}) {
-		t.Fatalf("remaining services = %v, want Wi-Fi", cleanupErr.RemainingServices)
+	if !slices.Equal(cleanupErr.remainingServices, []string{"Wi-Fi"}) {
+		t.Fatalf("remaining services = %v, want Wi-Fi", cleanupErr.remainingServices)
 	}
 	settings.mu.Lock()
 	defer settings.mu.Unlock()
@@ -308,15 +351,15 @@ func TestCleanupActiveStateContinuesAndReportsPerServiceFailures(t *testing.T) {
 }
 
 func TestCleanupPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
-	settings := &fakeSettings{
+	settings := &fakeServices{
 		states: []fakeServiceState{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}},
-		beforeLookup: func(settings *fakeSettings) {
+		beforeObserve: func(settings *fakeServices) {
 			settings.states[0].URL = "http://corp.example/proxy.pac"
 		},
 	}
-	module := openWithSettings(settings)
+	module := &ManagedPAC{listServices: settings.List}
 
-	if _, err := module.CleanupActiveState(context.Background()); err != nil {
+	if _, err := module.Cleanup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	settings.mu.Lock()
@@ -327,15 +370,15 @@ func TestCleanupPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
 }
 
 func TestCleanupDisablesFreshlyObservedOwnedState(t *testing.T) {
-	settings := &fakeSettings{
+	settings := &fakeServices{
 		states: []fakeServiceState{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac?v=1", Enabled: true}},
-		beforeLookup: func(settings *fakeSettings) {
+		beforeObserve: func(settings *fakeServices) {
 			settings.states[0].URL = "http://127.0.0.1/seamless-cors.pac?v=2"
 		},
 	}
-	module := openWithSettings(settings)
+	module := &ManagedPAC{listServices: settings.List}
 
-	if _, err := module.CleanupActiveState(context.Background()); err != nil {
+	if _, err := module.Cleanup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	settings.mu.Lock()
@@ -346,16 +389,16 @@ func TestCleanupDisablesFreshlyObservedOwnedState(t *testing.T) {
 }
 
 func TestCleanupConcealsMutationFailureWithoutOwnedResidue(t *testing.T) {
-	settings := &fakeSettings{
-		states:   []fakeServiceState{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}},
-		clearErr: errors.New("network service disappeared"),
-		beforeDisable: func(settings *fakeSettings) {
+	settings := &fakeServices{
+		states:     []fakeServiceState{{ServiceName: "Wi-Fi", URL: "http://127.0.0.1/seamless-cors.pac", Enabled: true}},
+		disableErr: errors.New("network service disappeared"),
+		beforeDisable: func(settings *fakeServices) {
 			settings.states[0].URL = "http://corp.example/proxy.pac"
 		},
 	}
-	module := openWithSettings(settings)
+	module := &ManagedPAC{listServices: settings.List}
 
-	if _, err := module.CleanupActiveState(context.Background()); err != nil {
+	if _, err := module.Cleanup(context.Background()); err != nil {
 		t.Fatalf("cleanup error = %v, want concealed after verified foreign state", err)
 	}
 }
@@ -377,33 +420,39 @@ func TestOwnedURLMatchesOnlyLoopbackHTTPPACFilename(t *testing.T) {
 	}
 }
 
-func TestDeliveryRequestAdvancesGeneration(t *testing.T) {
-	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
+func TestSetAdvancesGenerationOnEveryCall(t *testing.T) {
+	settings := &fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := &ManagedPAC{listServices: settings.List}
+	control, _, err := module.Begin(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	module.Deliver()
-	waitForWrite(t, settings, "v=2")
-	if got := deliveryGeneration(module); got != 2 {
-		t.Fatalf("delivery generation = %d, want 2", got)
+	t.Cleanup(func() { _, _ = control.Close() })
+	if _, err := control.Deliver("127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Deliver("127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.writes) != 2 || !strings.Contains(settings.writes[1], "v=2") {
+		t.Fatalf("writes = %v, want second generation", settings.writes)
 	}
 }
 
 func TestDeliveryPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
-	settings := &fakeSettings{
-		states: []fakeServiceState{{ServiceName: "Wi-Fi"}},
-		beforeLookup: func(settings *fakeSettings) {
-			settings.states[0] = fakeServiceState{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true}
-		},
-	}
-	module := openWithSettings(settings)
-
-	result, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081")
+	settings := &fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := &ManagedPAC{listServices: settings.List}
+	control, _, err := module.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if warnings := result.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
+	t.Cleanup(func() { _, _ = control.Close() })
+	settings.states[0] = fakeServiceState{ServiceName: "Wi-Fi", URL: "http://corp.example/proxy.pac", Enabled: true}
+	state, err := control.Deliver("127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := serviceWarnings(state, "Wi-Fi"); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
 		t.Fatalf("warnings = %#v", warnings)
 	}
 	settings.mu.Lock()
@@ -414,152 +463,133 @@ func TestDeliveryPreservesForeignStateThatAppearsAfterInspection(t *testing.T) {
 }
 
 func TestDeliveryUpdatesFreshlyObservedOwnedState(t *testing.T) {
-	settings := &fakeSettings{
-		states: []fakeServiceState{{ServiceName: "Wi-Fi"}},
-		beforeLookup: func(settings *fakeSettings) {
-			settings.states[0].URL = "http://127.0.0.1:8081/seamless-cors.pac?v=0"
-		},
-	}
-	module := openWithSettings(settings)
-	result, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081")
+	settings := &fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := &ManagedPAC{listServices: settings.List}
+	control, _, err := module.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if warnings := result.Warnings(); len(warnings) != 0 {
+	t.Cleanup(func() { _, _ = control.Close() })
+	settings.states[0].URL = "http://127.0.0.1:8081/seamless-cors.pac?v=0"
+	state, err := control.Deliver("127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := serviceWarnings(state, "Wi-Fi"); len(warnings) != 0 {
 		t.Fatalf("warnings = %#v, want none", warnings)
 	}
-	waitForWrite(t, settings, "seamless-cors.pac?v=1")
+	if len(settings.writes) != 1 || !strings.Contains(settings.writes[0], "seamless-cors.pac?v=1") {
+		t.Fatalf("writes = %v, want generation 1", settings.writes)
+	}
 }
 
-func TestPartialDeliveryFailureIsRetriedWithoutRollingBackSuccess(t *testing.T) {
-	settings := &fakeSettings{states: []fakeServiceState{
+func TestPartialSetFailureDoesNotRollBackSuccessOrRetry(t *testing.T) {
+	settings := &fakeServices{states: []fakeServiceState{
 		{ServiceName: "Ethernet"},
 		{ServiceName: "Wi-Fi"},
 	}}
-	module := openWithSettings(settings)
-	if _, err := module.Install(context.Background(), []string{"Ethernet", "Wi-Fi"}, "127.0.0.1:8081"); err != nil {
-		t.Fatal(err)
-	}
-
-	settings.mu.Lock()
-	settings.applyErrors = map[string]error{"Ethernet": errors.New("write denied")}
-	settings.mu.Unlock()
-	module.Deliver()
-	waitForGeneration(t, module, 2)
-
-	settings.mu.Lock()
-	settings.applyErrors = nil
-	settings.mu.Unlock()
-	waitForWrite(t, settings, "Ethernet=http://127.0.0.1:8081/seamless-cors.pac?v=3")
-}
-
-func TestFailedDeliveryConsumesGenerationAndRetries(t *testing.T) {
-	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	if _, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081"); err != nil {
-		t.Fatal(err)
-	}
-	settings.mu.Lock()
-	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
-	settings.mu.Unlock()
-	module.Deliver()
-	waitForGeneration(t, module, 2)
-
-	settings.mu.Lock()
-	settings.applyErrors = nil
-	settings.mu.Unlock()
-	module.Deliver()
-	waitForGeneration(t, module, 3)
-	waitForWrite(t, settings, "v=3")
-	settings.mu.Lock()
-	writes := append([]string(nil), settings.writes...)
-	settings.mu.Unlock()
-	if len(writes) < 2 {
-		t.Fatalf("writes after retry = %v", writes)
-	}
-	if got := deliveryGeneration(module); got < 3 {
-		t.Fatalf("retry did not consume a new generation: %d", got)
-	}
-}
-
-func TestReconciliationResultsReplaceDriftAndFailureWarningsOnRecovery(t *testing.T) {
-	settings := &fakeSettings{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
-	module := openWithSettings(settings)
-	_, err := module.Install(context.Background(), []string{"Wi-Fi"}, "127.0.0.1:8081")
+	module := &ManagedPAC{listServices: settings.List}
+	control, _, err := module.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	initialURL := settings.states[0].URL
+	t.Cleanup(func() { _, _ = control.Close() })
+	settings.setErrors = map[string]error{"Ethernet": errors.New("write denied")}
+	state, err := control.Deliver("127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := serviceWarnings(state, "Ethernet"); len(warnings) != 1 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if !state.RoutesCurrentEndpoint || len(settings.writes) != 1 || !strings.HasPrefix(settings.writes[0], "Wi-Fi=") {
+		t.Fatalf("state = %#v, writes = %v", state, settings.writes)
+	}
+	settings.setErrors = nil
+	if _, err := control.Observe(); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.writes) != 1 {
+		t.Fatalf("State retried delivery: writes = %v", settings.writes)
+	}
+}
 
-	settings.mu.Lock()
+func TestFailedSetConsumesGenerationAndRecoveryRequiresAnotherSet(t *testing.T) {
+	settings := &fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := &ManagedPAC{listServices: settings.List}
+	control, _, err := module.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = control.Close() })
+	if _, err := control.Deliver("127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	settings.setErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
+	failed, err := control.Deliver("127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := serviceWarnings(failed, "Wi-Fi"); len(warnings) != 1 || warnings[0].Kind != WarningUpdateFailed {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	settings.setErrors = nil
+	if _, err := control.Observe(); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.writes) != 1 {
+		t.Fatalf("State retried failed Set: writes = %v", settings.writes)
+	}
+	if _, err := control.Deliver("127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.writes) != 2 || !strings.Contains(settings.writes[1], "v=3") {
+		t.Fatalf("writes after explicit recovery Set = %v", settings.writes)
+	}
+}
+
+func TestSetReplacesPriorDeliveryWarnings(t *testing.T) {
+	settings := &fakeServices{states: []fakeServiceState{{ServiceName: "Wi-Fi"}}}
+	module := &ManagedPAC{listServices: settings.List}
+	control, _, err := module.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = control.Close() })
 	settings.states[0].URL = "http://corp.example/proxy.pac"
-	settings.mu.Unlock()
-	module.Deliver()
-	drift := receiveReconciliation(t, module.ReconciliationResults())
-	if warnings := drift.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
+	drift, err := control.Deliver("127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := serviceWarnings(drift, "Wi-Fi"); len(warnings) != 1 || warnings[0].Kind != WarningDrift {
 		t.Fatalf("drift warnings = %#v", warnings)
 	}
-
-	settings.mu.Lock()
-	settings.states[0].URL = initialURL
-	settings.applyErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
-	settings.mu.Unlock()
-	module.Deliver()
-	failed := receiveReconciliation(t, module.ReconciliationResults())
-	if warnings := failed.Warnings(); len(warnings) != 1 || warnings[0].Kind != WarningUpdateFailed {
+	settings.states[0].URL = ""
+	settings.states[0].Enabled = false
+	settings.setErrors = map[string]error{"Wi-Fi": errors.New("write denied")}
+	failed, err := control.Deliver("127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := serviceWarnings(failed, "Wi-Fi"); len(warnings) != 1 || warnings[0].Kind != WarningUpdateFailed {
 		t.Fatalf("failure warnings = %#v", warnings)
 	}
-	settings.mu.Lock()
-	settings.applyErrors = nil
-	settings.mu.Unlock()
-	recovered := receiveReconciliation(t, module.ReconciliationResults())
-	if warnings := recovered.Warnings(); len(warnings) != 0 {
+	settings.setErrors = nil
+	recovered, err := control.Deliver("127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := serviceWarnings(recovered, "Wi-Fi"); len(warnings) != 0 {
 		t.Fatalf("recovery warnings = %#v, want cleared", warnings)
 	}
 }
 
-func receiveReconciliation(t *testing.T, results <-chan ReconciliationResult) ReconciliationResult {
-	t.Helper()
-	select {
-	case result := <-results:
-		return result
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Managed PAC reconciliation result")
-		return ReconciliationResult{}
-	}
-}
-
-func waitForWrite(t *testing.T, settings *fakeSettings, fragment string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		settings.mu.Lock()
-		for _, write := range settings.writes {
-			if strings.Contains(write, fragment) {
-				settings.mu.Unlock()
-				return
-			}
+func serviceWarnings(state ControlState, serviceName string) []Warning {
+	var warnings []Warning
+	for _, warning := range state.Warnings {
+		if warning.ServiceName == serviceName {
+			warnings = append(warnings, warning)
 		}
-		settings.mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for write %q", fragment)
-}
-
-func waitForGeneration(t *testing.T, module *ManagedPAC, want uint64) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if deliveryGeneration(module) >= want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("delivery generation did not reach %d", want)
-}
-
-func deliveryGeneration(module *ManagedPAC) uint64 {
-	module.mu.Lock()
-	defer module.mu.Unlock()
-	return module.deliveryGeneration
+	return warnings
 }

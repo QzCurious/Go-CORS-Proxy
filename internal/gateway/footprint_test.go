@@ -57,8 +57,8 @@ func TestCleanupStatusDoesNotInspectManagedPACWhileRuntimeIsActive(t *testing.T)
 
 func TestCleanupStatusIgnoresDisabledOwnedPACURL(t *testing.T) {
 	coord := newCoordinator(t.TempDir())
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
-		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false, Ownership: managedpac.OwnershipOwned,
+	settings := &lifecycleTestSystemSettings{services: []managedPACTestService{{
+		ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: false, Ownership: managedpac.OwnershipOwned,
 	}}}
 
 	status := inspectGatewayFootprint(context.Background(), settings, coord, false, false, stateCache{})
@@ -70,8 +70,8 @@ func TestCleanupStatusIgnoresDisabledOwnedPACURL(t *testing.T) {
 
 func TestCleanupStatusReportsManagedPACWithoutGatewayStateCache(t *testing.T) {
 	coord := newCoordinator(t.TempDir())
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{
-		Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
+	settings := &lifecycleTestSystemSettings{services: []managedPACTestService{{
+		ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
 	}}}
 
 	status := inspectGatewayFootprint(context.Background(), settings, coord, false, false, stateCache{})

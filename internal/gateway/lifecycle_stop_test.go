@@ -3,10 +3,54 @@ package gateway
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
+
+func TestStopCancelsSetBeforeWaitingForStart(t *testing.T) {
+	settings := &stopCancelableManagedPAC{
+		setEntered: make(chan struct{}),
+		closed:     make(chan struct{}),
+	}
+	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalPath := filepath.Join(t.TempDir(), "upstreams.txt")
+	if err := os.WriteFile(globalPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.globalUpstreamListPath = globalPath
+
+	startDone := make(chan StartResult, 1)
+	go func() {
+		result, _ := lifecycle.ExecuteStart(context.Background(), StartRequest{WorkingDirectory: t.TempDir()})
+		startDone <- result
+	}()
+	<-settings.setEntered
+
+	stopDone := make(chan StopResult, 1)
+	go func() {
+		result, _ := lifecycle.Stop(context.Background())
+		stopDone <- result
+	}()
+	select {
+	case stopped := <-stopDone:
+		if stopped.Kind != StopResultStopped {
+			t.Fatalf("stop kind = %s, want %s", stopped.Kind, StopResultStopped)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop waited for Start before closing Managed PAC control")
+	}
+	if started := <-startDone; started.Kind() != StartResultStopCancelled {
+		t.Fatalf("start kind = %s, want %s", started.Kind(), StartResultStopCancelled)
+	}
+}
 
 func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
 	cleanupEntered := make(chan struct{})
@@ -44,11 +88,11 @@ func TestExecuteStartRejectsStartWhileStopCleanupIsRunning(t *testing.T) {
 func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	coord := newCoordinator(t.TempDir())
 	settings := &lifecycleTestSystemSettings{
-		services: []managedpac.Service{{
-			Name:      "Wi-Fi",
-			URL:       "http://127.0.0.1/seamless-cors.pac",
-			Enabled:   true,
-			Ownership: managedpac.OwnershipOwned,
+		services: []managedPACTestService{{
+			ServiceName: "Wi-Fi",
+			URL:         "http://127.0.0.1/seamless-cors.pac",
+			Enabled:     true,
+			Ownership:   managedpac.OwnershipOwned,
 		}},
 		clearErr: errors.New("cleanup denied"),
 	}
@@ -69,8 +113,8 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 	if stopped.Kind != StopResultCleanupFailed {
 		t.Fatalf("stop kind = %s, want %s", stopped.Kind, StopResultCleanupFailed)
 	}
-	if settings.cleanupCalls != 0 || settings.uninstallCalls != 1 {
-		t.Fatalf("cleanup calls = %d, uninstall calls = %d", settings.cleanupCalls, settings.uninstallCalls)
+	if settings.cleanupCalls != 1 || settings.uninstallCalls != 0 {
+		t.Fatalf("cleanup calls = %d, control close calls = %d", settings.cleanupCalls, settings.uninstallCalls)
 	}
 	if coord.Exists() {
 		t.Fatal("cleanup failure preserved Gateway State Cache")
@@ -101,10 +145,10 @@ func TestRetryableStopFailureLeavesOwnerEnding(t *testing.T) {
 
 func TestStopSucceedsAndDisclosesManagedPACObservationIssue(t *testing.T) {
 	settings := &lifecycleTestSystemSettings{
-		cleanupResult: managedpac.NewCleanupResult([]managedpac.ObservationIssue{{
+		cleanupResult: []managedpac.ObservationIssue{{
 			ServiceName: "VPN",
 			Diagnostic:  "PAC query failed",
-		}}),
+		}},
 	}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
@@ -128,30 +172,68 @@ type blockingCleanupSettings struct {
 	releaseCleanup <-chan struct{}
 }
 
-func (*blockingCleanupSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
-	return managedpac.Snapshot{}, nil
+type stopCancelableManagedPAC struct {
+	setEntered chan struct{}
+	closed     chan struct{}
+	closeOnce  sync.Once
 }
 
-func (*blockingCleanupSettings) Install(context.Context, []string, string) (managedpac.InstallResult, error) {
-	return managedpac.InstallResult{}, nil
+func (*stopCancelableManagedPAC) InspectFootprint(context.Context) (managedpac.FootprintReport, error) {
+	return managedpac.FootprintReport{}, nil
 }
 
-func (*blockingCleanupSettings) Deliver() {}
-
-func (*blockingCleanupSettings) RoutingReady(context.Context, string) (bool, []managedpac.ObservationIssue, error) {
-	return false, nil, nil
+func (f *stopCancelableManagedPAC) Begin(context.Context) (managedpac.Control, managedpac.Assessment, error) {
+	return f, managedpac.Assessment{
+		Services:   []managedpac.AssessedService{{ServiceName: "Wi-Fi", Ownership: managedpac.OwnershipEmpty, Manageable: true}},
+		ServiceSet: []string{"Wi-Fi"},
+	}, nil
 }
 
-func (*blockingCleanupSettings) ReconciliationResults() <-chan managedpac.ReconciliationResult {
-	return make(chan managedpac.ReconciliationResult)
+func (f *stopCancelableManagedPAC) Deliver(string) (managedpac.ControlState, error) {
+	close(f.setEntered)
+	<-f.closed
+	return managedpac.ControlState{}, errors.New("managed PAC control is closed")
 }
 
-func (f *blockingCleanupSettings) CleanupActiveState(ctx context.Context) (managedpac.CleanupResult, error) {
-	return f.Uninstall(ctx)
+func (*stopCancelableManagedPAC) Observe() (managedpac.ControlState, error) {
+	return managedpac.ControlState{}, nil
 }
 
-func (f *blockingCleanupSettings) Uninstall(context.Context) (managedpac.CleanupResult, error) {
+func (*stopCancelableManagedPAC) Cleanup(context.Context) (managedpac.CleanupReport, error) {
+	return managedpac.CleanupReport{}, nil
+}
+
+func (f *stopCancelableManagedPAC) Close() (managedpac.CleanupReport, error) {
+	f.closeOnce.Do(func() { close(f.closed) })
+	return managedpac.CleanupReport{}, nil
+}
+
+func (*blockingCleanupSettings) InspectFootprint(context.Context) (managedpac.FootprintReport, error) {
+	return managedpac.FootprintReport{}, nil
+}
+
+func (f *blockingCleanupSettings) Begin(context.Context) (managedpac.Control, managedpac.Assessment, error) {
+	return f, managedpac.Assessment{}, nil
+}
+
+func (*blockingCleanupSettings) Deliver(string) (managedpac.ControlState, error) {
+	return managedpac.ControlState{}, nil
+}
+
+func (*blockingCleanupSettings) Observe() (managedpac.ControlState, error) {
+	return managedpac.ControlState{}, nil
+}
+
+func (f *blockingCleanupSettings) Cleanup(ctx context.Context) (managedpac.CleanupReport, error) {
+	return f.close()
+}
+
+func (f *blockingCleanupSettings) Close() (managedpac.CleanupReport, error) {
+	return f.close()
+}
+
+func (f *blockingCleanupSettings) close() (managedpac.CleanupReport, error) {
 	close(f.cleanupEntered)
 	<-f.releaseCleanup
-	return managedpac.CleanupResult{}, nil
+	return managedpac.CleanupReport{}, nil
 }

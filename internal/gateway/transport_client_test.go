@@ -52,7 +52,7 @@ func TestStartFailureReturnsSemanticResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"code":"managed-pac-installation-failed","message":"Gateway Start was not fulfilled.","details":{"diagnostic":"PAC install failed","upstreamListCreationWarning":{"cause":"creation denied"}}}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"managed-pac-set-failed","message":"Gateway Start was not fulfilled.","details":{"diagnostic":"PAC Set failed","upstreamListCreationWarning":{"cause":"creation denied"}}}}`))
 	}))
 	defer server.Close()
 	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
@@ -61,8 +61,8 @@ func TestStartFailureReturnsSemanticResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failed, ok := result.(StartManagedPACInstallationFailed)
-	if !ok || failed.Diagnostic != "PAC install failed" || failed.UpstreamListCreationWarningDetail() == nil || failed.UpstreamListCreationWarningDetail().Cause != "creation denied" {
+	failed, ok := result.(StartManagedPACSetFailed)
+	if !ok || failed.Diagnostic != "PAC Set failed" || failed.UpstreamListCreationWarningDetail() == nil || failed.UpstreamListCreationWarningDetail().Cause != "creation denied" {
 		t.Fatalf("result = %#v", result)
 	}
 }

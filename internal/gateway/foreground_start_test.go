@@ -85,7 +85,7 @@ func TestStartRoutesToExistingServeOwner(t *testing.T) {
 		t.Fatal("test did not acquire Gateway Ownership")
 	}
 	settings := &lifecycleTestSystemSettings{
-		services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		services: []managedPACTestService{{ServiceName: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
 	}
 	owner, err := newOwnerWithCoordinator(settings, emptyTestUserCA{}, coord)
 	if err != nil {

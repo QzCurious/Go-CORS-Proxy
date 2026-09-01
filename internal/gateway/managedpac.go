@@ -1,24 +1,15 @@
 package gateway
 
-import (
-	"context"
+import "github.com/QzCurious/seamless-cors/internal/managedpac"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
-)
-
-// managedPACModule is the Gateway-owned behavioral seam. Managed PAC owns
-// every semantic value crossing it; platform settings and mutation
-// serialization remain private to that feature.
-type managedPACModule interface {
-	Inspect(context.Context) (managedpac.Snapshot, error)
-	Install(context.Context, []string, string) (managedpac.InstallResult, error)
-	Deliver()
-	RoutingReady(context.Context, string) (bool, []managedpac.ObservationIssue, error)
-	ReconciliationResults() <-chan managedpac.ReconciliationResult
-	CleanupActiveState(context.Context) (managedpac.CleanupResult, error)
-	Uninstall(context.Context) (managedpac.CleanupResult, error)
+// managedPACCapabilities is used only at Gateway composition points that need
+// both Managed PAC seams. Lifecycle code retains and passes the narrower
+// activation, control, or footprint capability for each workflow.
+type managedPACCapabilities interface {
+	managedpac.Activation
+	managedpac.Footprint
 }
 
-func openSystemManagedPAC() managedPACModule {
-	return managedpac.Open()
+func openSystemManagedPAC() managedPACCapabilities {
+	return managedpac.New()
 }

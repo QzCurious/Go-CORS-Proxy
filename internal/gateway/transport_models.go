@@ -132,7 +132,7 @@ func startFailureDetailsFrom(result StartResult) startFailureDetails {
 	case StartNoManageablePACServices:
 		detail := typed.Detail
 		details.ManagedPAC = &detail
-	case StartManagedPACInstallationFailed:
+	case StartManagedPACSetFailed:
 		details.ManagedPACWarnings = typed.Warnings
 		details.Diagnostic = typed.Diagnostic
 	case StartCleanupFailed:
@@ -156,8 +156,8 @@ func (dto startFailureDetails) semantic(kind StartKind) StartResult {
 			return nil
 		}
 		return StartNoManageablePACServices{Detail: *dto.ManagedPAC, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
-	case StartResultManagedPACInstallationFailed:
-		return StartManagedPACInstallationFailed{Warnings: dto.ManagedPACWarnings, Diagnostic: dto.Diagnostic, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
+	case StartResultManagedPACSetFailed:
+		return StartManagedPACSetFailed{Warnings: dto.ManagedPACWarnings, Diagnostic: dto.Diagnostic, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	case StartResultStartAlreadyMutating:
 		return StartAlreadyMutating{UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	case StartResultStopCancelled:

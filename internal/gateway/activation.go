@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 type startSequence struct {
@@ -22,7 +23,7 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	}()
 
 	if !s.lifecycle.takeStartCleanupComplete() {
-		_, failure := cleanManagedPACActiveState(ctx, s.lifecycle.managedPAC)
+		_, failure := cleanManagedPAC(ctx, s.lifecycle.managedPACFootprint)
 		if failure != nil {
 			return StartCleanupFailed{Failures: []CleanupFailure{*failure}}, nil
 		}
@@ -71,13 +72,19 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	s.lifecycle.userCAAssessmentErr = userCAAssessmentErr
 	s.lifecycle.mu.Unlock()
 
-	managedPACDetail, assessmentResult, err := s.assessManagedPAC(ctx)
+	managedPACControl, managedPACDetail, assessmentResult, err := s.assessManagedPAC(ctx)
 	if err != nil || assessmentResult != nil {
 		if err != nil {
 			return postStartFailure(err)
 		}
 		return assessmentResult, nil
 	}
+	closePACControl := true
+	defer func() {
+		if closePACControl {
+			_, _ = managedPACControl.Close()
+		}
+	}()
 
 	engine, err := newRuntimeFromSources([]runtimeUpstreamListInput{
 		{
@@ -107,11 +114,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	active := &activeRuntime{
-		engine: engine,
-		ctx:    runCtx,
-		cancel: cancel,
-		done:   done,
-		phase:  runtimePhaseStarting,
+		engine:     engine,
+		managedPAC: managedPACControl,
+		ctx:        runCtx,
+		cancel:     cancel,
+		done:       done,
+		phase:      runtimePhaseStarting,
 	}
 
 	publishRuntime := func() error {
@@ -167,53 +175,44 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	select {
 	case err := <-done:
 		withdraw()
-		return postStartFailure(fmt.Errorf("gateway runtime failed before PAC installation: %w", err))
+		return postStartFailure(fmt.Errorf("gateway runtime failed before Managed PAC Set: %w", err))
 	default:
 	}
 
-	pacInstall, err := s.lifecycle.managedPAC.Install(ctx, managedPACDetail.ServiceSet, engine.PACListen())
+	pacState, err := managedPACControl.Deliver(engine.PACListen())
 	if err != nil {
 		withdraw()
-		warnings := managedPACWarningDetails(pacInstall.Warnings())
-		if failure := s.cleanupFailedPACInstall(); failure != nil {
+		if failure := s.cleanupFailedPACControl(managedPACControl); failure != nil {
+			closePACControl = false
 			return StartCleanupFailed{
-				Warnings: warnings,
+				Warnings: pacState.Warnings,
 				Failures: []CleanupFailure{*failure},
 			}, nil
 		}
 		if ctx.Err() != nil {
 			return StartStopCancelled{}, nil
 		}
-		return StartManagedPACInstallationFailed{Warnings: warnings, Diagnostic: err.Error()}, nil
+		return StartManagedPACSetFailed{Warnings: pacState.Warnings, Diagnostic: err.Error()}, nil
 	}
 
 	s.lifecycle.mu.Lock()
 	if s.lifecycle.runtime != active || ctx.Err() != nil {
 		s.lifecycle.mu.Unlock()
 		withdraw()
-		_, _ = s.lifecycle.managedPAC.Uninstall(context.Background())
+		_, _ = managedPACControl.Close()
+		closePACControl = false
 		return StartStopCancelled{}, nil
-	}
-	active.managedPAC = &managedPACRuntime{
-		state:             pacInstall.State(),
-		warnings:          managedPACWarningDetails(pacInstall.Warnings()),
-		observationIssues: managedPACObservationIssueDetails(pacInstall.ObservationIssues()),
 	}
 	active.phase = runtimePhaseRunning
 	s.lifecycle.mu.Unlock()
 	cleanupEngine = false
+	closePACControl = false
 
 	go s.lifecycle.watchRuntimeChanges(runCtx, active)
 
-	routingReady, routingIssues, routingErr := s.lifecycle.managedPAC.RoutingReady(ctx, engine.PACListen())
-	observationIssues := managedPACObservationIssueDetails(routingIssues)
-	if routingErr != nil {
-		observationIssues = append(observationIssues, ManagedPACObservationIssue{Diagnostic: routingErr.Error()})
-	}
+	observationIssues := append(managedPACDetail.ObservationIssues, pacState.ObservationIssues...)
 	state := engine.snapshot()
 	s.lifecycle.mu.Lock()
-	active.managedPAC.routingReady = routingReady
-	active.managedPAC.observationIssues = observationIssues
 	installedCA := installedCAStatus(
 		s.lifecycle.userCAState,
 		s.lifecycle.userCAAssessmentErr,
@@ -222,12 +221,12 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	)
 	userCAIssue := userCAAssessmentIssue(s.lifecycle.userCAAssessmentErr)
 	s.lifecycle.mu.Unlock()
-	managedPACDetail.Warnings = managedPACWarningDetails(pacInstall.Warnings())
+	managedPACDetail.Warnings = pacState.Warnings
 	managedPACDetail.ObservationIssues = observationIssues
 	return Started{Guidance: StartGuidance{
 		UpstreamLists: state.UpstreamLists,
 		ManagedPAC:    managedPACDetail,
-		Traffic:       trafficStatus(state, routingReady),
+		Traffic:       trafficStatus(state, pacState.RoutesCurrentEndpoint),
 		InstalledCA:   installedCA,
 		UserCAIssue:   userCAIssue,
 	}}, nil
@@ -264,7 +263,7 @@ func withUpstreamListCreationWarning(result StartResult, err error) StartResult 
 	case StartNoManageablePACServices:
 		typed.UpstreamListCreationWarning = warning
 		return typed
-	case StartManagedPACInstallationFailed:
+	case StartManagedPACSetFailed:
 		typed.UpstreamListCreationWarning = warning
 		return typed
 	case StartAlreadyMutating:
@@ -281,19 +280,23 @@ func withUpstreamListCreationWarning(result StartResult, err error) StartResult 
 	}
 }
 
-func (s startSequence) assessManagedPAC(ctx context.Context) (ManagedPACStartDetail, StartResult, error) {
-	snapshot, err := s.lifecycle.managedPAC.Inspect(ctx)
+func (s startSequence) assessManagedPAC(ctx context.Context) (managedpac.Control, ManagedPACStartDetail, StartResult, error) {
+	control, assessment, err := s.lifecycle.managedPACActivation.Begin(ctx)
 	if err != nil {
-		return ManagedPACStartDetail{}, nil, err
+		return nil, ManagedPACStartDetail{}, nil, err
 	}
-	detail := managedPACStartDetail(snapshot)
-	if len(detail.ServiceSet) == 0 {
-		return ManagedPACStartDetail{}, StartNoManageablePACServices{Detail: detail}, nil
+	detail := managedPACStartDetail(assessment)
+	if !assessment.HasManageableServices() {
+		_, closeErr := control.Close()
+		if closeErr != nil {
+			return nil, ManagedPACStartDetail{}, nil, closeErr
+		}
+		return nil, ManagedPACStartDetail{}, StartNoManageablePACServices{Detail: detail}, nil
 	}
-	return detail, nil, nil
+	return control, detail, nil, nil
 }
 
-func (s startSequence) cleanupFailedPACInstall() *CleanupFailure {
-	_, failure := uninstallManagedPAC(context.Background(), s.lifecycle.managedPAC)
+func (s startSequence) cleanupFailedPACControl(control managedpac.Control) *CleanupFailure {
+	_, failure := closeManagedPAC(control)
 	return failure
 }

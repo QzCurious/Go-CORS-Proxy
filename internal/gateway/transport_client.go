@@ -209,7 +209,7 @@ func knownStartFailureKind(kind StartKind) bool {
 	case StartResultOwnerTransition,
 		StartResultUpstreamListCreationConsentRequired,
 		StartResultNoManageablePACServices,
-		StartResultManagedPACInstallationFailed,
+		StartResultManagedPACSetFailed,
 		StartResultStartAlreadyMutating,
 		StartResultStopCancelled,
 		StartResultCleanupFailed:

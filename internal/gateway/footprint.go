@@ -3,29 +3,31 @@ package gateway
 import (
 	"context"
 	"fmt"
+
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
-func cleanManagedPACActiveState(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailure) {
-	result, err := pac.CleanupActiveState(ctx)
-	issues := managedPACObservationIssueDetails(result.ObservationIssues())
+func cleanManagedPAC(ctx context.Context, pac managedpac.Footprint) ([]ManagedPACObservationIssue, *CleanupFailure) {
+	result, err := pac.Cleanup(ctx)
+	issues := managedPACObservationIssueDetails(result.ObservationIssues)
 	if err != nil {
 		return issues, &CleanupFailure{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
 	return issues, nil
 }
 
-func uninstallManagedPAC(ctx context.Context, pac managedPACModule) ([]ManagedPACObservationIssue, *CleanupFailure) {
-	result, err := pac.Uninstall(ctx)
-	issues := managedPACObservationIssueDetails(result.ObservationIssues())
+func closeManagedPAC(control managedpac.Control) ([]ManagedPACObservationIssue, *CleanupFailure) {
+	result, err := control.Close()
+	issues := managedPACObservationIssueDetails(result.ObservationIssues)
 	if err != nil {
 		return issues, &CleanupFailure{Subject: CleanupSubjectManagedPAC, Diagnostic: err.Error()}
 	}
 	return issues, nil
 }
 
-func cleanGatewayFootprint(ctx context.Context, pac managedPACModule, coord *coordinator, ownedCache *stateCache) ([]ManagedPACObservationIssue, []CleanupFailure) {
+func cleanGatewayFootprint(ctx context.Context, pac managedpac.Footprint, coord *coordinator, ownedCache *stateCache) ([]ManagedPACObservationIssue, []CleanupFailure) {
 	var failures []CleanupFailure
-	issues, failure := cleanManagedPACActiveState(ctx, pac)
+	issues, failure := cleanManagedPAC(ctx, pac)
 	if failure != nil {
 		failures = append(failures, *failure)
 	}
@@ -48,7 +50,7 @@ func cleanGatewayStateCache(coord *coordinator, ownedCache *stateCache) []Cleanu
 	}}
 }
 
-func inspectGatewayFootprint(ctx context.Context, pacModule managedPACModule, coord *coordinator, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
+func inspectGatewayFootprint(ctx context.Context, pacModule managedpac.Footprint, coord *coordinator, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
 	cacheState := CleanupStatusNone
 	ownerCacheActive := ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" && coord.Owns(ownerCache)
 	if stale || (coord.Exists() && !ownerCacheActive) {
@@ -57,11 +59,11 @@ func inspectGatewayFootprint(ctx context.Context, pacModule managedPACModule, co
 
 	pac := CleanupSubjectStatusDetail{Subject: CleanupSubjectManagedPAC, State: CleanupStatusNone}
 	if !runtimeActive {
-		snapshot, err := pacModule.Inspect(ctx)
+		report, err := pacModule.InspectFootprint(ctx)
 		if err != nil {
 			pac.State = CleanupStatusUnknown
 			pac.Diagnostic = err.Error()
-		} else if snapshot.HasActiveOwnedState() {
+		} else if report.State == managedpac.FootprintCleanupNeeded {
 			pac.State = CleanupStatusNeeded
 		}
 	}

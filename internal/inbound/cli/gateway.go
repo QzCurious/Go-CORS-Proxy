@@ -82,7 +82,7 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	if result.Kind() == gateway.StartResultNoManageablePACServices {
 		return fmt.Errorf("gateway start failed: no manageable PAC services")
 	}
-	if failed, ok := result.(gateway.StartManagedPACInstallationFailed); ok {
+	if failed, ok := result.(gateway.StartManagedPACSetFailed); ok {
 		return fmt.Errorf("gateway start failed: %s", failed.Diagnostic)
 	}
 	return fmt.Errorf("gateway start was not fulfilled: %s", result.Kind())
@@ -337,9 +337,9 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 			renderManagedPACExcludedServices(stdout, noServices.Detail)
 			renderManagedPACObservationIssues(stdout, noServices.Detail.ObservationIssues)
 		}
-	case gateway.StartResultManagedPACInstallationFailed:
-		fmt.Fprintln(stdout, "seamless-cors could not start: Managed PAC installation failed")
-		if failed, ok := result.(gateway.StartManagedPACInstallationFailed); ok {
+	case gateway.StartResultManagedPACSetFailed:
+		fmt.Fprintln(stdout, "seamless-cors could not start: Managed PAC Set failed")
+		if failed, ok := result.(gateway.StartManagedPACSetFailed); ok {
 			renderManagedPACWarnings(stdout, failed.Warnings)
 		}
 	}

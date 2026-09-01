@@ -205,10 +205,10 @@ func TestStartCommandFailsWhenNoManagedPACServiceIsManageable(t *testing.T) {
 	}
 }
 
-func TestStartCommandReportsManagedPACInstallationWarnings(t *testing.T) {
+func TestStartCommandReportsManagedPACSetWarnings(t *testing.T) {
 	var out bytes.Buffer
-	result := gateway.StartManagedPACInstallationFailed{
-		Diagnostic: "managed PAC install updated no services",
+	result := gateway.StartManagedPACSetFailed{
+		Diagnostic: "managed PAC Set updated no services",
 		Warnings: []gateway.ManagedPACWarningDetail{{
 			Kind:        gateway.ManagedPACWarningUpdateFailed,
 			ServiceName: "Wi-Fi",

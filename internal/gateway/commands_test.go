@@ -16,10 +16,10 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := &lifecycleTestSystemSettings{
-		services: []managedpac.Service{{
-			Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
+		services: []managedPACTestService{{
+			ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
 		}},
-		cleanupResult: managedpac.NewCleanupResult([]managedpac.ObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}}),
+		cleanupResult: []managedpac.ObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}},
 	}
 
 	result, err := stop(context.Background(), settings)
@@ -138,8 +138,8 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	}
 	settings := &lifecycleTestSystemSettings{
 		clearErr: errors.New("pac denied"),
-		services: []managedpac.Service{{
-			Name: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
+		services: []managedPACTestService{{
+			ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
 		}},
 	}
 

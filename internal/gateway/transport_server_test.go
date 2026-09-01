@@ -142,7 +142,7 @@ func TestStartPropagatesRequestContext(t *testing.T) {
 }
 
 func TestStartFailureUsesSharedErrorShell(t *testing.T) {
-	handler := &fakeCommandHandler{startResult: StartManagedPACInstallationFailed{Diagnostic: "PAC install failed"}}
+	handler := &fakeCommandHandler{startResult: StartManagedPACSetFailed{Diagnostic: "PAC Set failed"}}
 	server := newRouter("token", handler)
 	req := httptest.NewRequest(http.MethodPost, "/start", strings.NewReader(`{"workingDirectory":"/project"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -160,14 +160,14 @@ func TestStartFailureUsesSharedErrorShell(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Error.Code != string(StartResultManagedPACInstallationFailed) {
+	if body.Error.Code != string(StartResultManagedPACSetFailed) {
 		t.Fatalf("failure body = %#v", body)
 	}
 	var details startFailureDetails
 	if err := json.Unmarshal(body.Error.Details, &details); err != nil {
 		t.Fatal(err)
 	}
-	if details.Diagnostic != "PAC install failed" {
+	if details.Diagnostic != "PAC Set failed" {
 		t.Fatalf("failure details = %#v", details)
 	}
 }

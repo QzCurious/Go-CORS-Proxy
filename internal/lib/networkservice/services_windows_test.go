@@ -1,6 +1,6 @@
 //go:build windows
 
-package pacsettings
+package networkservice
 
 import (
 	"context"
@@ -19,27 +19,28 @@ func (f *fakeWindowsRunner) run(_ context.Context, name string, args ...string) 
 	return f.out, f.err
 }
 
-func TestWindowsListReturnsCurrentUserSetting(t *testing.T) {
+func TestWindowsListReturnsCurrentUserService(t *testing.T) {
 	runner := &fakeWindowsRunner{}
-	settings := testWindowsSettings(runner, nil)
+	services := testWindowsServices(runner, nil)
 
-	got, err := settings.List(context.Background())
+	got, err := services.list(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != windowsPACServiceName {
+	if len(got) != 1 || got[0].Name() != windowsServiceName {
 		t.Fatalf("services = %#v", got)
 	}
 	if len(runner.calls) != 0 {
-		t.Fatalf("list invoked PAC lookup: %#v", runner.calls)
+		t.Fatalf("list observed PAC: %#v", runner.calls)
 	}
 }
 
-func TestWindowsLookupReturnsCurrentUserSetting(t *testing.T) {
+func TestWindowsServiceObservesCurrentUserPACSetting(t *testing.T) {
 	runner := &fakeWindowsRunner{out: []byte("{\"URL\":\"http://corp.example/proxy.pac\",\"Enabled\":true}")}
-	settings := testWindowsSettings(runner, func() error { return nil })
+	services := testWindowsServices(runner, func() error { return nil })
+	service := testWindowsService(services)
 
-	setting, err := settings.Lookup(context.Background(), windowsPACServiceName)
+	setting, err := service.PAC(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,19 +48,20 @@ func TestWindowsLookupReturnsCurrentUserSetting(t *testing.T) {
 		t.Fatalf("setting = %#v", setting)
 	}
 	if len(runner.calls) != 1 {
-		t.Fatalf("calls = %#v, want one lookup", runner.calls)
+		t.Fatalf("calls = %#v, want one PAC observation", runner.calls)
 	}
 }
 
-func TestWindowsSetURLMutatesAndNotifies(t *testing.T) {
+func TestWindowsSetPACMutatesAndNotifies(t *testing.T) {
 	runner := &fakeWindowsRunner{}
 	notified := false
-	settings := testWindowsSettings(runner, func() error {
+	services := testWindowsServices(runner, func() error {
 		notified = true
 		return nil
 	})
+	service := testWindowsService(services)
 
-	if err := settings.SetURL(context.Background(), windowsPACServiceName, "http://127.0.0.1/seamless-cors.pac"); err != nil {
+	if err := service.SetPAC(context.Background(), "http://127.0.0.1/seamless-cors.pac"); err != nil {
 		t.Fatal(err)
 	}
 	if !notified {
@@ -70,15 +72,16 @@ func TestWindowsSetURLMutatesAndNotifies(t *testing.T) {
 	}
 }
 
-func TestWindowsDisableMutatesAndNotifies(t *testing.T) {
+func TestWindowsDisablePACMutatesAndNotifies(t *testing.T) {
 	runner := &fakeWindowsRunner{}
 	notified := false
-	settings := testWindowsSettings(runner, func() error {
+	services := testWindowsServices(runner, func() error {
 		notified = true
 		return nil
 	})
+	service := testWindowsService(services)
 
-	if err := settings.Disable(context.Background(), windowsPACServiceName); err != nil {
+	if err := service.DisablePAC(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !notified {
@@ -89,6 +92,10 @@ func TestWindowsDisableMutatesAndNotifies(t *testing.T) {
 	}
 }
 
-func testWindowsSettings(runner commandRunner, notify func() error) *settings {
-	return &settings{runner: runner, notify: notify}
+func testWindowsServices(runner commandRunner, notify func() error) *services {
+	return &services{runner: runner, notify: notify}
+}
+
+func testWindowsService(owner *services) *service {
+	return &service{owner: owner, name: windowsServiceName}
 }

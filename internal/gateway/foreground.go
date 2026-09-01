@@ -19,15 +19,15 @@ type owner struct {
 	lock      *ownerLock
 }
 
-func newOwnerWithCoordinator(pac managedPACModule, ca userCAModule, coord *coordinator) (*owner, error) {
+func newOwnerWithCoordinator(pac managedPACCapabilities, ca userCAModule, coord *coordinator) (*owner, error) {
 	return newOwner(pac, ca, coord, true)
 }
 
-func newTransientOwnerWithCoordinator(pac managedPACModule, ca userCAModule, coord *coordinator) (*owner, error) {
+func newTransientOwnerWithCoordinator(pac managedPACCapabilities, ca userCAModule, coord *coordinator) (*owner, error) {
 	return newOwner(pac, ca, coord, false)
 }
 
-func newOwner(pac managedPACModule, ca userCAModule, coord *coordinator, inspectUserCA bool) (*owner, error) {
+func newOwner(pac managedPACCapabilities, ca userCAModule, coord *coordinator, inspectUserCA bool) (*owner, error) {
 	token, err := randomToken()
 	if err != nil {
 		return nil, err

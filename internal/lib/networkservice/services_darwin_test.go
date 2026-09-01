@@ -1,6 +1,6 @@
 //go:build darwin
 
-package pacsettings
+package networkservice
 
 import (
 	"context"
@@ -31,27 +31,32 @@ func (f *fakeDarwinRunner) run(ctx context.Context, name string, args ...string)
 
 func TestDarwinListReturnsAllVisibleServiceNames(t *testing.T) {
 	runner := &fakeDarwinRunner{}
-	settings := testDarwinSettings(runner)
+	services := testDarwinServices(runner)
 
-	got, err := settings.List(context.Background())
+	got, err := services.list(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got, ",") != "Wi-Fi,Disabled VPN" {
+	names := make([]string, len(got))
+	for index, service := range got {
+		names[index] = service.Name()
+	}
+	if strings.Join(names, ",") != "Wi-Fi,Disabled VPN" {
 		t.Fatalf("services = %#v", got)
 	}
 }
 
-func TestDarwinLookupReturnsFreshPACSetting(t *testing.T) {
+func TestDarwinServiceObservesFreshPACSetting(t *testing.T) {
 	runner := &fakeDarwinRunner{runFunc: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if args[0] == "-getautoproxyurl" {
 			return []byte("URL: http://corp.example/proxy.pac\nEnabled: Yes\n"), nil
 		}
 		return nil, nil
 	}}
-	settings := testDarwinSettings(runner)
+	services := testDarwinServices(runner)
+	service := testDarwinService(services, "Wi-Fi")
 
-	setting, err := settings.Lookup(context.Background(), "Wi-Fi")
+	setting, err := service.PAC(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,24 +73,26 @@ func TestDarwinOperationsWrapRunnerFailures(t *testing.T) {
 	runner := &fakeDarwinRunner{runFunc: func(context.Context, string, ...string) ([]byte, error) {
 		return nil, runnerErr
 	}}
-	settings := testDarwinSettings(runner)
+	services := testDarwinServices(runner)
+	service := testDarwinService(services, "Vanished VPN")
 
-	if _, err := settings.Lookup(context.Background(), "Vanished VPN"); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "get PAC setting") {
-		t.Fatalf("lookup error = %v", err)
+	if _, err := service.PAC(context.Background()); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "get PAC setting") {
+		t.Fatalf("observation error = %v", err)
 	}
-	if err := settings.SetURL(context.Background(), "Vanished VPN", "http://127.0.0.1/p.pac"); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "set PAC URL") {
+	if err := service.SetPAC(context.Background(), "http://127.0.0.1/p.pac"); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "set PAC URL") {
 		t.Fatalf("set URL error = %v", err)
 	}
-	if err := settings.Disable(context.Background(), "Vanished VPN"); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "disable PAC") {
+	if err := service.DisablePAC(context.Background()); !errors.Is(err, runnerErr) || !strings.Contains(err.Error(), "disable PAC") {
 		t.Fatalf("disable error = %v", err)
 	}
 }
 
-func TestDarwinSetURLMutatesNamedService(t *testing.T) {
+func TestDarwinSetPACMutatesNamedService(t *testing.T) {
 	runner := &fakeDarwinRunner{}
-	settings := testDarwinSettings(runner)
+	services := testDarwinServices(runner)
+	service := testDarwinService(services, "Wi-Fi")
 
-	if err := settings.SetURL(context.Background(), "Wi-Fi", "http://127.0.0.1/seamless-cors.pac"); err != nil {
+	if err := service.SetPAC(context.Background(), "http://127.0.0.1/seamless-cors.pac"); err != nil {
 		t.Fatal(err)
 	}
 	want := "networksetup -setautoproxyurl Wi-Fi http://127.0.0.1/seamless-cors.pac"
@@ -94,11 +101,12 @@ func TestDarwinSetURLMutatesNamedService(t *testing.T) {
 	}
 }
 
-func TestDarwinDisableMutatesNamedService(t *testing.T) {
+func TestDarwinDisablePACMutatesNamedService(t *testing.T) {
 	runner := &fakeDarwinRunner{}
-	settings := testDarwinSettings(runner)
+	services := testDarwinServices(runner)
+	service := testDarwinService(services, "Wi-Fi")
 
-	if err := settings.Disable(context.Background(), "Wi-Fi"); err != nil {
+	if err := service.DisablePAC(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(runner.calls, "\n")
@@ -110,6 +118,10 @@ func TestDarwinDisableMutatesNamedService(t *testing.T) {
 	}
 }
 
-func testDarwinSettings(runner commandRunner) *settings {
-	return &settings{runner: runner}
+func testDarwinServices(runner commandRunner) *services {
+	return &services{runner: runner}
+}
+
+func testDarwinService(owner *services, name string) *service {
+	return &service{owner: owner, name: name}
 }

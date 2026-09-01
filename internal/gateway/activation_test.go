@@ -20,7 +20,7 @@ func TestExecuteStartComposesTrafficAndDeliversPAC(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := &lifecycleTestSystemSettings{
-		services:     []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		services:     []managedPACTestService{{ServiceName: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
 		routingReady: true,
 	}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
@@ -45,6 +45,15 @@ func TestExecuteStartComposesTrafficAndDeliversPAC(t *testing.T) {
 		started.Guidance.Traffic.HTTPSFacade != TrafficFeatureInactive {
 		t.Fatalf("unexpected HTTPS outcomes = %#v", started.Guidance.Traffic)
 	}
+
+	settings.routingReady = false
+	status, err := lifecycle.Status(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Runtime == nil || status.Runtime.Traffic.HTTPCORS != TrafficFeatureBlocked {
+		t.Fatalf("status did not use fresh Managed PAC control state: %#v", status.Runtime)
+	}
 }
 
 func TestExecuteStartLoadsGlobalAndDirectoryUpstreamLists(t *testing.T) {
@@ -56,7 +65,7 @@ func TestExecuteStartLoadsGlobalAndDirectoryUpstreamLists(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workingDirectory, "upstreams.txt"), []byte("shared.example.test\ndirectory.example.test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	settings := &lifecycleTestSystemSettings{services: []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
+	settings := &lifecycleTestSystemSettings{services: []managedPACTestService{{ServiceName: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}}}
 	lifecycle, err := newLifecycle(settings, emptyTestUserCA{}, newCoordinator(t.TempDir()), "")
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +94,7 @@ func TestStartReportsBlockedHTTPSAndAssessmentIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := &lifecycleTestSystemSettings{
-		services:     []managedpac.Service{{Name: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		services:     []managedPACTestService{{ServiceName: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
 		routingReady: true,
 	}
 	ca := &fakeUserCA{inspectErr: errors.New("trust store unavailable")}
@@ -255,55 +264,116 @@ func (emptyTestUserCA) Install(context.Context) (userCAState, error) { return us
 func (emptyTestUserCA) Uninstall(context.Context) error              { return nil }
 
 type lifecycleTestSystemSettings struct {
-	services              []managedpac.Service
-	applied               int
-	installResult         *managedpac.InstallResult
-	installErr            error
-	stateErr              error
-	clearErr              error
-	cleared               int
-	cleanupCalls          int
-	uninstallCalls        int
-	cleanupResult         managedpac.CleanupResult
-	reconciliationResults <-chan managedpac.ReconciliationResult
-	routingReady          bool
+	services       []managedPACTestService
+	applied        int
+	setResult      *managedpac.ControlState
+	setErr         error
+	stateErr       error
+	clearErr       error
+	cleared        int
+	cleanupCalls   int
+	uninstallCalls int
+	cleanupResult  []managedpac.ObservationIssue
+	routingReady   bool
 }
 
-func (f *lifecycleTestSystemSettings) Inspect(context.Context) (managedpac.Snapshot, error) {
+type managedPACTestService struct {
+	ServiceName      string
+	URL              string
+	Enabled          bool
+	Ownership        managedpac.Ownership
+	Warnings         []managedpac.Warning
+	ObservationIssue string
+}
+
+func (s managedPACTestService) manageable() bool {
+	return s.ObservationIssue == "" && (s.Ownership == managedpac.OwnershipEmpty || s.Ownership == managedpac.OwnershipOwned)
+}
+
+func (f *lifecycleTestSystemSettings) assessment(context.Context) (managedpac.Assessment, error) {
 	if f.stateErr != nil {
-		return managedpac.Snapshot{}, f.stateErr
+		return managedpac.Assessment{}, f.stateErr
 	}
-	return managedpac.NewSnapshot(f.services), nil
+	assessment := managedpac.Assessment{Services: make([]managedpac.AssessedService, 0, len(f.services))}
+	for _, service := range f.services {
+		manageable := service.manageable()
+		assessment.Services = append(assessment.Services, managedpac.AssessedService{
+			ServiceName: service.ServiceName,
+			URL:         service.URL,
+			Enabled:     service.Enabled,
+			Ownership:   service.Ownership,
+			Manageable:  manageable,
+		})
+		if manageable {
+			assessment.ServiceSet = append(assessment.ServiceSet, service.ServiceName)
+		}
+		if service.ObservationIssue != "" {
+			assessment.ObservationIssues = append(assessment.ObservationIssues, managedpac.ObservationIssue{
+				ServiceName: service.ServiceName,
+				Diagnostic:  service.ObservationIssue,
+			})
+		}
+	}
+	return assessment, nil
 }
 
-func (f *lifecycleTestSystemSettings) Install(_ context.Context, services []string, _ string) (managedpac.InstallResult, error) {
+func (f *lifecycleTestSystemSettings) Begin(ctx context.Context) (managedpac.Control, managedpac.Assessment, error) {
+	assessment, err := f.assessment(ctx)
+	return f, assessment, err
+}
+
+func (f *lifecycleTestSystemSettings) Deliver(string) (managedpac.ControlState, error) {
 	f.applied++
-	if f.installResult != nil {
-		return *f.installResult, f.installErr
+	if f.setResult != nil {
+		return *f.setResult, f.setErr
 	}
-	return managedpac.NewInstallResult(managedpac.NewRuntimeState(services), nil), f.installErr
+	return f.controlState(), f.setErr
 }
 
-func (*lifecycleTestSystemSettings) Deliver() {}
-
-func (f *lifecycleTestSystemSettings) RoutingReady(context.Context, string) (bool, []managedpac.ObservationIssue, error) {
-	return f.routingReady, nil, nil
+func (f *lifecycleTestSystemSettings) Observe() (managedpac.ControlState, error) {
+	return f.controlState(), f.stateErr
 }
 
-func (f *lifecycleTestSystemSettings) ReconciliationResults() <-chan managedpac.ReconciliationResult {
-	return f.reconciliationResults
+func (f *lifecycleTestSystemSettings) controlState() managedpac.ControlState {
+	state := managedpac.ControlState{RoutesCurrentEndpoint: f.routingReady}
+	for _, service := range f.services {
+		if !service.manageable() {
+			continue
+		}
+		state.ServiceSet = append(state.ServiceSet, service.ServiceName)
+		state.Warnings = append(state.Warnings, service.Warnings...)
+		if service.ObservationIssue != "" {
+			state.ObservationIssues = append(state.ObservationIssues, managedpac.ObservationIssue{
+				ServiceName: service.ServiceName,
+				Diagnostic:  service.ObservationIssue,
+			})
+		}
+	}
+	return state
 }
 
-func (f *lifecycleTestSystemSettings) CleanupActiveState(context.Context) (managedpac.CleanupResult, error) {
+func (f *lifecycleTestSystemSettings) InspectFootprint(context.Context) (managedpac.FootprintReport, error) {
+	if f.stateErr != nil {
+		return managedpac.FootprintReport{}, f.stateErr
+	}
+	for _, service := range f.services {
+		if service.Enabled && service.Ownership == managedpac.OwnershipOwned {
+			return managedpac.FootprintReport{State: managedpac.FootprintCleanupNeeded}, nil
+		}
+	}
+	return managedpac.FootprintReport{State: managedpac.FootprintNone}, nil
+}
+
+func (f *lifecycleTestSystemSettings) Cleanup(context.Context) (managedpac.CleanupReport, error) {
 	f.cleared++
 	f.cleanupCalls++
-	return f.cleanupResult, f.clearErr
+	return managedpac.CleanupReport{ObservationIssues: f.cleanupResult}, f.clearErr
 }
 
-func (f *lifecycleTestSystemSettings) Uninstall(context.Context) (managedpac.CleanupResult, error) {
+func (f *lifecycleTestSystemSettings) Close() (managedpac.CleanupReport, error) {
 	f.cleared++
 	f.uninstallCalls++
-	return f.cleanupResult, f.clearErr
+	return managedpac.CleanupReport{ObservationIssues: f.cleanupResult}, f.clearErr
 }
 
 func executeAcceptedStart(t *testing.T, lifecycle *lifecycle) (StartResult, error) {

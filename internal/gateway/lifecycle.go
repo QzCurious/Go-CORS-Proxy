@@ -34,7 +34,7 @@ const (
 	StartResultOwnerTransition                     StartKind = "owner-transition"
 	StartResultUpstreamListCreationConsentRequired StartKind = "upstream-list-creation-consent-required"
 	StartResultNoManageablePACServices             StartKind = "no-manageable-pac-services"
-	StartResultManagedPACInstallationFailed        StartKind = "managed-pac-installation-failed"
+	StartResultManagedPACSetFailed                 StartKind = "managed-pac-set-failed"
 	StartResultStartAlreadyMutating                StartKind = "start-already-mutating"
 	StartResultStopCancelled                       StartKind = "stop-cancelled"
 	StartResultCleanupFailed                       StartKind = "cleanup-failed"
@@ -54,8 +54,7 @@ type StartResult interface {
 	startResult()
 }
 
-// Started reports that the runtime was started and includes the initial
-// guidance snapshot.
+// Started reports that the runtime was started and includes initial guidance.
 type Started struct {
 	Guidance                    StartGuidance
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
@@ -89,16 +88,16 @@ type UpstreamListCreationConsentInput struct {
 	Fingerprint UpstreamListCreationFingerprint `json:"fingerprint,omitempty"`
 }
 
-// StartNoManageablePACServices reports that managed PAC inspection found no
-// services that can be managed. Detail contains the inspection snapshot.
+// StartNoManageablePACServices reports that the Managed PAC Activation
+// Assessment selected no services. Detail contains that assessment.
 type StartNoManageablePACServices struct {
 	Detail                      ManagedPACStartDetail
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
-// StartManagedPACInstallationFailed reports a failed PAC installation and any
-// warnings produced while attempting it.
-type StartManagedPACInstallationFailed struct {
+// StartManagedPACSetFailed reports a failed Managed PAC Set and any warnings
+// produced while attempting it.
+type StartManagedPACSetFailed struct {
 	Warnings                    []ManagedPACWarningDetail
 	Diagnostic                  string
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
@@ -115,7 +114,7 @@ type StartStopCancelled struct {
 }
 
 // StartCleanupFailed reports cleanup failures.  Warnings are retained when
-// they were produced by a failed Managed PAC installation before cleanup.
+// they were produced by a failed Managed PAC Set before cleanup.
 type StartCleanupFailed struct {
 	Failures                    []CleanupFailure
 	Warnings                    []ManagedPACWarningDetail
@@ -175,17 +174,17 @@ func (r StartNoManageablePACServices) UpstreamListCreationWarningDetail() *Upstr
 	return r.UpstreamListCreationWarning
 }
 func (StartNoManageablePACServices) startResult() {}
-func (StartManagedPACInstallationFailed) Kind() StartKind {
-	return StartResultManagedPACInstallationFailed
+func (StartManagedPACSetFailed) Kind() StartKind {
+	return StartResultManagedPACSetFailed
 }
-func (StartManagedPACInstallationFailed) Fulfillment() CommandFulfillment {
-	return startFulfillment(StartResultManagedPACInstallationFailed)
+func (StartManagedPACSetFailed) Fulfillment() CommandFulfillment {
+	return startFulfillment(StartResultManagedPACSetFailed)
 }
-func (r StartManagedPACInstallationFailed) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
+func (r StartManagedPACSetFailed) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
 	return r.UpstreamListCreationWarning
 }
-func (StartManagedPACInstallationFailed) startResult() {}
-func (StartAlreadyMutating) Kind() StartKind           { return StartResultStartAlreadyMutating }
+func (StartManagedPACSetFailed) startResult() {}
+func (StartAlreadyMutating) Kind() StartKind  { return StartResultStartAlreadyMutating }
 func (StartAlreadyMutating) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultStartAlreadyMutating)
 }
@@ -222,21 +221,14 @@ type CleanupMode string
 
 const CleanupModeNoPACRestoration CleanupMode = "no-pac-restoration"
 
-type ManagedPACServiceState struct {
-	ServiceName string       `json:"serviceName"`
-	Enabled     bool         `json:"enabled"`
-	URL         string       `json:"url"`
-	Ownership   PACOwnership `json:"ownership"`
-	Manageable  bool         `json:"manageable"`
-}
-
-type PACOwnership string
+type ManagedPACServiceState = managedpac.AssessedService
+type PACOwnership = managedpac.Ownership
 
 const (
-	PACOwnershipUnknown PACOwnership = "unknown"
-	PACOwnershipEmpty   PACOwnership = "empty"
-	PACOwnershipOwned   PACOwnership = "owned"
-	PACOwnershipForeign PACOwnership = "foreign"
+	PACOwnershipUnknown = managedpac.OwnershipUnknown
+	PACOwnershipEmpty   = managedpac.OwnershipEmpty
+	PACOwnershipOwned   = managedpac.OwnershipOwned
+	PACOwnershipForeign = managedpac.OwnershipForeign
 )
 
 type StartGuidance struct {
@@ -462,23 +454,15 @@ type UserCACleanupIssue struct {
 	Action string `json:"action,omitempty"`
 }
 
-type ManagedPACWarningKind string
+type ManagedPACWarningKind = managedpac.WarningKind
 
 const (
-	ManagedPACWarningDrift        ManagedPACWarningKind = "drift"
-	ManagedPACWarningUpdateFailed ManagedPACWarningKind = "update-failed"
+	ManagedPACWarningDrift        = managedpac.WarningDrift
+	ManagedPACWarningUpdateFailed = managedpac.WarningUpdateFailed
 )
 
-type ManagedPACWarningDetail struct {
-	Kind        ManagedPACWarningKind `json:"kind"`
-	ServiceName string                `json:"serviceName,omitempty"`
-	Diagnostic  string                `json:"diagnostic"`
-}
-
-type ManagedPACObservationIssue struct {
-	ServiceName string `json:"serviceName"`
-	Diagnostic  string `json:"diagnostic"`
-}
+type ManagedPACWarningDetail = managedpac.Warning
+type ManagedPACObservationIssue = managedpac.ObservationIssue
 
 type CleanupStatusDetail struct {
 	State    CleanupStatusState           `json:"state"`
@@ -517,7 +501,8 @@ const (
 type lifecycle struct {
 	mu                     sync.Mutex
 	caAdmissionMu          sync.Mutex
-	managedPAC             managedPACModule
+	managedPACActivation   managedpac.Activation
+	managedPACFootprint    managedpac.Footprint
 	userCA                 userCAModule
 	userCAState            userCAState
 	userCAAssessmentErr    error
@@ -541,20 +526,13 @@ type lifecycle struct {
 
 type activeRuntime struct {
 	engine             *trafficRuntime
-	managedPAC         *managedPACRuntime
+	managedPAC         managedpac.Control
 	ctx                context.Context
 	cancel             context.CancelFunc
 	done               chan error
 	phase              runtimePhase
 	deadlineTimer      *time.Timer
 	deadlineGeneration uint64
-}
-
-type managedPACRuntime struct {
-	state             managedpac.RuntimeState
-	routingReady      bool
-	warnings          []ManagedPACWarningDetail
-	observationIssues []ManagedPACObservationIssue
 }
 
 type runtimePhase string
@@ -564,16 +542,16 @@ const (
 	runtimePhaseRunning  runtimePhase = "running"
 )
 
-func newLifecycle(pac managedPACModule, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
+func newLifecycle(pac managedPACCapabilities, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
 	return newLifecycleState(pac, ca, coord, routerListen, true)
 }
 
-func newLifecycleUninspected(pac managedPACModule, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
+func newLifecycleUninspected(pac managedPACCapabilities, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
 	return newLifecycleState(pac, ca, coord, routerListen, false)
 }
 
 func newLifecycleState(
-	pac managedPACModule,
+	pac managedPACCapabilities,
 	ca userCAModule,
 	coord *coordinator,
 	routerListen string,
@@ -602,7 +580,8 @@ func newLifecycleState(
 		initial, assessmentErr = ca.Inspect(context.Background())
 	}
 	return &lifecycle{
-		managedPAC:             pac,
+		managedPACActivation:   pac,
+		managedPACFootprint:    pac,
 		userCA:                 ca,
 		userCAState:            initial,
 		userCAAssessmentErr:    assessmentErr,
@@ -859,6 +838,12 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 		}
 		active.cancel()
 	}
+	var cleanupFailures []CleanupFailure
+	var observationIssues []ManagedPACObservationIssue
+	var failure *CleanupFailure
+	if active != nil && active.managedPAC != nil {
+		observationIssues, failure = closeManagedPAC(active.managedPAC)
+	}
 	if startDone != nil {
 		<-startDone
 	}
@@ -866,8 +851,9 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	// owner-owned CA work before durable footprint cleanup.
 	f.caAdmissionMu.Lock()
 	f.caAdmissionMu.Unlock()
-	var cleanupFailures []CleanupFailure
-	observationIssues, failure := uninstallManagedPAC(ctx, f.managedPAC)
+	if active == nil || active.managedPAC == nil {
+		observationIssues, failure = cleanManagedPAC(ctx, f.managedPACFootprint)
+	}
 	if failure != nil {
 		cleanupFailures = append(cleanupFailures, *failure)
 	}
@@ -897,19 +883,11 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	caMutating := f.caMutating
 	caCleanupIssue := f.userCACleanupIssue
 	var phase runtimePhase
-	var managedPACActive bool
-	var trafficRoutingReady bool
-	var managedPACServiceNames []string
-	var managedPACWarningSnapshot []ManagedPACWarningDetail
-	var managedPACObservationIssues []ManagedPACObservationIssue
+	var managedPACControl managedpac.Control
 	if active != nil {
 		phase = active.phase
 		if active.managedPAC != nil {
-			managedPACActive = true
-			trafficRoutingReady = active.managedPAC.routingReady
-			managedPACServiceNames = active.managedPAC.state.ServiceNames()
-			managedPACWarningSnapshot = append([]ManagedPACWarningDetail(nil), active.managedPAC.warnings...)
-			managedPACObservationIssues = append([]ManagedPACObservationIssue(nil), active.managedPAC.observationIssues...)
+			managedPACControl = active.managedPAC
 		}
 	}
 	f.mu.Unlock()
@@ -934,20 +912,16 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			result.State = GatewayStatusStarting
 		}
 		state := active.engine.snapshot()
-		if managedPACActive {
-			ready, issues, observeErr := f.managedPAC.RoutingReady(ctx, state.PACListen)
+		var managedPACState managedpac.ControlState
+		var managedPACObservationIssues []ManagedPACObservationIssue
+		if managedPACControl != nil {
+			observed, observeErr := managedPACControl.Observe()
+			managedPACState = observed
 			if observeErr != nil {
 				managedPACObservationIssues = []ManagedPACObservationIssue{{Diagnostic: observeErr.Error()}}
 			} else {
-				trafficRoutingReady = ready
-				managedPACObservationIssues = managedPACObservationIssueDetails(issues)
+				managedPACObservationIssues = observed.ObservationIssues
 			}
-			f.mu.Lock()
-			if f.runtime == active && active.managedPAC != nil {
-				active.managedPAC.routingReady = ready
-				active.managedPAC.observationIssues = managedPACObservationIssues
-			}
-			f.mu.Unlock()
 		}
 		if phase == runtimePhaseRunning {
 			result.State = GatewayStatusRunning
@@ -958,10 +932,10 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			PACListen:                   state.PACListen,
 			UpstreamLists:               state.UpstreamLists,
 			UpstreamCount:               state.UpstreamCount,
-			Traffic:                     trafficStatus(state, trafficRoutingReady),
-			ManagedPACActive:            managedPACActive,
-			ManagedPACServices:          managedPACServiceNames,
-			ManagedPACWarnings:          managedPACWarningSnapshot,
+			Traffic:                     trafficStatus(state, managedPACState.RoutesCurrentEndpoint),
+			ManagedPACActive:            managedPACControl != nil,
+			ManagedPACServices:          managedPACState.ServiceSet,
+			ManagedPACWarnings:          managedPACState.Warnings,
 			ManagedPACObservationIssues: managedPACObservationIssues,
 		}
 		return result, nil
@@ -1135,15 +1109,9 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 		case <-ctx.Done():
 			return
 		case <-active.engine.DeliveryRequests():
-			f.managedPAC.Deliver()
-		case result := <-f.managedPAC.ReconciliationResults():
-			f.mu.Lock()
-			if f.runtime == active && active.managedPAC != nil {
-				active.managedPAC.state = result.State()
-				active.managedPAC.warnings = managedPACWarningDetails(result.Warnings())
-				active.managedPAC.observationIssues = managedPACObservationIssueDetails(result.ObservationIssues())
+			if active.managedPAC != nil {
+				_, _ = active.managedPAC.Deliver(active.engine.PACListen())
 			}
-			f.mu.Unlock()
 		case kind := <-active.engine.RuntimeChanges():
 			if kind == UserCAAssessmentRequested {
 				f.requestUserCAAssessment(active)
@@ -1152,61 +1120,21 @@ func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRunti
 	}
 }
 
-func managedPACStartDetail(snapshot managedpac.Snapshot) ManagedPACStartDetail {
-	services := snapshot.Services()
-	out := make([]ManagedPACServiceState, 0, len(services))
-	for _, state := range services {
-		out = append(out, ManagedPACServiceState{
-			ServiceName: state.Name,
-			Enabled:     state.Enabled,
-			URL:         state.URL,
-			Ownership:   pacOwnership(state.Ownership),
-			Manageable:  state.Manageable(),
-		})
-	}
+func managedPACStartDetail(assessment managedpac.Assessment) ManagedPACStartDetail {
 	return ManagedPACStartDetail{
-		CurrentPACState:   out,
-		ObservationIssues: managedPACObservationIssueDetails(snapshot.ObservationIssues()),
-		ServiceSet:        snapshot.ManageableServices(),
+		CurrentPACState:   assessment.Services,
+		ObservationIssues: assessment.ObservationIssues,
+		ServiceSet:        assessment.ServiceSet,
 		CleanupMode:       CleanupModeNoPACRestoration,
 	}
 }
 
 func managedPACObservationIssueDetails(issues []managedpac.ObservationIssue) []ManagedPACObservationIssue {
-	out := make([]ManagedPACObservationIssue, 0, len(issues))
-	for _, issue := range issues {
-		out = append(out, ManagedPACObservationIssue{ServiceName: issue.ServiceName, Diagnostic: issue.Diagnostic})
-	}
-	return out
-}
-
-func managedPACWarningDetails(warnings []managedpac.Warning) []ManagedPACWarningDetail {
-	out := make([]ManagedPACWarningDetail, 0, len(warnings))
-	for _, warning := range warnings {
-		kind := ManagedPACWarningUpdateFailed
-		if warning.Kind == managedpac.WarningDrift {
-			kind = ManagedPACWarningDrift
-		}
-		out = append(out, ManagedPACWarningDetail{Kind: kind, ServiceName: warning.ServiceName, Diagnostic: warning.Diagnostic})
-	}
-	return out
-}
-
-func pacOwnership(ownership managedpac.Ownership) PACOwnership {
-	switch ownership {
-	case managedpac.OwnershipUnknown:
-		return PACOwnershipUnknown
-	case managedpac.OwnershipEmpty:
-		return PACOwnershipEmpty
-	case managedpac.OwnershipOwned:
-		return PACOwnershipOwned
-	default:
-		return PACOwnershipForeign
-	}
+	return append([]ManagedPACObservationIssue(nil), issues...)
 }
 
 func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
-	return inspectGatewayFootprint(ctx, f.managedPAC, f.coord, stale, runtimeActive, ownerCache)
+	return inspectGatewayFootprint(ctx, f.managedPACFootprint, f.coord, stale, runtimeActive, ownerCache)
 }
 
 func trafficStatus(state runtimeState, routingReady bool) TrafficStatusDetail {

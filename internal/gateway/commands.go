@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 // StartRouterHosted runs the Start Sequence through an existing router-only owner.
@@ -25,7 +27,7 @@ func Stop(ctx context.Context) (StopResult, error) {
 	return stop(ctx, openSystemManagedPAC())
 }
 
-func stop(ctx context.Context, pac managedPACModule) (StopResult, error) {
+func stop(ctx context.Context, pac managedpac.Footprint) (StopResult, error) {
 	target, err := discover()
 	if err != nil {
 		return StopResult{}, err
@@ -58,7 +60,7 @@ func Status(ctx context.Context) (StatusResult, error) {
 	return status(ctx, openSystemManagedPAC(), nil)
 }
 
-func status(ctx context.Context, pac managedPACModule, ca userCAModule) (StatusResult, error) {
+func status(ctx context.Context, pac managedPACCapabilities, ca userCAModule) (StatusResult, error) {
 	target, err := discover()
 	if err != nil {
 		return StatusResult{}, err
