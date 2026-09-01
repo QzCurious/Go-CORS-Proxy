@@ -14,163 +14,6 @@ import (
 	"github.com/QzCurious/seamless-cors/internal/lib/pacsettings"
 )
 
-type Ownership string
-
-const (
-	OwnershipUnknown Ownership = "unknown"
-	OwnershipEmpty   Ownership = "empty"
-	OwnershipOwned   Ownership = "owned"
-	OwnershipForeign Ownership = "foreign"
-)
-
-type Service struct {
-	Name             string
-	Enabled          bool
-	URL              string
-	Ownership        Ownership
-	ObservationIssue *ObservationIssue
-}
-
-func (s Service) Manageable() bool {
-	return s.ObservationIssue == nil && (s.Ownership == OwnershipEmpty || s.Ownership == OwnershipOwned)
-}
-
-type ObservationIssue struct {
-	ServiceName string
-	Diagnostic  string
-}
-
-type Snapshot struct {
-	services []Service
-}
-
-// NewSnapshot returns a semantic observation sorted by service name.
-func NewSnapshot(services []Service) Snapshot {
-	cloned := append([]Service(nil), services...)
-	sort.Slice(cloned, func(i, j int) bool { return cloned[i].Name < cloned[j].Name })
-	return Snapshot{services: cloned}
-}
-
-func (s Snapshot) Services() []Service {
-	return s.services
-}
-
-func (s Snapshot) ManageableServices() []string {
-	var names []string
-	for _, service := range s.services {
-		if service.Manageable() {
-			names = append(names, service.Name)
-		}
-	}
-	return names
-}
-
-func (s Snapshot) ObservationIssues() []ObservationIssue {
-	var issues []ObservationIssue
-	for _, service := range s.services {
-		if service.ObservationIssue != nil {
-			issues = append(issues, *service.ObservationIssue)
-		}
-	}
-	return issues
-}
-
-func (s Snapshot) HasOwnedState() bool {
-	for _, service := range s.services {
-		if service.Ownership == OwnershipOwned {
-			return true
-		}
-	}
-	return false
-}
-
-func (s Snapshot) HasActiveOwnedState() bool {
-	for _, service := range s.services {
-		if service.Enabled && service.Ownership == OwnershipOwned {
-			return true
-		}
-	}
-	return false
-}
-
-type RuntimeState struct {
-	serviceNames []string
-}
-
-// NewRuntimeState returns read-only state for a fixed Managed PAC Service Set.
-func NewRuntimeState(serviceNames []string) RuntimeState {
-	return RuntimeState{serviceNames: sortedUniqueStrings(serviceNames)}
-}
-
-func (s RuntimeState) ServiceNames() []string {
-	return s.serviceNames
-}
-
-type WarningKind string
-
-const (
-	WarningDrift        WarningKind = "drift"
-	WarningUpdateFailed WarningKind = "update-failed"
-)
-
-type Warning struct {
-	Kind        WarningKind
-	ServiceName string
-	Diagnostic  string
-}
-
-type InstallResult struct {
-	state             RuntimeState
-	warnings          []Warning
-	observationIssues []ObservationIssue
-}
-
-// ReconciliationResult is the latest complete Managed PAC runtime snapshot
-// produced by one delivery attempt. Warnings replace the preceding
-// snapshot; they are not an event history.
-type ReconciliationResult struct {
-	state             RuntimeState
-	warnings          []Warning
-	observationIssues []ObservationIssue
-}
-
-func NewReconciliationResult(state RuntimeState, warnings []Warning, observationIssues ...ObservationIssue) ReconciliationResult {
-	return ReconciliationResult{state: state, warnings: warnings, observationIssues: observationIssues}
-}
-
-func (r ReconciliationResult) State() RuntimeState { return r.state }
-func (r ReconciliationResult) Warnings() []Warning { return r.warnings }
-func (r ReconciliationResult) ObservationIssues() []ObservationIssue {
-	return r.observationIssues
-}
-
-// NewInstallResult returns a read-only Managed PAC installation result.
-func NewInstallResult(state RuntimeState, warnings []Warning, observationIssues ...ObservationIssue) InstallResult {
-	return InstallResult{state: state, warnings: warnings, observationIssues: observationIssues}
-}
-
-func (r InstallResult) State() RuntimeState { return r.state }
-
-func (r InstallResult) Warnings() []Warning {
-	return r.warnings
-}
-
-func (r InstallResult) ObservationIssues() []ObservationIssue {
-	return r.observationIssues
-}
-
-type CleanupResult struct {
-	observationIssues []ObservationIssue
-}
-
-func NewCleanupResult(observationIssues []ObservationIssue) CleanupResult {
-	return CleanupResult{observationIssues: observationIssues}
-}
-
-func (r CleanupResult) ObservationIssues() []ObservationIssue {
-	return r.observationIssues
-}
-
 // ManagedPAC owns per-service PAC URL delivery, serial mutation policy,
 // retry, routing observation, and complete active-state teardown.
 type ManagedPAC struct {
@@ -375,6 +218,163 @@ func (m *ManagedPAC) Uninstall(ctx context.Context) (CleanupResult, error) {
 		m.mu.Unlock()
 	}
 	return result, err
+}
+
+type Ownership string
+
+const (
+	OwnershipUnknown Ownership = "unknown"
+	OwnershipEmpty   Ownership = "empty"
+	OwnershipOwned   Ownership = "owned"
+	OwnershipForeign Ownership = "foreign"
+)
+
+type Service struct {
+	Name             string
+	Enabled          bool
+	URL              string
+	Ownership        Ownership
+	ObservationIssue *ObservationIssue
+}
+
+func (s Service) Manageable() bool {
+	return s.ObservationIssue == nil && (s.Ownership == OwnershipEmpty || s.Ownership == OwnershipOwned)
+}
+
+type ObservationIssue struct {
+	ServiceName string
+	Diagnostic  string
+}
+
+type Snapshot struct {
+	services []Service
+}
+
+// NewSnapshot returns a semantic observation sorted by service name.
+func NewSnapshot(services []Service) Snapshot {
+	cloned := append([]Service(nil), services...)
+	sort.Slice(cloned, func(i, j int) bool { return cloned[i].Name < cloned[j].Name })
+	return Snapshot{services: cloned}
+}
+
+func (s Snapshot) Services() []Service {
+	return s.services
+}
+
+func (s Snapshot) ManageableServices() []string {
+	var names []string
+	for _, service := range s.services {
+		if service.Manageable() {
+			names = append(names, service.Name)
+		}
+	}
+	return names
+}
+
+func (s Snapshot) ObservationIssues() []ObservationIssue {
+	var issues []ObservationIssue
+	for _, service := range s.services {
+		if service.ObservationIssue != nil {
+			issues = append(issues, *service.ObservationIssue)
+		}
+	}
+	return issues
+}
+
+func (s Snapshot) HasOwnedState() bool {
+	for _, service := range s.services {
+		if service.Ownership == OwnershipOwned {
+			return true
+		}
+	}
+	return false
+}
+
+func (s Snapshot) HasActiveOwnedState() bool {
+	for _, service := range s.services {
+		if service.Enabled && service.Ownership == OwnershipOwned {
+			return true
+		}
+	}
+	return false
+}
+
+type RuntimeState struct {
+	serviceNames []string
+}
+
+// NewRuntimeState returns read-only state for a fixed Managed PAC Service Set.
+func NewRuntimeState(serviceNames []string) RuntimeState {
+	return RuntimeState{serviceNames: sortedUniqueStrings(serviceNames)}
+}
+
+func (s RuntimeState) ServiceNames() []string {
+	return s.serviceNames
+}
+
+type WarningKind string
+
+const (
+	WarningDrift        WarningKind = "drift"
+	WarningUpdateFailed WarningKind = "update-failed"
+)
+
+type Warning struct {
+	Kind        WarningKind
+	ServiceName string
+	Diagnostic  string
+}
+
+type InstallResult struct {
+	state             RuntimeState
+	warnings          []Warning
+	observationIssues []ObservationIssue
+}
+
+// ReconciliationResult is the latest complete Managed PAC runtime snapshot
+// produced by one delivery attempt. Warnings replace the preceding
+// snapshot; they are not an event history.
+type ReconciliationResult struct {
+	state             RuntimeState
+	warnings          []Warning
+	observationIssues []ObservationIssue
+}
+
+func NewReconciliationResult(state RuntimeState, warnings []Warning, observationIssues ...ObservationIssue) ReconciliationResult {
+	return ReconciliationResult{state: state, warnings: warnings, observationIssues: observationIssues}
+}
+
+func (r ReconciliationResult) State() RuntimeState { return r.state }
+func (r ReconciliationResult) Warnings() []Warning { return r.warnings }
+func (r ReconciliationResult) ObservationIssues() []ObservationIssue {
+	return r.observationIssues
+}
+
+// NewInstallResult returns a read-only Managed PAC installation result.
+func NewInstallResult(state RuntimeState, warnings []Warning, observationIssues ...ObservationIssue) InstallResult {
+	return InstallResult{state: state, warnings: warnings, observationIssues: observationIssues}
+}
+
+func (r InstallResult) State() RuntimeState { return r.state }
+
+func (r InstallResult) Warnings() []Warning {
+	return r.warnings
+}
+
+func (r InstallResult) ObservationIssues() []ObservationIssue {
+	return r.observationIssues
+}
+
+type CleanupResult struct {
+	observationIssues []ObservationIssue
+}
+
+func NewCleanupResult(observationIssues []ObservationIssue) CleanupResult {
+	return CleanupResult{observationIssues: observationIssues}
+}
+
+func (r CleanupResult) ObservationIssues() []ObservationIssue {
+	return r.observationIssues
 }
 
 func (m *ManagedPAC) startDeliveryWorkerLocked() (chan struct{}, chan struct{}) {
