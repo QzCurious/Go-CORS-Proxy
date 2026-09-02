@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/QzCurious/seamless-cors/internal/httpsfacade"
-	"github.com/QzCurious/seamless-cors/internal/lib/conflatedstream"
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
 	"github.com/QzCurious/seamless-cors/internal/pacrouting"
 	"github.com/QzCurious/seamless-cors/internal/proxy"
@@ -32,11 +31,9 @@ type trafficRuntime struct {
 	proxy               *http.Server
 	pac                 *http.Server
 	listeners           []net.Listener
-	publishMu           sync.Mutex
-	deliveryPublisher   conflatedstream.Publisher[struct{}]
-	deliveryStream      conflatedstream.Stream[struct{}]
-	changePublisher     conflatedstream.Publisher[RuntimeChangeKind]
-	changeStream        conflatedstream.Stream[RuntimeChangeKind]
+	signalCtx           context.Context
+	deliveryRequests    chan struct{}
+	userCARequests      chan struct{}
 }
 
 type runtimeUpstreamListSource struct {
@@ -56,13 +53,6 @@ type runtimeUpstreamListInput struct {
 	observation *fileobservation.Observation
 	initial     fileobservation.Outcome
 }
-
-type RuntimeChangeKind uint8
-
-const (
-	RuntimeStatusChanged RuntimeChangeKind = iota
-	UserCAAssessmentRequested
-)
 
 type serverError struct {
 	source string
@@ -135,8 +125,6 @@ func newRuntimeFromSources(
 		projections = append(projections, source.projection)
 	}
 
-	deliveryPublisher, deliveryStream := conflatedstream.New[struct{}]()
-	changePublisher, changeStream := conflatedstream.New[RuntimeChangeKind]()
 	live := newLiveTrafficProjection()
 	runtime := &trafficRuntime{
 		upstreamLists:       sources,
@@ -149,10 +137,9 @@ func newRuntimeFromSources(
 		proxy:               &http.Server{Handler: http.HandlerFunc(live.serveProxy)},
 		pac:                 &http.Server{Handler: http.HandlerFunc(live.servePAC)},
 		listeners:           []net.Listener{proxyListener, pacListener},
-		deliveryPublisher:   deliveryPublisher,
-		deliveryStream:      deliveryStream,
-		changePublisher:     changePublisher,
-		changeStream:        changeStream,
+		signalCtx:           context.Background(),
+		deliveryRequests:    make(chan struct{}),
+		userCARequests:      make(chan struct{}),
 	}
 	runtime.switchTrafficProjectionLocked()
 	return runtime, nil
@@ -211,11 +198,10 @@ func (r *trafficRuntime) AdoptUserCA(current userCAState, assessmentErr error) {
 	r.userCAAssessmentErr = assessmentErr
 	r.userCARevision++
 	changed := r.switchTrafficProjectionLocked()
-	r.mu.Unlock()
 	if changed {
-		r.publishDeliveryRequest()
+		r.publishDeliveryRequestLocked()
 	}
-	r.publishRuntimeChange(RuntimeStatusChanged)
+	r.mu.Unlock()
 }
 
 func (r *trafficRuntime) ExpireUserCA(expectedRevision uint64) bool {
@@ -228,17 +214,19 @@ func (r *trafficRuntime) ExpireUserCA(expectedRevision uint64) bool {
 	r.userCAAssessmentErr = nil
 	r.userCARevision++
 	changed := r.switchTrafficProjectionLocked()
-	r.mu.Unlock()
 	if changed {
-		r.publishDeliveryRequest()
+		r.publishDeliveryRequestLocked()
 	}
-	r.publishRuntimeChange(RuntimeStatusChanged)
+	r.mu.Unlock()
 	return true
 }
 
 func (r *trafficRuntime) Serve(ctx context.Context) error { return r.ServeReady(ctx, nil) }
 
 func (r *trafficRuntime) ServeReady(ctx context.Context, ready chan<- struct{}) error {
+	r.mu.Lock()
+	r.signalCtx = ctx
+	r.mu.Unlock()
 	errs := make(chan serverError, len(r.upstreamLists)+2)
 	for index := range r.upstreamLists {
 		go r.watchUpstreamList(ctx, index, errs)
@@ -300,9 +288,13 @@ func (r *trafficRuntime) CloseTraffic() error {
 
 func (r *trafficRuntime) PACListen() string { return r.listeners[1].Addr().String() }
 
-func (r *trafficRuntime) RuntimeChanges() <-chan RuntimeChangeKind { return r.changeStream.Updates() }
+func (r *trafficRuntime) UserCAAssessmentRequests() <-chan struct{} {
+	return r.userCARequests
+}
 
-func (r *trafficRuntime) DeliveryRequests() <-chan struct{} { return r.deliveryStream.Updates() }
+func (r *trafficRuntime) DeliveryRequests() <-chan struct{} {
+	return r.deliveryRequests
+}
 
 func (r *trafficRuntime) snapshot() runtimeState {
 	r.mu.RLock()
@@ -378,12 +370,8 @@ func (r *trafficRuntime) applyUpstreamListSourceOutcomeContext(sourceIndex int, 
 			return err
 		}
 		r.mu.Lock()
-		changed := !sameFileSyncIssue(source.fileSyncIssue, next)
 		source.fileSyncIssue = next
 		r.mu.Unlock()
-		if changed {
-			r.publishRuntimeChange(RuntimeStatusChanged)
-		}
 		return nil
 	}
 
@@ -405,14 +393,12 @@ func (r *trafficRuntime) applyUpstreamListSourceOutcomeContext(sourceIndex int, 
 	r.currentUpstreamList = upstreamlist.Merge(projections...)
 	trafficChanged := r.switchTrafficProjectionLocked()
 	requestAssessment := !r.userCA.Usable || r.userCAAssessmentErr != nil
-	r.mu.Unlock()
 	if trafficChanged {
-		r.publishDeliveryRequest()
+		r.publishDeliveryRequestLocked()
 	}
+	r.mu.Unlock()
 	if requestAssessment {
-		r.publishRuntimeChange(UserCAAssessmentRequested)
-	} else {
-		r.publishRuntimeChange(RuntimeStatusChanged)
+		r.publishUserCAAssessmentRequest()
 	}
 	return nil
 }
@@ -426,13 +412,6 @@ func classifyFileSyncIssue(err error) (*FileSyncIssue, error) {
 	default:
 		return nil, fmt.Errorf("unsupported file observation error %T: %w", err, err)
 	}
-}
-
-func sameFileSyncIssue(left, right *FileSyncIssue) bool {
-	if left == nil || right == nil {
-		return left == right
-	}
-	return *left == *right
 }
 
 func (r *trafficRuntime) switchTrafficProjectionLocked() bool {
@@ -507,26 +486,22 @@ func selectorFacts(projection upstreamlist.Projection) (hasHost, hasHTTPOrigin, 
 	return hasHost, hasHTTPOrigin, hasHTTPSOrigin
 }
 
-func (r *trafficRuntime) publishDeliveryRequest() {
-	r.publishMu.Lock()
-	r.deliveryPublisher.Publish(struct{}{})
-	r.publishMu.Unlock()
+func (r *trafficRuntime) publishDeliveryRequestLocked() {
+	ctx := r.signalCtx
+	select {
+	case r.deliveryRequests <- struct{}{}:
+	case <-ctx.Done():
+	}
 }
 
-func (r *trafficRuntime) publishRuntimeChange(kind RuntimeChangeKind) {
-	r.publishMu.Lock()
-	defer r.publishMu.Unlock()
-	if kind == RuntimeStatusChanged {
-		select {
-		case pending := <-r.changeStream.Updates():
-			if pending == UserCAAssessmentRequested {
-				r.changePublisher.Publish(pending)
-				return
-			}
-		default:
-		}
+func (r *trafficRuntime) publishUserCAAssessmentRequest() {
+	r.mu.RLock()
+	ctx := r.signalCtx
+	r.mu.RUnlock()
+	select {
+	case r.userCARequests <- struct{}{}:
+	case <-ctx.Done():
 	}
-	r.changePublisher.Publish(kind)
 }
 
 type runtimeState struct {

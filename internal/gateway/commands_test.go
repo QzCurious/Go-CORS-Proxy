@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/systempac"
 )
 
 func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
@@ -16,10 +16,9 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := &lifecycleTestSystemSettings{
-		services: []managedPACTestService{{
-			ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
+		services: []systemPACTestService{{
+			ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: systempac.OwnershipOwned,
 		}},
-		cleanupResult: []managedpac.ObservationIssue{{ServiceName: "VPN", Diagnostic: "PAC query failed"}},
 	}
 
 	result, err := stop(context.Background(), settings)
@@ -29,14 +28,11 @@ func TestStopWithoutOwnerReturnsNotRunningAndRemovesStaleCache(t *testing.T) {
 	if result.Kind != StopResultNotRunning {
 		t.Fatalf("stop kind = %s, want %s", result.Kind, StopResultNotRunning)
 	}
-	if len(result.ManagedPACObservationIssues) != 1 || result.ManagedPACObservationIssues[0].ServiceName != "VPN" {
-		t.Fatalf("observation issues = %#v", result.ManagedPACObservationIssues)
-	}
 	if coord.Exists() {
 		t.Fatal("stale Gateway State Cache was not removed")
 	}
 	if settings.cleared != 1 {
-		t.Fatalf("managed PAC cleanup calls = %d, want 1", settings.cleared)
+		t.Fatalf("System PAC cleanup calls = %d, want 1", settings.cleared)
 	}
 }
 
@@ -131,6 +127,21 @@ func TestOwnerlessStatusReportsOwnershipTransitionInsteadOfInspectingUnlocked(t 
 	}
 }
 
+func TestOwnerlessStatusReportsEveryVisibleNetworkService(t *testing.T) {
+	useTestGatewayEnvironment(t)
+	settings := &lifecycleTestSystemSettings{services: []systemPACTestService{
+		{ServiceName: "Wi-Fi", Ownership: systempac.OwnershipEmpty},
+		{ServiceName: "Corporate VPN", URL: "http://corp/pac", Enabled: true, Ownership: systempac.OwnershipForeign},
+	}}
+	result, err := status(context.Background(), settings, &fakeUserCA{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Runtime != nil || len(result.SystemPAC.Services) != 2 || result.SystemPAC.RoutesCurrentEndpoint {
+		t.Fatalf("status = %#v", result.StatusReport)
+	}
+}
+
 func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	_, coord := useTestGatewayEnvironment(t)
 	if err := coord.Write(stateCache{HTTPRouterListen: "127.0.0.1:1", Token: "stale"}); err != nil {
@@ -138,8 +149,8 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	}
 	settings := &lifecycleTestSystemSettings{
 		clearErr: errors.New("pac denied"),
-		services: []managedPACTestService{{
-			ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: managedpac.OwnershipOwned,
+		services: []systemPACTestService{{
+			ServiceName: "Wi-Fi", URL: "http://127.0.0.1:8079/seamless-cors.pac", Enabled: true, Ownership: systempac.OwnershipOwned,
 		}},
 	}
 
@@ -147,10 +158,10 @@ func TestStopWithoutOwnerPreservesResultWhenCleanupFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Kind != StopResultNotRunningCleanupFailed {
-		t.Fatalf("stop kind = %s, want %s", result.Kind, StopResultNotRunningCleanupFailed)
+	if result.Kind != StopResultNotRunning || result.Fulfillment() != CommandFulfilled {
+		t.Fatalf("stop result = %#v", result)
 	}
-	if len(result.CleanupFailures) != 1 || result.CleanupFailures[0].Subject != CleanupSubjectManagedPAC {
+	if len(result.CleanupFailures) != 1 || result.CleanupFailures[0].Subject != CleanupSubjectSystemPAC {
 		t.Fatalf("cleanup failures = %#v", result.CleanupFailures)
 	}
 	if coord.Exists() {
@@ -176,6 +187,6 @@ func TestStopWithoutPublishedOwnerRejectsOwnerLockContention(t *testing.T) {
 		t.Fatalf("stop error = %v, want retryable ownership contention", err)
 	}
 	if settings.cleared != 0 {
-		t.Fatalf("managed PAC cleanup calls = %d, want 0", settings.cleared)
+		t.Fatalf("System PAC cleanup calls = %d, want 0", settings.cleared)
 	}
 }

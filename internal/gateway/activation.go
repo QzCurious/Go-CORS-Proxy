@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/QzCurious/seamless-cors/internal/lib/fileobservation"
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
 )
 
 type startSequence struct {
@@ -21,13 +20,6 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 			result = withUpstreamListCreationWarning(result, creationErr)
 		}
 	}()
-
-	if !s.lifecycle.takeStartCleanupComplete() {
-		_, failure := cleanManagedPAC(ctx, s.lifecycle.managedPACFootprint)
-		if failure != nil {
-			return StartCleanupFailed{Failures: []CleanupFailure{*failure}}, nil
-		}
-	}
 
 	globalUpstreamListPath := s.lifecycle.globalUpstreamListPath
 	directoryListPath, err := directoryUpstreamListPath(request.WorkingDirectory)
@@ -72,20 +64,6 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	s.lifecycle.userCAAssessmentErr = userCAAssessmentErr
 	s.lifecycle.mu.Unlock()
 
-	managedPACControl, managedPACDetail, assessmentResult, err := s.assessManagedPAC(ctx)
-	if err != nil || assessmentResult != nil {
-		if err != nil {
-			return postStartFailure(err)
-		}
-		return assessmentResult, nil
-	}
-	closePACControl := true
-	defer func() {
-		if closePACControl {
-			_, _ = managedPACControl.Close()
-		}
-	}()
-
 	engine, err := newRuntimeFromSources([]runtimeUpstreamListInput{
 		{
 			kind:        UpstreamListSourceGlobal,
@@ -114,12 +92,11 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	active := &activeRuntime{
-		engine:     engine,
-		managedPAC: managedPACControl,
-		ctx:        runCtx,
-		cancel:     cancel,
-		done:       done,
-		phase:      runtimePhaseStarting,
+		engine: engine,
+		ctx:    runCtx,
+		cancel: cancel,
+		done:   done,
+		phase:  runtimePhaseStarting,
 	}
 
 	publishRuntime := func() error {
@@ -175,42 +152,28 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	select {
 	case err := <-done:
 		withdraw()
-		return postStartFailure(fmt.Errorf("gateway runtime failed before Managed PAC Set: %w", err))
+		return postStartFailure(fmt.Errorf("gateway runtime failed before System PAC Delivery: %w", err))
 	default:
 	}
 
-	pacState, err := managedPACControl.Deliver(engine.PACListen())
-	if err != nil {
+	pacReport, delivered := s.lifecycle.deliverSystemPAC(runCtx, active)
+	if !delivered {
 		withdraw()
-		if failure := s.cleanupFailedPACControl(managedPACControl); failure != nil {
-			closePACControl = false
-			return StartCleanupFailed{
-				Warnings: pacState.Warnings,
-				Failures: []CleanupFailure{*failure},
-			}, nil
-		}
-		if ctx.Err() != nil {
-			return StartStopCancelled{}, nil
-		}
-		return StartManagedPACSetFailed{Warnings: pacState.Warnings, Diagnostic: err.Error()}, nil
+		return StartStopCancelled{}, nil
 	}
 
 	s.lifecycle.mu.Lock()
 	if s.lifecycle.runtime != active || ctx.Err() != nil {
 		s.lifecycle.mu.Unlock()
 		withdraw()
-		_, _ = managedPACControl.Close()
-		closePACControl = false
 		return StartStopCancelled{}, nil
 	}
 	active.phase = runtimePhaseRunning
 	s.lifecycle.mu.Unlock()
 	cleanupEngine = false
-	closePACControl = false
 
 	go s.lifecycle.watchRuntimeChanges(runCtx, active)
 
-	observationIssues := append(managedPACDetail.ObservationIssues, pacState.ObservationIssues...)
 	state := engine.snapshot()
 	s.lifecycle.mu.Lock()
 	installedCA := installedCAStatus(
@@ -221,12 +184,10 @@ func (s startSequence) Execute(ctx context.Context, request StartRequest) (resul
 	)
 	userCAIssue := userCAAssessmentIssue(s.lifecycle.userCAAssessmentErr)
 	s.lifecycle.mu.Unlock()
-	managedPACDetail.Warnings = pacState.Warnings
-	managedPACDetail.ObservationIssues = observationIssues
 	return Started{Guidance: StartGuidance{
 		UpstreamLists: state.UpstreamLists,
-		ManagedPAC:    managedPACDetail,
-		Traffic:       trafficStatus(state, pacState.RoutesCurrentEndpoint),
+		SystemPAC:     pacReport,
+		Traffic:       trafficStatus(state, pacReport.RoutesCurrentEndpoint),
 		InstalledCA:   installedCA,
 		UserCAIssue:   userCAIssue,
 	}}, nil
@@ -260,12 +221,6 @@ func withUpstreamListCreationWarning(result StartResult, err error) StartResult 
 	case Started:
 		typed.UpstreamListCreationWarning = warning
 		return typed
-	case StartNoManageablePACServices:
-		typed.UpstreamListCreationWarning = warning
-		return typed
-	case StartManagedPACSetFailed:
-		typed.UpstreamListCreationWarning = warning
-		return typed
 	case StartAlreadyMutating:
 		typed.UpstreamListCreationWarning = warning
 		return typed
@@ -278,25 +233,4 @@ func withUpstreamListCreationWarning(result StartResult, err error) StartResult 
 	default:
 		return result
 	}
-}
-
-func (s startSequence) assessManagedPAC(ctx context.Context) (managedpac.Control, ManagedPACStartDetail, StartResult, error) {
-	control, assessment, err := s.lifecycle.managedPACActivation.Begin(ctx)
-	if err != nil {
-		return nil, ManagedPACStartDetail{}, nil, err
-	}
-	detail := managedPACStartDetail(assessment)
-	if !assessment.HasManageableServices() {
-		_, closeErr := control.Close()
-		if closeErr != nil {
-			return nil, ManagedPACStartDetail{}, nil, closeErr
-		}
-		return nil, ManagedPACStartDetail{}, StartNoManageablePACServices{Detail: detail}, nil
-	}
-	return control, detail, nil, nil
-}
-
-func (s startSequence) cleanupFailedPACControl(control managedpac.Control) *CleanupFailure {
-	_, failure := closeManagedPAC(control)
-	return failure
 }

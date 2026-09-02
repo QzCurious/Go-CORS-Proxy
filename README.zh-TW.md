@@ -30,6 +30,8 @@ https://api.example.com:8443
 
 `start` 會持續在目前的終端機前景執行，並暫時替適用的系統網路服務設定 PAC URL。若網路服務原本使用其他 PAC 設定，seamless-cors 會保持原狀，不會覆蓋。使用完畢後按下 `Ctrl+C`，即可停止服務，並移除 seamless-cors 加上的 PAC 設定。
 
+流量執行環境會先啟動，再進行 System PAC delivery。PAC 探索、讀取、寫入或驗證問題只會回報，不會停止已啟動的執行環境；之後有效的路由變更或再次執行 `start`，都會觸發一次新的 delivery。
+
 若要處理原本就是 HTTPS 的 API，或使用 HTTPS Facade，請安裝開發用 CA，並同意作業系統顯示的授權提示：
 
 ```sh
@@ -148,9 +150,9 @@ Host Selector 不能包含 protocol 或 port。Origin Selector 必須以 `http:/
 
 | 指令 | 行為 |
 | ---- | ---- |
-| `seamless-cors start` | 在前景啟動服務、監看兩份 Upstream List，並設定適用網路服務的 PAC。若服務已在執行，再次執行 `start` 會顯示目前的執行狀態。 |
-| `seamless-cors stop` | 停止執行中的服務；如果先前的程序留下 seamless-cors 所屬的 PAC 設定或暫存狀態，也會一併清理。 |
-| `seamless-cors status` | 顯示服務、代理規則、CORS、HTTPS Facade、Upstream List、PAC 與 UserCA 的目前狀態，不會變更任何設定。輸出格式以方便閱讀為主，不保證能作為固定的腳本介面。 |
+| `seamless-cors start` | 在前景啟動服務、監看兩份 Upstream List，並向目前適用的所有 Network Service delivery PAC。若服務已在執行，再次執行 `start` 會保留原執行環境並再次嘗試 delivery。 |
+| `seamless-cors stop` | 停止執行中的服務；即使找不到存活的 owner，也會盡力清理 seamless-cors 所屬的 System PAC 與暫存狀態。若清理結果不確定，命令仍會成功完成並醒目回報可能的殘留。 |
+| `seamless-cors status` | 重新觀察所有可見的 Network Service，顯示服務、代理規則、CORS、HTTPS Facade、Upstream List、System PAC 與 UserCA 的目前狀態，不會變更任何設定。保留的 delivery 診斷會標示為歷史資訊。輸出格式以方便閱讀為主，不保證能作為固定的腳本介面。 |
 | `seamless-cors install` | 安裝、修復或更新目前使用者的開發用 CA。若服務正在執行，會立即套用可用的 CA。 |
 | `seamless-cors uninstall` | 移除所有 seamless-cors UserCA 與本機 CA 資料。若 HTTPS 攔截正在運作，會先要求確認；確認後會停用 HTTPS，但 HTTP 代理仍可繼續使用。 |
 | `seamless-cors serve` | 只啟動本機控制服務，不會開始處理瀏覽器流量，也不會變更 PAC 設定；必須另外執行 `start` 才會啟用代理功能。 |

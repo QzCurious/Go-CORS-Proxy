@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/systempac"
 )
 
 func TestStartReturnsOwnerTransitionWhenOwnerLockIsHeldWithoutPublishedOwner(t *testing.T) {
@@ -85,7 +85,7 @@ func TestStartRoutesToExistingServeOwner(t *testing.T) {
 		t.Fatal("test did not acquire Gateway Ownership")
 	}
 	settings := &lifecycleTestSystemSettings{
-		services: []managedPACTestService{{ServiceName: "Wi-Fi", Ownership: managedpac.OwnershipEmpty}},
+		services: []systemPACTestService{{ServiceName: "Wi-Fi", Ownership: systempac.OwnershipEmpty}},
 	}
 	owner, err := newOwnerWithCoordinator(settings, emptyTestUserCA{}, coord)
 	if err != nil {

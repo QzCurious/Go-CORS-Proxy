@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/systempac"
 )
 
 var errStartNotActivated = errors.New("gateway start did not activate runtime")
@@ -28,10 +28,10 @@ func Start(ctx context.Context, hooks StartHooks) (StartResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return start(ctx, openSystemManagedPAC(), ca, hooks)
+	return start(ctx, openSystemPAC(), ca, hooks)
 }
 
-func start(ctx context.Context, pac managedPACCapabilities, ca userCAModule, hooks StartHooks) (StartResult, error) {
+func start(ctx context.Context, pac systempac.Module, ca userCAModule, hooks StartHooks) (StartResult, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func start(ctx context.Context, pac managedPACCapabilities, ca userCAModule, hoo
 	if verification := coord.Verify(); verification.Status == stateActive {
 		return executeAndStartClient(ctx, newClient(verification.Cache), hooks)
 	}
-	_, failures := cleanGatewayFootprint(ctx, pac, coord, nil)
+	failures := cleanGatewayStateCache(coord, nil)
 	if len(failures) > 0 {
 		return StartCleanupFailed{Failures: failures}, nil
 	}
@@ -69,7 +69,6 @@ func start(ctx context.Context, pac managedPACCapabilities, ca userCAModule, hoo
 	}
 	owner.lock = lock
 	releaseLock = false
-	owner.lifecycle.MarkStartCleanupComplete()
 	var result StartResult
 	err = owner.Run(ctx, func(activationCtx context.Context) error {
 		start, err := executeAndStart(activationCtx, owner.lifecycle, hooks)
@@ -100,10 +99,10 @@ func Serve(ctx context.Context, ready func()) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, openSystemManagedPAC(), ca, ready)
+	return serve(ctx, openSystemPAC(), ca, ready)
 }
 
-func serve(ctx context.Context, pac managedPACCapabilities, ca userCAModule, ready func()) error {
+func serve(ctx context.Context, pac systempac.Module, ca userCAModule, ready func()) error {
 	coord, err := defaultCoordinator()
 	if err != nil {
 		return err
@@ -180,7 +179,6 @@ func executeStartLoop(
 			request.UpstreamListCreationConsent = input
 		case Started, AlreadyRunning,
 			StartStopCancelled, StartCleanupFailed, StartAlreadyMutating,
-			StartNoManageablePACServices, StartManagedPACSetFailed,
 			StartOwnerTransition:
 			return result, nil
 		default:
@@ -189,19 +187,19 @@ func executeStartLoop(
 	}
 }
 
-func cleanRuntime(ctx context.Context, pac managedpac.Footprint) ([]ManagedPACObservationIssue, []CleanupFailure, error) {
+func cleanRuntime(ctx context.Context, pac systempac.Module) (SystemPACReport, []CleanupFailure, error) {
 	coord, err := defaultCoordinator()
 	if err != nil {
-		return nil, nil, err
+		return SystemPACReport{}, nil, err
 	}
 	lock, acquired, err := coord.TryAcquireOwnerLock()
 	if err != nil {
-		return nil, nil, err
+		return SystemPACReport{}, nil, err
 	}
 	if !acquired {
-		return nil, nil, fmt.Errorf("gateway owner already running; retry after it finishes starting or stopping")
+		return SystemPACReport{}, nil, fmt.Errorf("gateway owner already running; retry after it finishes starting or stopping")
 	}
 	defer lock.Release()
-	issues, failures := cleanGatewayFootprint(ctx, pac, coord, nil)
-	return issues, failures, nil
+	report, failures := cleanGatewayFootprint(ctx, pac, coord, nil)
+	return report, failures, nil
 }

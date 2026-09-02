@@ -83,7 +83,7 @@ func (c *client) Stop(ctx context.Context) (StopResult, error) {
 	if err == nil {
 		return success.semantic(), nil
 	}
-	return decodeCommandFailure(err, knownStopFailureKind, stopFailureDetails.semantic)
+	return StopResult{}, err
 }
 
 func (c *client) Status(ctx context.Context) (StatusResult, error) {
@@ -208,8 +208,6 @@ func knownStartFailureKind(kind StartKind) bool {
 	switch kind {
 	case StartResultOwnerTransition,
 		StartResultUpstreamListCreationConsentRequired,
-		StartResultNoManageablePACServices,
-		StartResultManagedPACSetFailed,
 		StartResultStartAlreadyMutating,
 		StartResultStopCancelled,
 		StartResultCleanupFailed:
@@ -217,10 +215,6 @@ func knownStartFailureKind(kind StartKind) bool {
 	default:
 		return false
 	}
-}
-
-func knownStopFailureKind(kind StopResultKind) bool {
-	return kind == StopResultCleanupFailed || kind == StopResultNotRunningCleanupFailed
 }
 
 func knownInstallFailureKind(kind InstallResultKind) bool {

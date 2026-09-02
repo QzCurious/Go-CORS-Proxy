@@ -9,7 +9,7 @@ A local DEV/QA network tool that sits between the browser and configured upstrea
 _Avoid_: generic proxy, CORS middleware
 
 **Gateway Module**:
-The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands together with their semantic results, fulfillment, state classifications, and details for CLI and HTTP Gateway Control Surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, Managed PAC state, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing; Inbound Adapters translate Gateway semantics without redefining them.
+The single internal module that owns start, serve, stop, status, and Installed User CA lifecycle commands together with their semantic results, fulfillment, state classifications, and details for CLI and HTTP Gateway Control Surfaces. Its small public interface hides owner discovery, authenticated local HTTP transport, process ownership, Gateway Footprint Cleanup decisions, System PAC coordination, runtime visibility, UserCA lifecycle behavior, and traffic-runtime sequencing; Inbound Adapters translate Gateway semantics without redefining them.
 _Avoid_: surface-owned outcome, CLI result classification, HTTP-defined command semantics, Gateway Facade, gateway client package, gateway coordinator package, gateway owner package, gateway router package, command service
 
 **Inbound Adapter**:
@@ -41,7 +41,7 @@ The boolean Gateway Traffic Demand produced unconditionally by HTTPS Origin Sele
 _Avoid_: HTTPS Intent, HTTPS Facade demand, active HTTPS CORS, unconditional Host Selector HTTPS demand
 
 **Traffic Routing Ready**:
-A current Gateway fact that the PAC Endpoint and Proxy are serving and the latest Managed PAC Control State reports Managed PAC Routes Current Endpoint. Managed PAC privately establishes that report from at least one Network Service with an enabled, seamless-cors-owned PAC URL identifying this Gateway Runtime's PAC endpoint; any delivery-generation query for that current host, port, and owned path remains valid, while a marker-owned URL for a previous runtime does not. No end-to-end browser probe is required, and Gateway does not reinterpret PAC URLs or ownership to derive this fact. Managed PAC Set and Read-Only Status obtain fresh Control State without polling.
+A current Gateway fact that the PAC Endpoint and Proxy are serving and a fresh System PAC Report establishes System PAC Routes Current Endpoint. No end-to-end browser probe is required, and Gateway does not reinterpret PAC URLs or ownership to derive this fact.
 _Avoid_: runtime active, proxy listener ready, Traffic Projection Current, warning-free PAC delivery, manual proxy availability
 
 **Traffic Projection**:
@@ -145,8 +145,8 @@ A start behavior where an ownerless CLI command becomes the long-running Gateway
 _Avoid_: competing gateway process, owner replacement, split-brain gateway, routed caller claiming foreground ownership
 
 **Managed System Proxy**:
-A traffic capture approach where the gateway configures the operating system or browser proxy settings on behalf of the user, so application requests keep their original URLs and no manual proxy setup is required.
-_Avoid_: VPN, manual proxy, browser-only workaround
+A traffic capture approach where the gateway configures the operating system or browser proxy settings on behalf of the user, so application requests keep their original URLs and no manual proxy setup is required. Each delivery considers every currently visible Network Service, changes only empty or marker-owned PAC settings, and may recover unavailable routing on a later delivery.
+_Avoid_: VPN, manual proxy, browser-only workaround, activation-scoped service set, foreign PAC replacement
 
 **Selective Managed Proxy**:
 A Managed System Proxy behavior where only Upstream List matches are routed through the gateway and all other traffic bypasses it.
@@ -165,8 +165,8 @@ A runtime proxy auto-configuration artifact rendered from the PAC Projection ins
 _Avoid_: user-authored PAC, manual PAC rules
 
 **PAC Projection**:
-The PAC Routing component of a Traffic Projection, derived from Gateway's selector facts, demands, UserCA facts, and runtime routing endpoint. PAC Routing owns its formation, while Gateway composes it with matching Proxy and HTTPS Facade configuration and Managed PAC does not reinterpret its inputs.
-_Avoid_: complete Traffic Projection, Managed PAC desired Upstream List, duplicated PAC derivation, user-authored PAC
+The PAC Routing component of a Traffic Projection, derived from Gateway's selector facts, demands, UserCA facts, and runtime routing endpoint. PAC Routing owns its formation, while Gateway composes it with matching Proxy and HTTPS Facade configuration and System PAC does not reinterpret its inputs.
+_Avoid_: complete Traffic Projection, System PAC desired Upstream List, duplicated PAC derivation, user-authored PAC
 
 **PAC Route Set**:
 The PAC Routes within a PAC Projection, derived inside the PAC Routing module from normalized Upstream List Entries and Managed HTTPS Routing. HTTP Origin Selectors always contribute their HTTP routes and contribute HTTPS Facade routes while Managed HTTPS Routing is active unless a more explicit HTTPS Origin Selector takes precedence; HTTPS Origin Selectors contribute routes only while managed HTTPS routing is active, and Host Selectors contribute HTTP routes always plus HTTPS routes only while managed HTTPS routing is active.
@@ -176,8 +176,8 @@ _Avoid_: hand-built JavaScript rules, duplicated Upstream List parsing, PAC-owne
 A local HTTP endpoint served by the gateway that returns the current Generated PAC.
 _Avoid_: file PAC, static PAC file
 
-**Managed PAC Publication URL**:
-An owned PAC Endpoint identity carrying Managed PAC's publication generation in its URL query so PAC clients fetch a newer Generated PAC while the seamless-cors Managed PAC Ownership Marker remains stable.
+**System PAC Publication URL**:
+An owned PAC Endpoint identity carrying System PAC's publication generation in its URL query so PAC clients fetch a newer Generated PAC while the System PAC Ownership Marker remains stable.
 _Avoid_: Gateway PAC version, routing revision, port rotation, foreign cache-busting parameter, PAC file version, browser cache workaround
 
 **Gateway Distribution**:
@@ -189,12 +189,12 @@ A supported operating system where the gateway can configure PAC Routing and use
 _Avoid_: manual platform, manual proxy fallback, all-platform parity without adapters
 
 **Best-Effort Stop**:
-A terminal stop behavior where Gateway Footprint Cleanup attempts every cleanup subject, including successfully observed seamless-cors-owned active PAC state and live coordination cache, even after another subject fails. Observed cleanup residue makes the result unfulfilled, while a Managed PAC Observation Issue is disclosed without preventing fulfillment; neither condition preserves Gateway Ownership, and a later ownerless command verifies and cleans observable stale footprint where its semantics permit.
-_Avoid_: first-error cleanup, successful result with observed residue, silent PAC observation issue, retrying owner, router-only fallback
+A terminal stop behavior that terminates any live Gateway Owner and attempts every cleanup subject, including System PAC Cleanup and the Gateway State Cache, even when no owner is found or another subject fails. Stop remains fulfilled and its CLI exits successfully after termination and cleanup attempts finish, while cleanup uncertainty or observed residue is prominently reported as an unfulfilled cleanup sub-operation and never preserves Gateway Ownership.
+_Avoid_: first-error cleanup, silent cleanup issue, cleanup-gates-stop, retrying owner, router-only fallback
 
 **Owner Stop**:
-A stop behavior used by explicit stop, graceful process termination, and unexpected Gateway Router termination. It rejects new work, closes Gateway Runtime before Gateway Footprint Cleanup, waits for admitted owner-owned CA mutation, truthfully reports cleanup residue, and then tears down Router and ownership even when cleanup is incomplete.
-_Avoid_: runtime-only stop, router-only survival, retrying owner, cleanup-before-runtime-close, cleanup-failure-means-success
+A stop behavior used by explicit stop, graceful process termination, and unexpected Gateway Router termination. It rejects new work, cancels pending delivery triggers, performs System PAC Cleanup for either a start-hosted or router-only owner, closes Gateway Runtime when present, waits for admitted owner-owned CA mutation, and then tears down Router and ownership even when cleanup is incomplete; an active runtime keeps its traffic endpoints serving until cleanup finishes.
+_Avoid_: runtime-only stop, router-only survival, retrying owner, runtime-close-before-PAC-cleanup, cleanup issue hidden by stop success
 
 **Owner Ending**:
 A terminal Gateway Owner lifecycle state that begins when Owner Stop takes precedence and lasts until the process exits. An admitted CA Lifecycle Command may settle, but new start, install, and uninstall work are rejected and cleanup failure does not reopen command admission.
@@ -241,7 +241,7 @@ A discoverable Gateway Owner published before ownerless CA lifecycle work. It ex
 _Avoid_: promotable CA owner, install-owned Gateway Runtime, private one-shot lease holder, hidden CA process, background daemon, undiscoverable owner
 
 **Fail-Fast CA Mutation Admission**:
-A Gateway serialization rule where install and uninstall are rejected for explicit retry when another CA mutation is already admitted. Gateway maps that condition to `userca: mutating`, holds command admission through the short runtime withdrawal and adoption consequence, and never waits for an independent Managed PAC Set; status remains available, stop waits for admitted work, and no queue is maintained.
+A Gateway serialization rule where install and uninstall are rejected for explicit retry when another CA mutation is already admitted. Gateway maps that condition to `userca: mutating`, holds command admission through the short runtime withdrawal and adoption consequence, and never waits for an independent System PAC Delivery; status remains available, stop waits for admitted work, and no queue is maintained.
 _Avoid_: owner-exists-means-busy, queued CA mutation, concurrent CA mutation, blocked status
 
 **Ownership-Protected Status Assessment**:
@@ -333,11 +333,11 @@ A user-facing command that controls gateway-owned state or reports on it, includ
 _Avoid_: lifecycle operation, command service, control endpoint operation
 
 **Start Sequence**:
-The public Gateway Module start flow that verifies ownership, performs early ownership-aware Gateway Footprint Cleanup, establishes independent continuous observation and initial Gateway-owned state for both Upstream Lists even when a source is unavailable, forms the Effective Upstream List, establishes coherent UserCA Usability, derives Gateway Traffic Demands, and then attempts Gateway Activation. Direct start holds Gateway Ownership while removing stale state and publishing its discovery cache, while router-hosted start preserves the live owner cache; cleanup failure is returned as a structured start outcome identifying each failed cleanup subject.
+The public Gateway Module start flow that verifies ownership, removes stale Gateway State Cache when appropriate, establishes independent continuous observation and initial Gateway-owned state for both Upstream Lists even when a source is unavailable, forms the Effective Upstream List, establishes coherent UserCA Usability, derives Gateway Traffic Demands, and then attempts Gateway Activation. Stale marker-owned PAC settings are adopted directly by initial System PAC Delivery rather than cleaned before runtime startup.
 _Avoid_: start-time CA installation, public raw activation, PAC-first start, cleanup-after-approval
 
 **Gateway Activation**:
-The internal operation that begins one Managed PAC Control Lifetime, discovers its automatically manageable Network Services, begins serving Gateway Runtime with its retained facts, demands, active outcomes, and current projections, performs Managed PAC Set, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, fact establishment, Managed PAC Configuration Protection, or traffic-before-PAC ordering.
+The internal operation that begins serving Gateway Runtime with its retained facts, demands, active outcomes, and current projections, performs System PAC Delivery, and then produces Start Guidance. It is invoked only through the Start Sequence so callers cannot bypass cleanup, fact establishment, System PAC Configuration Protection, or traffic-before-PAC ordering.
 _Avoid_: public activation command, CA installation, CA Trust Consent, lifecycle activation, runtime startup, command rendering, lifecycle orchestration package
 
 **Automatic Listeners**:
@@ -412,85 +412,57 @@ _Avoid_: viable service, PAC setting, successfully observed service
 The current PAC URL and enabled state observed as properties of one visible Network Service. A failed observation leaves the Network Service visible but does not establish manageable PAC state.
 _Avoid_: service discovery, missing service, assumed-empty PAC state
 
-**Managed PAC Observation Issue**:
-A current per-service condition where the latest Network Service discovery included a service but its PAC Setting Observation failed. The failure's cause is not classified, no manageable PAC state is established for that service, and the issue is exposed through Start Guidance, runtime status, or fulfilled cleanup detail until a later discovery or observation replaces it or lifecycle teardown ends current state.
-_Avoid_: inferred service presence, empty PAC setting, cause-classified observation error, Managed PAC Update Failure, silent service omission
+**System PAC**:
+The module that integrates seamless-cors with current-user operating-system PAC settings while hiding platform discovery, ownership classification, safe mutation, publication identity, serialization, reporting, and verified cleanup from Gateway.
+_Avoid_: activation-scoped PAC manager, PAC generator, Gateway-owned PAC policy, Network Service adapter
 
-**Managed PAC Active-State Cleanup**:
-An idempotent Managed PAC operation that disables and verifies every successfully observed, currently enabled marker-owned PAC setting. Gateway calls ownerless cleanup only when it has no live Managed PAC control handle, while a control lifetime performs the same cleanup through Close; Managed PAC does not duplicate Gateway's lifecycle admission state. A visible Network Service whose PAC setting cannot be observed is outside the cleanup scope and does not prevent success; disabled owned URLs are inert retained configuration, platforms may represent inactive state differently, and observed foreign PAC state is always preserved.
-_Avoid_: concurrent control cleanup, duplicated lifecycle admission, PAC URL erasure, disabled owned URL cleanup, exact-URL cleanup, previous-state restoration, unobservable-PAC cleanup failure
+**System PAC Ownership Marker**:
+The stable loopback HTTP PAC URL shape whose path ends in `seamless-cors.pac`, proving a PAC setting belongs to seamless-cors without depending on a run-specific port or publication query.
+_Avoid_: activation-scoped PAC footprint, run-specific PAC identity, port-based ownership, full-URL ownership, non-loopback PAC ownership
+
+**System PAC Delivery**:
+One synchronous best-effort attempt to give every currently visible Network Service with an empty or marker-owned PAC setting a newly versioned URL for the current PAC Endpoint. Every request produces its own serialized attempt and publication generation; each attempt observes before writing, freshly verifies its result, treats foreign settings as ordinary excluded state, never rolls back successful services, and performs no background retry.
+_Avoid_: fixed service set, activation assessment, control lifetime, request conflation, all-or-nothing rollout, foreign PAC replacement, background reconciliation
+
+**System PAC Delivery Request**:
+A Gateway-owned trigger emitted by initial start, each effective Traffic Projection change, or repeated start. Every request reaches System PAC as its own serialized delivery attempt through ordinary backpressure rather than being dropped, buffered by policy, or combined with another request.
+_Avoid_: conflated request, arbitrary queue capacity, background retry, System PAC-owned queue, Traffic Projection publication
+
+**System PAC Observation**:
+A fresh read-only discovery and PAC Setting Observation of every currently visible Network Service. The caller may supply a current PAC Endpoint; when it does, System PAC additionally establishes whether any enabled marker-owned setting identifies that endpoint. Observation remains available without a live endpoint.
+_Avoid_: cached control state, PAC mutation, fixed service snapshot, delivery retry
+
+**System PAC Report**:
+A Gateway-owned surface-neutral classification built from System PAC-owned facts and concrete errors, containing every visible Network Service's available facts, service-identified issues, and whether at least one freshly verified service routes through the current PAC Endpoint. A fresh observation report is current OS truth, while Gateway Runtime may retain exactly one latest delivery report as explicitly historical diagnostics.
+_Avoid_: System PAC-owned command semantics, control state, service-set report, unbounded warning history, historical failure presented as current state
+
+**System PAC Routes Current Endpoint**:
+A current System PAC fact that at least one freshly observed Network Service has an enabled marker-owned PAC URL identifying the supplied PAC Endpoint. Publication-query differences do not affect this fact.
+_Avoid_: Traffic Routing Ready, all-services-configured, warning-free delivery, cached readiness
+
+**System PAC Publication Generation**:
+The System PAC-owned monotonic generation allocated for each System PAC Delivery and encoded in its publication URL so PAC clients reload changed Generated PAC contents. Failed or partially successful delivery consumes its generation.
+_Avoid_: Gateway PAC version, routing revision, rollback generation, reclaimed failed version
+
+**System PAC Delivery Failure**:
+A nonfatal service-specific condition where PAC mutation fails during System PAC Delivery. The service keeps its prior setting, successful services are not rolled back, and the failure remains in the Gateway Runtime's latest delivery report until another delivery replaces that report.
+_Avoid_: fatal PAC refresh, whole-runtime failure, PAC URL rollback, silent partial update
+
+**System PAC Cleanup**:
+An idempotent operation that discovers all visible Network Services, disables every successfully observed active marker-owned PAC setting, and freshly verifies the result. Foreign, disabled, and unobservable settings are never changed, while inability to establish the cleanup postcondition makes cleanup unfulfilled.
+_Avoid_: control close, previous-state restoration, foreign PAC cleanup, exact-publication cleanup, PAC URL erasure
 
 **Gateway Footprint Cleanup Status**:
-A subject-level three-state result describing whether owned gateway footprint is `none`, `needed`, or `unknown`; `unknown` means the subject itself could not be discovered and must not be treated as clean. Successfully discovered Network Services with failed PAC Setting Observations remain outside PAC management rather than making the PAC subject unknown. The overall state is derived as `needed` when any subject is needed, otherwise `unknown` when any subject is unknown, and otherwise `none`.
+A subject-level three-state result describing whether owned gateway footprint is `none`, `needed`, or `unknown`; `needed` means active owned state was freshly observed, while `unknown` means discovery or any visible Network Service's PAC Setting Observation could not establish the cleanup postcondition and must not be treated as clean. Unobservable settings remain outside PAC mutation even though they make cleanup unfulfilled.
 _Avoid_: cleanup-needed boolean, assumed-clean inspection failure, suppressed cleanup inspection error
-
-**Managed PAC Ownership Marker**:
-The stable loopback HTTP PAC URL shape whose path ends in `seamless-cors.pac`, proving a current managed PAC setting belongs to seamless-cors without depending on a run-specific port.
-_Avoid_: managed PAC footprint, run-specific PAC identity, port-based ownership, full-URL ownership, non-loopback PAC ownership
-
-**Managed PAC Activation Assessment**:
-A feature-owned activation report containing the visible Network Service presentation facts, the fixed Managed PAC Service Set selected from them, and current Managed PAC Observation Issues. Its manageability decisions are authoritative; Gateway uses the selected set to decide whether activation can proceed and does not reconstruct selection from PAC URL, enabled state, ownership, or observation failures.
-_Avoid_: Gateway-authored service selection, generic PAC snapshot, caller-derived manageability, ownerless footprint report
-
-**Managed PAC Control Lifetime**:
-A Managed PAC-owned lifetime that fixes one Managed PAC Service Set when it begins, serializes Set and State operations under an internal lifetime context, and ends only when Gateway closes its control handle. The request context used to begin control governs establishment but does not own the established lifetime. Close rejects new work, cancels and quiesces in-flight work, performs independently bounded Managed PAC Active-State Cleanup, and then releases the lifetime.
-_Avoid_: request-owned PAC lifetime, Gateway-owned service set, per-operation cancellation, background worker, Managed PAC lease, caller-assembled cleanup
-
-**Managed PAC Service Set**:
-The successfully observed empty or marker-owned Network Services automatically fixed when a Managed PAC Control Lifetime begins. Initially foreign or unobservable services remain outside the set; selected services remain members through later absence, drift, or observation issues and can recover on a later Managed PAC Set, while excluded or newly appearing services wait until another control lifetime.
-_Avoid_: accepted service set, user-selected services, all visible services, initially foreign service, initially unobservable service, currently controlled service subset, live service discovery for expansion, implicit service expansion, removal-on-disappearance, removal-on-drift, removal-on-observation-issue
-
-**Service-PAC State**:
-A private Managed PAC record for one member of the fixed Managed PAC Service Set, containing its Network Service identity, latest observed PAC URL and enabled state, ownership, whether it currently points to the active PAC Endpoint, and its own warnings or observation issue. Managed PAC uses these records to produce purpose-built Control State and never exposes them across the Gateway seam.
-_Avoid_: exported PAC snapshot, Gateway-authored PAC state, caller-interpreted ownership, index-correlated warning
-
-**Managed PAC Control State**:
-A feature-owned, freshly observed report for one Managed PAC Control Lifetime containing its fixed Managed PAC Service Set, Managed PAC Routes Current Endpoint, and service-identified Managed PAC Warnings and Observation Issues. Managed PAC derives it from private Service-PAC State; Gateway asks for it when producing status, forwards its diagnostics without reclassification, and does not retain a parallel cache. Its absence means the Gateway Runtime has no active Managed PAC control handle.
-_Avoid_: Managed PAC Runtime State, raw service snapshot, Gateway-derived endpoint control, Gateway-owned warning cache, attempted PAC URL
-
-**Managed PAC Routes Current Endpoint**:
-A current Managed PAC boolean reporting that fresh private Service-PAC State establishes at least one fixed-set Network Service with an enabled, marker-owned PAC URL identifying the control lifetime's current PAC Endpoint. It ignores publication-generation differences and remains only one input to Gateway-owned Traffic Routing Ready.
-_Avoid_: Traffic Routing Ready, proxy serving fact, Gateway URL comparison, warning-free delivery, all-services-controlled
-
-**Managed PAC Active**:
-A status fact derived from the presence of a Managed PAC control handle, meaning the Gateway Runtime retains a Managed PAC-owned fixed service set. It does not claim that every selected service is currently controlled; Managed PAC Control State reports the fixed set, Managed PAC Routes Current Endpoint, and current exceptions.
-_Avoid_: all-services-controlled, live OS PAC verification, warning-free Managed PAC, Managed PAC lease held
-
-**Managed PAC Mutation Sequence**:
-Managed PAC's private ordering rule where Set, State, and Close execute one at a time independently from Upstream List observation and Gateway CA mutation serialization. Each Set makes exactly one attempt; no request queue, conflation, or background retry exists. Each service update succeeds or fails independently, successful services are not rolled back, and failures wait for a later Set. Close cancels and waits for any current operation before cleaning successfully observed marker-owned PAC state.
-_Avoid_: caller-owned PAC lock, concurrent PAC writes, request conflation, background retry, refresh-cleanup race, post-close PAC Set, close racing an old writer, global lifecycle mutex
-
-**Managed PAC Set**:
-One synchronous Managed PAC delivery attempt requested by Gateway with the PAC Endpoint currently serving the Generated PAC. Managed PAC independently evaluates each member of the fixed Managed PAC Service Set: marker-owned and empty observed settings receive a newly generated URL, an update failure leaves that service's previous working setting unchanged, successful services are never rolled back because another service failed, foreign settings are preserved with a warning, and absent or unobservable services wait for a later Set. The attempt neither retries nor inspects or expands to services outside the fixed set.
-_Avoid_: first PAC Set, PAC update operation, Managed PAC reconciliation loop, all-or-nothing refresh, idle watcher, new-service adoption, foreign PAC replacement, missing-service failure
-
-**Managed PAC Delivery Request**:
-The Gateway Runtime trigger that calls Managed PAC Set with the PAC Endpoint after Gateway switches a Served Traffic Projection. Managed PAC owns URL generation, one serial platform attempt, private Service-PAC State, purpose-built Control State, and per-service warnings without determining Traffic Projection Current or reinterpreting module facts and Gateway Traffic Demands.
-_Avoid_: Traffic Projection publication, feature activation, background retry request, all-or-nothing rollout, duplicate PAC derivation, event history
-
-**Managed PAC Publication Generation**:
-The Managed PAC-owned monotonic generation allocated before each Managed PAC Set attempts to deliver a new Generated PAC URL to Network Services. A failed or partially successful attempt consumes its generation, so gaps and different service URLs are valid; a later Set allocates a new generation without determining Traffic Projection Current.
-_Avoid_: Gateway PAC version, routing revision, rollback generation, transaction sequence, reclaimed failed version
-
-**Managed PAC Drift**:
-A nonfatal condition where a visible member of the fixed Managed PAC Service Set carries foreign PAC state during Set or State observation. The foreign setting is preserved, the Gateway Runtime continues, and Managed PAC reports a service-identified warning without exposing the private Service-PAC State that established it.
-_Avoid_: Managed PAC Lease Lost, consent-stale warning, fatal PAC drift, forced PAC restoration, foreign PAC takeover, silent proxy escape
-
-**Managed PAC Update Failure**:
-A nonfatal service-specific condition where platform mutation of a selected service fails during Managed PAC Set. Managed PAC preserves the failure's diagnostic without classifying its cause, leaves that service's previous PAC setting unchanged, does not roll back successful services, and waits for a later Gateway-requested Set; it does not change Traffic Projection Current or feature activation. PAC Setting Observation failure is instead a Managed PAC Observation Issue.
-_Avoid_: fatal PAC refresh, PAC URL rollback, whole-runtime failure, silent partial update
-
-**Managed PAC Warning**:
-A typed, surface-neutral, service-identified current diagnostic produced for the Network Service affected by Managed PAC Drift or Managed PAC Update Failure, independently from Managed PAC Observation Issues and source-specific HTTPS Pipeline issues. Managed PAC replaces delivery warnings after each Set and exposes them through the returned or freshly observed Control State; Gateway forwards them without reclassification and does not cache them separately.
-_Avoid_: index-correlated warning, HTTPS Pipeline issue, terminal PAC error, warning history, Gateway warning cache, untyped PAC warning, silent per-service drift
 
 **CA Ownership Marker**:
 The strict seamless-cors-owned current-user CA trust identity used to identify Installed User CA trust for CA lifecycle management.
 _Avoid_: CA footprint, name-contains matching, system-wide CA cleanup, user-authored CA identity
 
 **Cleanup Retry Guidance**:
-A user-facing cleanup behavior where failed cleanup explains that seamless-cors-owned state remains and tells the user to run `seamless-cors stop` again after resolving the OS or permission problem.
-_Avoid_: silent cleanup failure, false cleanup success, manual OS instructions first
+A user-facing cleanup behavior where failed cleanup explains that seamless-cors-owned state may remain and may require manual operating-system PAC correction. Every `stop` attempts cleanup, including when no owner is found, and there is no separate cleanup command or explicit start-then-stop recovery guidance.
+_Avoid_: silent cleanup failure, false cleanup success, owner-dependent cleanup, start-then-stop guidance, cleanup command
 
 **Single User Instance**:
 A gateway ownership rule where only one Gateway Owner may run in a Gateway Coordination Environment at a time, with the Gateway Ownership Lock as authority and the Gateway State Cache as verified discovery data.
@@ -505,11 +477,11 @@ A surface-neutral, non-persistent Start warning containing the actionable cause 
 _Avoid_: runtime state, successful-creation notice, Upstream List File Sync Issue, merged creation and observation error, warning replay
 
 **Upstream List Creation Consent**:
-A fingerprint-bound user decision required when Gateway assesses the fixed path as missing, presented at most once per Start Sequence and authorizing immediate exclusive creation at the disclosed path with the Upstream List module's default contents and any disclosed missing parent directories, independently from Managed PAC Configuration Protection. The default contents are not rendered as part of the consent prompt. Declining preserves the missing path but allows that Start Sequence to continue degraded without asking again; a later Start reassesses, while runtime disappearance never requests consent or recreates the file or its parent.
+A fingerprint-bound user decision required when Gateway assesses the fixed path as missing, presented at most once per Start Sequence and authorizing immediate exclusive creation at the disclosed path with the Upstream List module's default contents and any disclosed missing parent directories, independently from System PAC Configuration Protection. The default contents are not rendered as part of the consent prompt. Declining preserves the missing path but allows that Start Sequence to continue degraded without asking again; a later Start reassesses, while runtime disappearance never requests consent or recreates the file or its parent.
 _Avoid_: combined Start consent, CLI-invented consent, consent error, overwrite authorization, runtime bootstrap, implicit default creation
 
 **Start Guidance**:
-A start-time user-facing output behavior shown only after automatic PAC assessment and Managed PAC Set have been attempted and Gateway Runtime is serving. It reports active traffic outcomes, Blocked HTTPS CORS Demand, Traffic Projection Current, UserCA Assessment Issue, the fixed Managed PAC Service Set and its current exceptions, current Upstream List issues, excluded or unobservable service facts, and per-service Managed PAC delivery warnings when applicable. Guidance never exposes HTTPS Pipeline or presents service selection as proof that every selected service is currently configured.
+A start-time user-facing output behavior shown only after initial System PAC Delivery has been attempted and Gateway Runtime is serving. It reports active traffic outcomes, Blocked HTTPS CORS Demand, Traffic Projection Current, UserCA Assessment Issue, current Upstream List issues, every visible Network Service and its current PAC state, System PAC delivery failures, and whether routing currently uses the runtime's PAC Endpoint.
 _Avoid_: PAC consent preview, pre-activation PAC promise, pre-consent running message, listener-first start output, proxy setup instructions, PAC listener summary, control listener summary
 
 **Start Guidance Detail**:
@@ -517,15 +489,15 @@ A surface-neutral successful start result detail containing the user-relevant Up
 _Avoid_: terminal start text, listener status detail, proxy setup instructions
 
 **Already-Running Start**:
-An idempotent fulfilled start result where executing start against an active Gateway Runtime reports only that the requested running postcondition is already satisfied without mutation. A different invoking working directory does not replace the active Directory Upstream List or add mismatch guidance; runtime-source visibility belongs to status.
-_Avoid_: changed-means-fulfilled, duplicate runtime activation, start failure for active runtime, second owner, configuration mismatch warning, status-shaped start result
+An idempotent fulfilled start result where executing start against an active Gateway Runtime preserves that runtime and requests a fresh System PAC Delivery as an explicit repair attempt. A different invoking working directory does not replace the active Directory Upstream List or add mismatch guidance; runtime-source visibility belongs to status.
+_Avoid_: duplicate runtime activation, start failure for active runtime, second owner, configuration mismatch warning, status-shaped start result, no-op PAC retry
 
 **Execute-Time Start Assessment**:
-A start execution rule that presents Upstream List Creation Consent at most once, applies its accepted mutation immediately, and then automatically fixes the Managed PAC Service Set during Gateway Activation. Members that become absent or foreign before mutation remain selected but are skipped with Managed PAC Warnings, while excluded and newly appearing services do not join.
+A start execution rule that presents Upstream List Creation Consent at most once, applies its accepted mutation immediately, and then performs System PAC Delivery after Gateway Runtime begins serving. Every delivery independently discovers all currently visible Network Services and may adopt newly visible, newly empty, or marker-owned settings.
 _Avoid_: PAC consent, combined consent, fulfilled assessment, successful start assessment, start plan, repeated consent loop, consent-time service expansion
 
 **Single-Flight Start**:
-A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through Upstream List creation assessment and Source establishment, conditional HTTPS Pipeline assessment, PAC assessment, Gateway Activation, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
+A start behavior where a Gateway Owner accepts only one complete Start Sequence at a time, acquiring exclusivity before cleanup and holding it through Upstream List creation assessment and Source establishment, conditional HTTPS Pipeline assessment, Gateway Activation, initial System PAC Delivery, and the returned outcome. Concurrent attempts return already-running or start-already-mutating without duplicating lifecycle work.
 _Avoid_: cross-command lifecycle lock, CA-command blocking, activation-only lock, queued start, duplicate mutation, competing activation, start plan reservation
 
 **Stop-Preempted Start**:
@@ -536,32 +508,28 @@ _Avoid_: stop-busy result, start mutex wait, cleanup-before-cancellation, post-s
 A surface-neutral expected start outcome returned to the original start caller after stop preemption reaches a safe boundary without treating cancellation as an infrastructure failure.
 _Avoid_: context-canceled error, started result, stop failure
 
-**Managed PAC Start Detail**:
-A surface-neutral start result combining the Managed PAC Activation Assessment with the Managed PAC Set outcome: every initially visible Network Service, the fixed Managed PAC Service Set, foreign or unobservable services excluded during assessment, current Managed PAC Observation Issues and delivery warnings, and no-restoration cleanup behavior. It does not claim a live verified set of currently configured services.
-_Avoid_: Managed PAC Consent Detail, Managed PAC Consent Fingerprint, service-selection UI, foreign PAC authorization, consent payload, PAC preview, prompt text
+**System PAC Start Detail**:
+A surface-neutral start result reporting the initial PAC delivery outcome across every then-visible Network Service, including current foreign or unobservable services, delivery failures, whether routing currently uses this runtime's PAC Endpoint, and no-restoration cleanup behavior. It does not fix a service set or prevent Gateway Runtime startup when routing is unavailable.
+_Avoid_: legacy PAC Start Detail, service-selection UI, fixed service set, terminal routing prerequisite, foreign PAC authorization, consent payload, PAC preview, prompt text
 
-**Managed PAC Configuration Protection**:
-A Gateway Activation boundary where empty and marker-owned PAC settings may be managed without confirmation, while foreign and unobservable settings remain excluded rather than being replaced. Because activation never displaces foreign configuration, routine Managed PAC setup requires no user consent.
-_Avoid_: Managed PAC Consent, PAC Replacement Consent, per-service selection, foreign PAC takeover, confirmation for marker-owned residue
-
-**No Manageable PAC Services**:
-A terminal start outcome where every visible Network Service is foreign or unobservable, or no manageable service is visible, so Gateway presents the inspected service detail without starting Gateway Runtime. A direct start process exits because no managed routing can be provided, while a router-hosted attempt leaves its explicitly requested router-only Gateway Owner alive.
-_Avoid_: empty Managed PAC service set, PAC consent, zero-service runtime, foreign service takeover, successful inactive start
+**System PAC Configuration Protection**:
+A System PAC safety rule where empty and marker-owned PAC settings may be changed without confirmation, while foreign and unobservable settings remain excluded rather than replaced. Because System PAC never displaces foreign configuration, routine delivery requires no user consent.
+_Avoid_: PAC Replacement Consent, per-service selection, foreign PAC takeover, confirmation for marker-owned residue
 
 **Independent PAC Lifecycle**:
-A lifecycle boundary where automatic Managed PAC assessment and PAC Routing setup follow gateway start independently of whether the Upstream List currently has active entries.
+A lifecycle boundary where System PAC Delivery follows gateway start independently of whether the Upstream List currently has active entries.
 _Avoid_: domain-gated PAC setup, delayed proxy ownership, route-count-based lifecycle
 
 **CA Trust Consent**:
 A platform approval moment required before adding or replacing Installed User CA trust for HTTPS interception, with gateway context shown only when the platform requires approval.
-_Avoid_: implicit CA trust, repeated consent for unchanged trust, app-only trust prompt, Managed PAC Start Detail
+_Avoid_: implicit CA trust, repeated consent for unchanged trust, app-only trust prompt, System PAC Start Detail
 
 **Independent CA Lifecycle**:
 A lifecycle boundary where CA Trust Consent and Installed User CA mutation occur only through explicit CA Lifecycle Commands rather than gateway start or the Upstream List. Gateway Runtime may be updated as a consequence, while runtime stop does not cancel admitted CA work and owner exit waits for that work to settle.
 _Avoid_: start-time CA trust, stop-cancelled CA command, intent-triggered installation, route-dependent trust setup
 
 **Start Sequence Order**:
-A startup lifecycle order where Gateway Footprint Cleanup, the fixed Upstream List Creation Consent stage, immediate best-effort consented creation, Upstream List observation establishment, and settled UserCA assessment precede beginning a Managed PAC Control Lifetime. Gateway derives demands and HTTPS Pipeline Required from those facts, switches its initial Served Traffic Projection, then requests Managed PAC Set; failed initial delivery keeps Traffic Routing Ready false only when no working current-runtime PAC setting exists and recovery waits for a later delivery request.
+A startup lifecycle order where Gateway State Cache cleanup, the fixed Upstream List Creation Consent stage, immediate best-effort consented creation, Upstream List observation establishment, and settled UserCA assessment precede Gateway Runtime startup. Gateway derives demands and HTTPS Pipeline Required from those facts, switches its initial Served Traffic Projection, begins serving, then requests System PAC Delivery, which directly replaces stale marker-owned settings; delivery failure is reported without ending the runtime, and a later effective Traffic Projection change or repeated start retries delivery.
 _Avoid_: start-time CA installation, PAC-before-runtime serving, PAC-first start, cleanup-after-approval, start guidance before PAC Set
 
 **Minimal Command Surface**:
@@ -613,15 +581,15 @@ A command invocation that asks an existing Gateway Owner to perform user-facing 
 _Avoid_: detached owner, fake foreground control, remote Ctrl-C ownership
 
 **Owner-Routed CA Lifecycle Command**:
-A CA Lifecycle Command behavior where work is sent to an existing Gateway Owner or publishes a Transient Gateway Owner when none exists. This keeps UserCA mutation available during a long-running gateway while the owner coordinates retained UserCA facts, demands, active outcomes, and Managed PAC consequences.
+A CA Lifecycle Command behavior where work is sent to an existing Gateway Owner or publishes a Transient Gateway Owner when none exists. This keeps UserCA mutation available during a long-running gateway while the owner coordinates retained UserCA facts, demands, active outcomes, and System PAC consequences.
 _Avoid_: bypassing owner command authority, ownerless local mutation, separate CA Mutation Lease, separate readiness endpoint, blanket active-runtime rejection
 
 **Gateway Footprint Cleanup**:
-A lifecycle behavior that asks Managed PAC to uninstall stale or intentionally released marker-owned PAC state and independently removes the appropriate Gateway State Cache while leaving Installed User CA state untouched. Direct start holds the Gateway Ownership Lock while cleaning stale cache and PAC state, router-hosted start preserves its live owner cache, and stop removes both when ending ownership.
-_Avoid_: unconditional cache removal, live-owner eviction, runtime cleanup, status cleanup, serve-start cleanup, broad cleanup, CA removal, restore-based cleanup
+A stop behavior that asks System PAC to clean marker-owned PAC state and independently removes the Gateway State Cache while leaving Installed User CA state untouched. It runs as part of stopping a start-hosted or router-only owner and also when `stop` finds no owner; cleanup does not depend on whether that owner ever changed PAC state.
+_Avoid_: live-owner-only cleanup, status cleanup, serve-start cleanup, broad cleanup, CA removal, restore-based cleanup
 
 **No PAC Restoration**:
-A cleanup boundary where Gateway Footprint Cleanup removes seamless-cors-owned managed PAC settings without reconstructing previous machine PAC state.
+A cleanup boundary where Gateway Footprint Cleanup removes seamless-cors-owned PAC settings without reconstructing previous machine PAC state.
 _Avoid_: previous-state rollback, proxy restoration, corporate PAC reconstruction
 
 **Human Status**:
@@ -629,11 +597,11 @@ A status output intended for interactive DEV/QA use rather than machine-readable
 _Avoid_: JSON status, scripting API
 
 **Human Traffic Status**:
-A compact Human Status rendering of HTTP CORS and HTTPS CORS as `active`, `blocked`, or `inactive`, and HTTPS Facade as `active` or `inactive`. Active outcomes describe the Served Traffic Projection through working managed routing; Traffic Projection Current separately reports whether it matches Gateway's latest desired projection, while Managed PAC Warnings report per-service delivery failures. Blocking detail comes from absent working managed routing, established not-usable UserCA guidance, UserCA Assessment Issue, or a demanded feature not yet served, without exposing HTTPS Pipeline.
+A compact Human Status rendering of HTTP CORS and HTTPS CORS as `active`, `blocked`, or `inactive`, and HTTPS Facade as `active` or `inactive`. Active outcomes describe the Served Traffic Projection through working managed routing; Traffic Projection Current separately reports whether it matches Gateway's latest desired projection, while the System PAC Report exposes current routing and per-service issues.
 _Avoid_: Human HTTPS Status, pipeline status, generic HTTPS active, internal state dump
 
 **Read-Only Status**:
-A status behavior that asks an active Managed PAC control for fresh Control State and reports gateway, cleanup-needed, Installed User CA, Human Traffic Status, Traffic Projection Current, per-service Managed PAC Warnings, UserCA Assessment Issue, and stale Gateway State Cache detection without changing proxy settings, CA trust, local CA material, runtime files, discovery state, or Gateway-retained Managed PAC state. Gateway combines Managed PAC Routes Current Endpoint with current PAC Endpoint and Proxy serving facts to derive Traffic Routing Ready for that response rather than latching or reconstructing it from raw PAC settings; Managed PAC Set performs the same observation before mutation without a polling loop.
+A status behavior that requests fresh System PAC Observation and reports gateway, cleanup-needed, Installed User CA, Human Traffic Status, Traffic Projection Current, current Network Service facts and issues, UserCA Assessment Issue, and stale Gateway State Cache detection without changing proxy settings, CA trust, local CA material, runtime files, or discovery state. Gateway combines System PAC Routes Current Endpoint with current PAC Endpoint and Proxy serving facts to derive Traffic Routing Ready for that response rather than latching or reconstructing it from raw PAC settings.
 _Avoid_: status-triggered cleanup, mutating status command
 
 **Gateway Status State**:
@@ -673,7 +641,7 @@ A full-line or inline note in the Upstream List that is ignored during matching.
 _Avoid_: comment-as-entry
 
 **Empty Upstream List**:
-A valid Upstream List state with no active entries, including a file that contains only comments, blank lines, or invalid lines carrying Upstream List Warnings; the gateway keeps managed PAC Routing installed and matches no upstreams until valid Upstream List Entries are added.
+A valid Upstream List state with no active entries, including a file that contains only comments, blank lines, or invalid lines carrying Upstream List Warnings; the gateway keeps System PAC routing installed and matches no upstreams until valid Upstream List Entries are added.
 _Avoid_: startup failure for no active entries, proxy-all fallback
 
 **Upstream List Warning**:
@@ -852,7 +820,7 @@ QA engineer: "No, PAC Routing projects the current effective Upstream List, HTTP
 
 Developer: "How do Upstream List changes reach the operating system proxy?"
 
-QA engineer: "The PAC Endpoint serves the current Generated PAC, and Managed PAC advances its publication generation for every adopted Upstream List Projection, including warning-only changes."
+QA engineer: "The PAC Endpoint serves the current Generated PAC, and System PAC advances its publication generation whenever Gateway requests delivery after an effective Traffic Projection change."
 
 Developer: "Can I avoid changing my system proxy settings?"
 
@@ -888,11 +856,11 @@ QA engineer: "Installed User CA remains available for the next trusted gateway s
 
 Developer: "Will every operating system have the same managed setup in v1?"
 
-QA engineer: "Every supported platform needs a managed PAC adapter; platforms without one are not supported yet."
+QA engineer: "Every supported platform needs a System PAC Network Service adapter; platforms without one are not supported yet."
 
 Developer: "After I update the Upstream List, do I need to restart the gateway?"
 
-QA engineer: "No, Gateway continuously observes the file, adopts every successfully decoded Upstream List Projection, switches to the resulting Traffic Projection, and asks Managed PAC to deliver its PAC URL independently to each managed Network Service."
+QA engineer: "No, Gateway continuously observes the file, switches each effective Traffic Projection, and asks System PAC to discover all visible Network Services and deliver its PAC URL to every safe setting."
 
 Developer: "What happens if I save an invalid config file while the gateway is running?"
 
@@ -916,11 +884,11 @@ QA engineer: "No, Foreground Start keeps the gateway attached and lets Ctrl-C ex
 
 Developer: "Does Ctrl-C clean up the proxy and CA?"
 
-QA engineer: "Ctrl-C executes Owner Stop, which closes traffic and attempts cleanup for seamless-cors-owned managed PAC settings and the Gateway State Cache. Installed User CA trust remains until a CA Lifecycle Command removes it."
+QA engineer: "Ctrl-C executes Owner Stop, which attempts System PAC cleanup while traffic endpoints still serve, then closes traffic and removes the Gateway State Cache. Installed User CA trust remains until a CA Lifecycle Command removes it."
 
-Developer: "What if stop finds only cleanup-needed state?"
+Developer: "What if System PAC cleanup is incomplete?"
 
-QA engineer: "Gateway Footprint Cleanup finishes removing seamless-cors-owned managed PAC settings and the Gateway State Cache before stop exits."
+QA engineer: "Stop still terminates the live Gateway Owner and exits successfully, but prominently reports that PAC state may remain and may require manual correction."
 
 Developer: "Is status intended for scripts?"
 
@@ -936,7 +904,7 @@ QA engineer: "Diagnostic Runtime Endpoint values are shown for troubleshooting, 
 
 Developer: "What if status finds a stale Gateway State Cache?"
 
-QA engineer: "Read-Only Status reports that the gateway is not running and leaves cleanup to start or stop."
+QA engineer: "Read-Only Status reports that the gateway is not running and that stale cache exists, without changing it."
 
 Developer: "Can editing the Upstream List unexpectedly trigger an OS permission prompt?"
 
@@ -964,11 +932,11 @@ QA engineer: "With an active HTTPS Pipeline, install settles the pipeline from i
 
 Developer: "What happens if the gateway crashes after changing my proxy settings?"
 
-QA engineer: "Gateway Footprint Cleanup removes leftover seamless-cors-owned managed PAC settings before a new start or stop finishes."
+QA engineer: "A new start replaces leftover seamless-cors-owned PAC settings with its current PAC Endpoint; `stop` attempts to disable them whether or not an owner is still running."
 
 Developer: "What if I already use a corporate proxy?"
 
-QA engineer: "Managed PAC Configuration Protection excludes foreign PAC settings and reports them without replacing them."
+QA engineer: "System PAC Configuration Protection excludes foreign PAC settings and reports them without replacing them."
 
 Developer: "What do I need to configure before starting?"
 

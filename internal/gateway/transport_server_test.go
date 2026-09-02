@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-func TestCleanupFailedStopStillTerminatesRouter(t *testing.T) {
+func TestIncompleteCleanupStopStillSucceedsAndTerminatesRouter(t *testing.T) {
 	server := newRouter("token", &fakeCommandHandler{})
-	_, err := server.stop(context.Background(), nil)
-	if err == nil {
-		t.Fatal("cleanup-failed Stop should use the error response")
+	output, err := server.stop(context.Background(), nil)
+	if err != nil || len(output.Body.CleanupFailures) != 1 {
+		t.Fatalf("Stop output/error = %#v / %v", output, err)
 	}
 	select {
 	case <-server.ShutdownRequested():
@@ -141,37 +141,6 @@ func TestStartPropagatesRequestContext(t *testing.T) {
 	}
 }
 
-func TestStartFailureUsesSharedErrorShell(t *testing.T) {
-	handler := &fakeCommandHandler{startResult: StartManagedPACSetFailed{Diagnostic: "PAC Set failed"}}
-	server := newRouter("token", handler)
-	req := httptest.NewRequest(http.MethodPost, "/start", strings.NewReader(`{"workingDirectory":"/project"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(tokenHeader, "token")
-	rec := httptest.NewRecorder()
-
-	server.server.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("start status = %d, want %d: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
-	}
-	var body struct {
-		Error gatewayErrorBody `json:"error"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Error.Code != string(StartResultManagedPACSetFailed) {
-		t.Fatalf("failure body = %#v", body)
-	}
-	var details startFailureDetails
-	if err := json.Unmarshal(body.Error.Details, &details); err != nil {
-		t.Fatal(err)
-	}
-	if details.Diagnostic != "PAC Set failed" {
-		t.Fatalf("failure details = %#v", details)
-	}
-}
-
 func TestStartSuccessIsBareSubjectResponse(t *testing.T) {
 	handler := &fakeCommandHandler{startResult: Started{}}
 	server := newRouter("token", handler)
@@ -258,7 +227,7 @@ func (f *fakeCommandHandler) ExecuteStart(ctx context.Context, request StartRequ
 }
 
 func (f *fakeCommandHandler) Stop(context.Context) (StopResult, error) {
-	return StopResult{Kind: StopResultCleanupFailed}, nil
+	return StopResult{Kind: StopResultStopped, CleanupFailures: []CleanupFailure{{Subject: CleanupSubjectSystemPAC, Diagnostic: "uncertain"}}}, nil
 }
 
 func (f *fakeCommandHandler) Status(context.Context, bool) (StatusResult, error) {

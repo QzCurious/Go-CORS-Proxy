@@ -1,5 +1,7 @@
 # Gateway traffic projection and PAC delivery
 
+The Managed PAC delivery, observation, and Traffic Routing Ready integration in this decision are superseded by [ADR-0012](./0012-dynamic-system-pac-lifecycle.md). Gateway still owns coherent Traffic Projection switching and requests delivery only after an effective switch, but System PAC now discovers the eligible service scope per request and returns facts and concrete errors for Gateway-owned reporting.
+
 This decision supersedes the Managed PAC publication model in ADR-0002, the transition-based publication policy in ADR-0003, the independent Proxy-generation and PAC ordering in ADR-0005, and the independently published live HTTPS Facade projection in ADR-0010. Their unaffected ownership, parsing, routing-specificity, forwarding, cleanup, and platform-boundary decisions remain in force.
 
 Gateway owns feature composition. It retains selector and UserCA module facts, derives boolean HTTP CORS Demand and HTTPS CORS Demand, and composes one latest desired Traffic Projection containing a PAC Projection plus matching Proxy and HTTPS Facade configuration. HTTPS Facade remains an automatic ability rather than a demand. Internal HTTPS Pipeline Required is derived from the demands and usable UserCA facts but is not surfaced as feature state.

@@ -35,6 +35,10 @@ PAC URL on eligible system network services. It leaves an existing foreign PAC
 configuration unchanged. Press `Ctrl+C` when finished to stop the gateway and
 remove seamless-cors-owned PAC settings.
 
+The traffic runtime starts before System PAC delivery. PAC discovery, read,
+write, or verification problems are reported without stopping that runtime; a
+later effective routing change or another `start` makes a fresh delivery attempt.
+
 For native HTTPS or the HTTPS Facade, install the development CA and approve the
 operating-system prompt:
 
@@ -191,9 +195,9 @@ The same commands can be invoked through a global installation or with the
 
 | Command | Behavior |
 | ------- | -------- |
-| `seamless-cors start` | Starts the gateway in the foreground, watches both Upstream Lists, and manages eligible PAC settings. A second `start` reports the already-running gateway. |
-| `seamless-cors stop` | Stops a running gateway, or cleans up observable seamless-cors-owned PAC and runtime state left by an earlier process. |
-| `seamless-cors status` | Reports gateway, routing, CORS, facade, Upstream List, PAC, and User CA state without changing it. Output is intended for people rather than a stable scripting interface. |
+| `seamless-cors start` | Starts the gateway in the foreground, watches both Upstream Lists, and delivers PAC to every currently eligible Network Service. A second `start` keeps the runtime and makes another delivery attempt. |
+| `seamless-cors stop` | Stops a running gateway, or cleans up seamless-cors-owned System PAC and runtime state even when no live owner is found. Cleanup uncertainty is reported prominently after the best-effort command completes successfully. |
+| `seamless-cors status` | Freshly observes every visible Network Service and reports gateway, routing, CORS, facade, Upstream List, System PAC, and User CA state without changing it. Retained delivery diagnostics are labeled as historical. Output is intended for people rather than a stable scripting interface. |
 | `seamless-cors install` | Installs, repairs, or renews the current-user development CA. A running gateway adopts the usable CA immediately. |
 | `seamless-cors uninstall` | Removes all seamless-cors User CAs and local CA material. If HTTPS interception is active, asks for confirmation and disables HTTPS while leaving a running gateway's HTTP handling available. |
 | `seamless-cors serve` | Runs only the local gateway control owner. It does not start browser traffic handling or change PAC settings until a separate `start` command activates the runtime. |

@@ -1,6 +1,6 @@
 # Managed PAC lifecycle and publication
 
-The activation-consent and user-accepted service-set portion of this decision is superseded by [ADR-0009](./0009-automatic-managed-pac-activation.md). The projection-publication model is superseded by [ADR-0011](./0011-gateway-traffic-projection-and-pac-delivery.md): Managed PAC now delivers the already-served PAC independently to each Network Service rather than deciding which projection is published. The ownership, fixed service set, serial mutation, warning, observation, and cleanup decisions below remain in force where they do not conflict with ADR-0011.
+This decision is superseded by [ADR-0012](./0012-dynamic-system-pac-lifecycle.md). System PAC replaces the Managed PAC activation, fixed service set, Control lifetime, report, delivery, observation, and cleanup model.
 
 Managed System Proxy uses PAC Routing so unrelated traffic remains direct. Each Gateway Runtime activation starts one Managed PAC control lifetime, discovers every visible network service, observes its PAC setting, exposes foreign or unobservable services as excluded, and fixes every successfully observed marker-owned or empty service as the nonempty Managed PAC Service Set for that lifetime. Network-service discovery failure prevents the assessment because no complete service scope is known. Initially excluded and newly visible services wait for another activation, while every later Set freshly classifies fixed members and a selected service can recover from an observation issue on a later Set without renewed consent.
 

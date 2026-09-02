@@ -158,7 +158,7 @@ func TestUnexpectedRouterTerminationExecutesOwnerStop(t *testing.T) {
 		t.Fatal("owner did not end after Router termination")
 	}
 	if settings.cleanupCalls != 1 {
-		t.Fatalf("Managed PAC cleanup calls = %d, want 1", settings.cleanupCalls)
+		t.Fatalf("System PAC cleanup calls = %d, want 1", settings.cleanupCalls)
 	}
 	if coord.Exists() {
 		t.Fatal("unexpected Router termination preserved Gateway State Cache")

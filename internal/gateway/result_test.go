@@ -12,15 +12,12 @@ func TestEveryCommandResultKindHasItsDomainFulfillment(t *testing.T) {
 		{"start already running", AlreadyRunning{}, CommandFulfilled},
 		{"start owner transition", StartOwnerTransition{}, CommandUnfulfilled},
 		{"start upstream-list creation consent required", StartUpstreamListCreationConsentRequired{}, CommandUnfulfilled},
-		{"start no manageable PAC services", StartNoManageablePACServices{}, CommandUnfulfilled},
-		{"start managed PAC Set failed", StartManagedPACSetFailed{}, CommandUnfulfilled},
 		{"start already mutating", StartAlreadyMutating{}, CommandUnfulfilled},
 		{"start stop cancelled", StartStopCancelled{}, CommandUnfulfilled},
 		{"start cleanup failed", StartCleanupFailed{}, CommandUnfulfilled},
 		{"stop stopped", StopResult{Kind: StopResultStopped}, CommandFulfilled},
 		{"stop not running", StopResult{Kind: StopResultNotRunning}, CommandFulfilled},
-		{"stop cleanup failed", StopResult{Kind: StopResultCleanupFailed}, CommandUnfulfilled},
-		{"stop not running cleanup failed", StopResult{Kind: StopResultNotRunningCleanupFailed}, CommandUnfulfilled},
+		{"stop with incomplete cleanup", StopResult{Kind: StopResultStopped, CleanupFailures: []CleanupFailure{{Subject: CleanupSubjectSystemPAC}}}, CommandFulfilled},
 		{"install installed", InstallResult{Kind: InstallResultInstalled}, CommandFulfilled},
 		{"install already mutating", InstallResult{Kind: InstallResultAlreadyMutating}, CommandUnfulfilled},
 		{"install owner ending", InstallResult{Kind: InstallResultOwnerEnding}, CommandUnfulfilled},
@@ -44,16 +41,15 @@ func TestEveryCommandResultKindHasItsDomainFulfillment(t *testing.T) {
 	}
 }
 
-func TestStopSuccessTransportPreservesManagedPACObservationIssues(t *testing.T) {
+func TestStopSuccessTransportPreservesCleanupFailures(t *testing.T) {
 	want := StopResult{
-		Kind: StopResultStopped,
-		ManagedPACObservationIssues: []ManagedPACObservationIssue{{
-			ServiceName: "VPN",
-			Diagnostic:  "PAC query failed",
-		}},
+		Kind:               StopResultStopped,
+		CleanupFulfillment: CommandUnfulfilled,
+		SystemPACCleanup:   SystemPACReport{Issues: []SystemPACIssue{{Kind: SystemPACIssueVerification, ServiceName: "VPN", Cause: "PAC query failed"}}},
+		CleanupFailures:    []CleanupFailure{{Subject: CleanupSubjectSystemPAC, Diagnostic: "PAC query failed"}},
 	}
 	got := stopSuccessBodyFrom(want).semantic()
-	if len(got.ManagedPACObservationIssues) != 1 || got.ManagedPACObservationIssues[0] != want.ManagedPACObservationIssues[0] {
-		t.Fatalf("round-trip observation issues = %#v", got.ManagedPACObservationIssues)
+	if got.CleanupFulfillment != CommandUnfulfilled || len(got.SystemPACCleanup.Issues) != 1 || got.SystemPACCleanup.Issues[0] != want.SystemPACCleanup.Issues[0] || len(got.CleanupFailures) != 1 || got.CleanupFailures[0] != want.CleanupFailures[0] {
+		t.Fatalf("round-trip cleanup failures = %#v", got.CleanupFailures)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+
+	"github.com/QzCurious/seamless-cors/internal/systempac"
 )
 
 type owner struct {
@@ -19,15 +21,15 @@ type owner struct {
 	lock      *ownerLock
 }
 
-func newOwnerWithCoordinator(pac managedPACCapabilities, ca userCAModule, coord *coordinator) (*owner, error) {
+func newOwnerWithCoordinator(pac systempac.Module, ca userCAModule, coord *coordinator) (*owner, error) {
 	return newOwner(pac, ca, coord, true)
 }
 
-func newTransientOwnerWithCoordinator(pac managedPACCapabilities, ca userCAModule, coord *coordinator) (*owner, error) {
+func newTransientOwnerWithCoordinator(pac systempac.Module, ca userCAModule, coord *coordinator) (*owner, error) {
 	return newOwner(pac, ca, coord, false)
 }
 
-func newOwner(pac managedPACCapabilities, ca userCAModule, coord *coordinator, inspectUserCA bool) (*owner, error) {
+func newOwner(pac systempac.Module, ca userCAModule, coord *coordinator, inspectUserCA bool) (*owner, error) {
 	token, err := randomToken()
 	if err != nil {
 		return nil, err

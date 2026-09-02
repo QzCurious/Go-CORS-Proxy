@@ -67,22 +67,15 @@ type startSuccessBody struct {
 type startFailureDetails struct {
 	UpstreamListCreationConsent *UpstreamListCreationConsent       `json:"upstreamListCreationConsent,omitempty"`
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail `json:"upstreamListCreationWarning,omitempty"`
-	ManagedPAC                  *ManagedPACStartDetail             `json:"managedPac,omitempty"`
-	ManagedPACWarnings          []ManagedPACWarningDetail          `json:"managedPacWarnings,omitempty"`
-	Diagnostic                  string                             `json:"diagnostic,omitempty"`
 	CleanupFailures             []CleanupFailure                   `json:"cleanupFailures,omitempty"`
 }
 
 type stopSuccessBody struct {
-	Changed                     bool                         `json:"changed"`
-	Warnings                    []CommandWarning             `json:"warnings,omitempty"`
-	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
-}
-
-type stopFailureDetails struct {
-	Warnings                    []CommandWarning             `json:"warnings,omitempty"`
-	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
-	CleanupFailures             []CleanupFailure             `json:"cleanupFailures,omitempty"`
+	Changed            bool               `json:"changed"`
+	Warnings           []CommandWarning   `json:"warnings,omitempty"`
+	CleanupFulfillment CommandFulfillment `json:"cleanupFulfillment"`
+	SystemPACCleanup   SystemPACReport    `json:"systemPacCleanup"`
+	CleanupFailures    []CleanupFailure   `json:"cleanupFailures,omitempty"`
 }
 
 type installSuccessBody struct {
@@ -129,14 +122,7 @@ func startFailureDetailsFrom(result StartResult) startFailureDetails {
 	case StartUpstreamListCreationConsentRequired:
 		consent := typed.Consent
 		details.UpstreamListCreationConsent = &consent
-	case StartNoManageablePACServices:
-		detail := typed.Detail
-		details.ManagedPAC = &detail
-	case StartManagedPACSetFailed:
-		details.ManagedPACWarnings = typed.Warnings
-		details.Diagnostic = typed.Diagnostic
 	case StartCleanupFailed:
-		details.ManagedPACWarnings = typed.Warnings
 		details.CleanupFailures = typed.Failures
 	}
 	return details
@@ -151,26 +137,19 @@ func (dto startFailureDetails) semantic(kind StartKind) StartResult {
 		return StartUpstreamListCreationConsentRequired{Consent: *dto.UpstreamListCreationConsent}
 	case StartResultOwnerTransition:
 		return StartOwnerTransition{}
-	case StartResultNoManageablePACServices:
-		if dto.ManagedPAC == nil {
-			return nil
-		}
-		return StartNoManageablePACServices{Detail: *dto.ManagedPAC, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
-	case StartResultManagedPACSetFailed:
-		return StartManagedPACSetFailed{Warnings: dto.ManagedPACWarnings, Diagnostic: dto.Diagnostic, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	case StartResultStartAlreadyMutating:
 		return StartAlreadyMutating{UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	case StartResultStopCancelled:
 		return StartStopCancelled{UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	case StartResultCleanupFailed:
-		return StartCleanupFailed{Warnings: dto.ManagedPACWarnings, Failures: dto.CleanupFailures, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
+		return StartCleanupFailed{Failures: dto.CleanupFailures, UpstreamListCreationWarning: dto.UpstreamListCreationWarning}
 	default:
 		return nil
 	}
 }
 
 func stopSuccessBodyFrom(result StopResult) stopSuccessBody {
-	return stopSuccessBody{Changed: result.Kind == StopResultStopped, Warnings: result.Warnings, ManagedPACObservationIssues: result.ManagedPACObservationIssues}
+	return stopSuccessBody{Changed: result.Kind == StopResultStopped, Warnings: result.Warnings, CleanupFulfillment: result.CleanupFulfillment, SystemPACCleanup: result.SystemPACCleanup, CleanupFailures: result.CleanupFailures}
 }
 
 func (dto stopSuccessBody) semantic() StopResult {
@@ -178,15 +157,7 @@ func (dto stopSuccessBody) semantic() StopResult {
 	if dto.Changed {
 		kind = StopResultStopped
 	}
-	return StopResult{Kind: kind, Warnings: dto.Warnings, ManagedPACObservationIssues: dto.ManagedPACObservationIssues}
-}
-
-func stopFailureDetailsFrom(result StopResult) stopFailureDetails {
-	return stopFailureDetails{result.Warnings, result.ManagedPACObservationIssues, result.CleanupFailures}
-}
-
-func (dto stopFailureDetails) semantic(kind StopResultKind) StopResult {
-	return StopResult{Kind: kind, Warnings: dto.Warnings, ManagedPACObservationIssues: dto.ManagedPACObservationIssues, CleanupFailures: dto.CleanupFailures}
+	return StopResult{Kind: kind, Warnings: dto.Warnings, CleanupFulfillment: dto.CleanupFulfillment, SystemPACCleanup: dto.SystemPACCleanup, CleanupFailures: dto.CleanupFailures}
 }
 
 func installSuccessBodyFrom(result InstallResult) installSuccessBody {

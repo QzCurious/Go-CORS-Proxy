@@ -42,6 +42,7 @@ func TestRejectedSourceFailsClosedWithoutRemovingHealthySource(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
+	drainRuntimeRequests(t, runtime)
 	if err := runtime.applyUpstreamListSourceOutcome(1, fileobservation.Contents{0xff}); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +50,22 @@ func TestRejectedSourceFailsClosedWithoutRemovingHealthySource(t *testing.T) {
 	if state.UpstreamCount != 1 || state.UpstreamLists[1].ProjectionIssue == nil {
 		t.Fatalf("source-local rejection = %#v", state)
 	}
+}
+
+func drainRuntimeRequests(t *testing.T, runtime *trafficRuntime) {
+	t.Helper()
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		for {
+			select {
+			case <-runtime.DeliveryRequests():
+			case <-runtime.UserCAAssessmentRequests():
+			case <-stop:
+				return
+			}
+		}
+	}()
 }
 
 func TestSourceReadFailureRetainsProjection(t *testing.T) {
@@ -90,7 +107,10 @@ func TestTrafficDemandAndServedOutcomeDerivation(t *testing.T) {
 			}
 			defer closeTrafficTestRuntime(runtime)
 			if tt.ca.Usable {
-				runtime.AdoptUserCA(tt.ca, nil)
+				done := make(chan struct{})
+				go func() { runtime.AdoptUserCA(tt.ca, nil); close(done) }()
+				<-runtime.DeliveryRequests()
+				<-done
 			}
 			state := runtime.snapshot()
 			if state.HTTPDemand != tt.httpDemand || state.HTTPSDemand != tt.httpsDemand ||
@@ -137,7 +157,10 @@ func TestTrafficProjectionSwitchPublishesPACAndProxyTogether(t *testing.T) {
 	if strings.Contains(before.pacContent, `"scheme":"https"`) {
 		t.Fatalf("initial PAC unexpectedly contains HTTPS: %s", before.pacContent)
 	}
-	runtime.AdoptUserCA(testUserCAState(t, time.Now().Add(time.Hour), false), nil)
+	done := make(chan struct{})
+	go func() { runtime.AdoptUserCA(testUserCAState(t, time.Now().Add(time.Hour), false), nil); close(done) }()
+	<-runtime.DeliveryRequests()
+	<-done
 	after := runtime.live.current.Load()
 	if before == after || !strings.Contains(after.pacContent, `"scheme":"https"`) || after.proxy == nil {
 		t.Fatalf("served switch did not publish coherent projection: before=%p after=%p", before, after)
@@ -154,7 +177,12 @@ func TestSemanticallyEquivalentSourceUpdateDoesNotRequestDelivery(t *testing.T) 
 	}
 	defer closeTrafficTestRuntime(runtime)
 	before := runtime.live.current.Load()
-	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents("A.EXAMPLE.TEST\nb.example.test\nhttps://bad.example.test/path\n")); err != nil {
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.applyUpstreamListOutcome(fileobservation.Contents("A.EXAMPLE.TEST\nb.example.test\nhttps://bad.example.test/path\n"))
+	}()
+	<-runtime.UserCAAssessmentRequests()
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if runtime.live.current.Load() != before {
@@ -173,31 +201,35 @@ func TestAdoptedUpdateRequestsUserCAReassessmentOnlyWhenNotUsable(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer closeTrafficTestRuntime(runtime)
-	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents("api.example.test\n")); err != nil {
-		t.Fatal(err)
-	}
+	deliveries := runtime.DeliveryRequests()
+	assessments := runtime.UserCAAssessmentRequests()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- runtime.applyUpstreamListOutcome(fileobservation.Contents("api.example.test\n")) }()
+	<-deliveries
 	select {
-	case kind := <-runtime.RuntimeChanges():
-		if kind != UserCAAssessmentRequested {
-			t.Fatalf("change = %v", kind)
-		}
+	case <-assessments:
 	case <-time.After(time.Second):
 		t.Fatal("not-usable UserCA did not request reassessment")
 	}
-
-	runtime.AdoptUserCA(testUserCAState(t, time.Now().Add(time.Hour), false), nil)
-	select {
-	case <-runtime.RuntimeChanges():
-	default:
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
 	}
-	if err := runtime.applyUpstreamListOutcome(fileobservation.Contents("other.example.test\n")); err != nil {
+
+	adopted := make(chan struct{})
+	go func() { runtime.AdoptUserCA(testUserCAState(t, time.Now().Add(time.Hour), false), nil); close(adopted) }()
+	<-deliveries
+	<-adopted
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- runtime.applyUpstreamListOutcome(fileobservation.Contents("other.example.test\n"))
+	}()
+	<-deliveries
+	if err := <-secondDone; err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case kind := <-runtime.RuntimeChanges():
-		if kind == UserCAAssessmentRequested {
-			t.Fatal("usable UserCA was reassessed after source update")
-		}
+	case <-assessments:
+		t.Fatal("usable UserCA was reassessed after source update")
 	case <-time.After(100 * time.Millisecond):
 	}
 }

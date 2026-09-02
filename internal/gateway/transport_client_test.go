@@ -48,25 +48,6 @@ func TestStartSendsTypedRequestWithOwnerToken(t *testing.T) {
 	}
 }
 
-func TestStartFailureReturnsSemanticResult(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"code":"managed-pac-set-failed","message":"Gateway Start was not fulfilled.","details":{"diagnostic":"PAC Set failed","upstreamListCreationWarning":{"cause":"creation denied"}}}}`))
-	}))
-	defer server.Close()
-	client := newClient(stateCache{HTTPRouterListen: server.Listener.Addr().String()})
-
-	result, err := client.Start(context.Background(), StartRequest{WorkingDirectory: "/project"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	failed, ok := result.(StartManagedPACSetFailed)
-	if !ok || failed.Diagnostic != "PAC Set failed" || failed.UpstreamListCreationWarningDetail() == nil || failed.UpstreamListCreationWarningDetail().Cause != "creation denied" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
 func TestCommandClientHasNoHiddenTotalTimeout(t *testing.T) {
 	client := newClient(stateCache{})
 	if client.httpClient.Timeout != 0 {

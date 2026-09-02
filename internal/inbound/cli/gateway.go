@@ -79,12 +79,6 @@ func startWithContextAndInput(ctx context.Context, stdin io.Reader, stdout io.Wr
 	if result.Kind() == gateway.StartResultStartAlreadyMutating {
 		return fmt.Errorf("CA operation in progress; retry start")
 	}
-	if result.Kind() == gateway.StartResultNoManageablePACServices {
-		return fmt.Errorf("gateway start failed: no manageable PAC services")
-	}
-	if failed, ok := result.(gateway.StartManagedPACSetFailed); ok {
-		return fmt.Errorf("gateway start failed: %s", failed.Diagnostic)
-	}
 	return fmt.Errorf("gateway start was not fulfilled: %s", result.Kind())
 }
 
@@ -313,53 +307,35 @@ func renderStartResult(stdout io.Writer, result gateway.StartResult) {
 				fmt.Fprintln(stdout, "installed-ca-renewal: due")
 				fmt.Fprintln(stdout, "action: Run `seamless-cors install` to renew it.")
 			}
-			if len(guidance.ManagedPAC.ServiceSet) > 0 {
-				fmt.Fprintln(stdout, "Services selected for automatic proxy management:")
-				for _, service := range guidance.ManagedPAC.ServiceSet {
-					fmt.Fprintf(stdout, "  - %s\n", service)
-				}
-			}
-			renderManagedPACExcludedServices(stdout, guidance.ManagedPAC)
+			renderSystemPACReport(stdout, "system-pac-delivery", guidance.SystemPAC)
 			renderStartUpstreamListIssues(stdout, guidance.UpstreamLists)
-			renderManagedPACWarnings(stdout, guidance.ManagedPAC.Warnings)
-			renderManagedPACObservationIssues(stdout, guidance.ManagedPAC.ObservationIssues)
 		}
 	case gateway.StartResultAlreadyRunning:
 		fmt.Fprintln(stdout, "seamless-cors already running")
 	case gateway.StartResultCleanupFailed:
 		fmt.Fprintln(stdout, "seamless-cors start cleanup failed")
-		if cleanup, ok := result.(gateway.StartCleanupFailed); ok {
-			renderManagedPACWarnings(stdout, cleanup.Warnings)
-		}
-	case gateway.StartResultNoManageablePACServices:
-		fmt.Fprintln(stdout, "seamless-cors could not start: no manageable PAC services")
-		if noServices, ok := result.(gateway.StartNoManageablePACServices); ok {
-			renderManagedPACExcludedServices(stdout, noServices.Detail)
-			renderManagedPACObservationIssues(stdout, noServices.Detail.ObservationIssues)
-		}
-	case gateway.StartResultManagedPACSetFailed:
-		fmt.Fprintln(stdout, "seamless-cors could not start: Managed PAC Set failed")
-		if failed, ok := result.(gateway.StartManagedPACSetFailed); ok {
-			renderManagedPACWarnings(stdout, failed.Warnings)
-		}
 	}
 }
 
-func renderManagedPACExcludedServices(stdout io.Writer, detail gateway.ManagedPACStartDetail) {
-	printedHeader := false
-	for _, state := range detail.CurrentPACState {
-		if state.Manageable {
-			continue
+func renderSystemPACReport(stdout io.Writer, label string, report gateway.SystemPACReport) {
+	if report.Generation > 0 {
+		fmt.Fprintf(stdout, "%s-generation: %d\n", label, report.Generation)
+	}
+	for _, service := range report.Services {
+		fmt.Fprintf(stdout, "%s-service: %s: %s", label, service.Name, service.Ownership)
+		if service.Enabled {
+			fmt.Fprint(stdout, ": enabled")
+		} else {
+			fmt.Fprint(stdout, ": disabled")
 		}
-		if !printedHeader {
-			fmt.Fprintln(stdout, "Network services left unchanged:")
-			printedHeader = true
+		fmt.Fprintln(stdout)
+	}
+	for _, issue := range report.Issues {
+		if issue.ServiceName == "" {
+			fmt.Fprintf(stdout, "%s-issue: %s: %s\n", label, issue.Kind, issue.Cause)
+		} else {
+			fmt.Fprintf(stdout, "%s-issue: %s: %s: %s\n", label, issue.Kind, issue.ServiceName, issue.Cause)
 		}
-		if state.Ownership == gateway.PACOwnershipUnknown {
-			fmt.Fprintf(stdout, "  %s: proxy settings could not be read\n", state.ServiceName)
-			continue
-		}
-		fmt.Fprintf(stdout, "  %s: another PAC configuration is present\n", state.ServiceName)
 	}
 }
 
@@ -387,12 +363,15 @@ func renderStopResult(stdout io.Writer, result gateway.StopResult) {
 		fmt.Fprintln(stdout, "seamless-cors stop requested")
 	case gateway.StopResultNotRunning:
 		fmt.Fprintln(stdout, "seamless-cors stop requested; no running seamless-cors found")
-	case gateway.StopResultCleanupFailed:
-		fmt.Fprintln(stdout, "seamless-cors stop cleanup failed")
-	case gateway.StopResultNotRunningCleanupFailed:
-		fmt.Fprintln(stdout, "seamless-cors stop cleanup failed; no running seamless-cors found")
 	}
-	renderManagedPACObservationIssues(stdout, result.ManagedPACObservationIssues)
+	if len(result.CleanupFailures) > 0 {
+		fmt.Fprintln(stdout, "warning: cleanup is incomplete; owned PAC or Gateway state may remain")
+		for _, failure := range result.CleanupFailures {
+			fmt.Fprintf(stdout, "cleanup-issue: %s: %s\n", failure.Subject, failure.Diagnostic)
+		}
+		fmt.Fprintln(stdout, "action: Check System PAC settings and rerun `seamless-cors stop`.")
+	}
+	renderSystemPACReport(stdout, "system-pac-cleanup", result.SystemPACCleanup)
 }
 
 func renderInstallResult(stdout io.Writer, result gateway.InstallResult) {
@@ -446,18 +425,12 @@ func renderStatus(stdout io.Writer, result gateway.StatusResult) {
 		}
 		renderUpstreamListSources(stdout, result.Runtime.UpstreamLists)
 		fmt.Fprintf(stdout, "upstreams: %d\n", result.Runtime.UpstreamCount)
-		if result.Runtime.ManagedPACActive {
-			fmt.Fprintln(stdout, "managed-pac: active")
-		} else {
-			fmt.Fprintln(stdout, "managed-pac: inactive")
+		if result.Runtime.LatestSystemPACDelivery != nil {
+			renderSystemPACReport(stdout, "system-pac-historical-delivery", *result.Runtime.LatestSystemPACDelivery)
 		}
-		if len(result.Runtime.ManagedPACServices) > 0 {
-			fmt.Fprintf(stdout, "managed-pac-services: %s\n", strings.Join(result.Runtime.ManagedPACServices, ", "))
-		}
-		renderManagedPACWarnings(stdout, result.Runtime.ManagedPACWarnings)
-		renderManagedPACObservationIssues(stdout, result.Runtime.ManagedPACObservationIssues)
 		renderTrafficStatus(stdout, result.Runtime.Traffic)
 	}
+	renderSystemPACReport(stdout, "system-pac-current", result.SystemPAC)
 	fmt.Fprintf(stdout, "installed-ca: %s\n", result.InstalledCA.Health)
 	if !result.InstalledCA.Expires.IsZero() {
 		fmt.Fprintf(stdout, "installed-ca-expires: %s\n", result.InstalledCA.Expires.Format("2006-01-02"))
@@ -502,26 +475,6 @@ func renderUserCAAssessmentIssue(stdout io.Writer, issue *gateway.UserCAAssessme
 func renderUserCAInstallGuidance(stdout io.Writer, installed gateway.InstalledCAStatusDetail, issue *gateway.UserCAAssessmentIssue) {
 	if issue == nil && installed.Health == gateway.CAHealthNotUsable {
 		fmt.Fprintln(stdout, "action: Run `seamless-cors install` to install or repair the User CA.")
-	}
-}
-
-func renderManagedPACWarnings(stdout io.Writer, warnings []gateway.ManagedPACWarningDetail) {
-	for _, warning := range warnings {
-		if warning.ServiceName == "" {
-			fmt.Fprintf(stdout, "managed-pac-warning: %s\n", warning.Diagnostic)
-			continue
-		}
-		fmt.Fprintf(stdout, "managed-pac-warning: %s: %s\n", warning.ServiceName, warning.Diagnostic)
-	}
-}
-
-func renderManagedPACObservationIssues(stdout io.Writer, issues []gateway.ManagedPACObservationIssue) {
-	for _, issue := range issues {
-		if issue.ServiceName == "" {
-			fmt.Fprintf(stdout, "managed-pac-observation-issue: %s\n", issue.Diagnostic)
-			continue
-		}
-		fmt.Fprintf(stdout, "managed-pac-observation-issue: %s: %s\n", issue.ServiceName, issue.Diagnostic)
 	}
 }
 

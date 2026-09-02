@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/systempac"
 	"github.com/QzCurious/seamless-cors/internal/upstreamlist"
 )
 
@@ -33,8 +33,6 @@ const (
 	StartResultAlreadyRunning                      StartKind = "already-running"
 	StartResultOwnerTransition                     StartKind = "owner-transition"
 	StartResultUpstreamListCreationConsentRequired StartKind = "upstream-list-creation-consent-required"
-	StartResultNoManageablePACServices             StartKind = "no-manageable-pac-services"
-	StartResultManagedPACSetFailed                 StartKind = "managed-pac-set-failed"
 	StartResultStartAlreadyMutating                StartKind = "start-already-mutating"
 	StartResultStopCancelled                       StartKind = "stop-cancelled"
 	StartResultCleanupFailed                       StartKind = "cleanup-failed"
@@ -88,21 +86,6 @@ type UpstreamListCreationConsentInput struct {
 	Fingerprint UpstreamListCreationFingerprint `json:"fingerprint,omitempty"`
 }
 
-// StartNoManageablePACServices reports that the Managed PAC Activation
-// Assessment selected no services. Detail contains that assessment.
-type StartNoManageablePACServices struct {
-	Detail                      ManagedPACStartDetail
-	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
-}
-
-// StartManagedPACSetFailed reports a failed Managed PAC Set and any warnings
-// produced while attempting it.
-type StartManagedPACSetFailed struct {
-	Warnings                    []ManagedPACWarningDetail
-	Diagnostic                  string
-	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
-}
-
 // StartAlreadyMutating reports that another start/CA mutation is in progress.
 type StartAlreadyMutating struct {
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
@@ -113,11 +96,8 @@ type StartStopCancelled struct {
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
-// StartCleanupFailed reports cleanup failures.  Warnings are retained when
-// they were produced by a failed Managed PAC Set before cleanup.
 type StartCleanupFailed struct {
 	Failures                    []CleanupFailure
-	Warnings                    []ManagedPACWarningDetail
 	UpstreamListCreationWarning *UpstreamListCreationWarningDetail
 }
 
@@ -164,27 +144,7 @@ func (StartUpstreamListCreationConsentRequired) UpstreamListCreationWarningDetai
 	return nil
 }
 func (StartUpstreamListCreationConsentRequired) startResult() {}
-func (StartNoManageablePACServices) Kind() StartKind {
-	return StartResultNoManageablePACServices
-}
-func (StartNoManageablePACServices) Fulfillment() CommandFulfillment {
-	return startFulfillment(StartResultNoManageablePACServices)
-}
-func (r StartNoManageablePACServices) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
-	return r.UpstreamListCreationWarning
-}
-func (StartNoManageablePACServices) startResult() {}
-func (StartManagedPACSetFailed) Kind() StartKind {
-	return StartResultManagedPACSetFailed
-}
-func (StartManagedPACSetFailed) Fulfillment() CommandFulfillment {
-	return startFulfillment(StartResultManagedPACSetFailed)
-}
-func (r StartManagedPACSetFailed) UpstreamListCreationWarningDetail() *UpstreamListCreationWarningDetail {
-	return r.UpstreamListCreationWarning
-}
-func (StartManagedPACSetFailed) startResult() {}
-func (StartAlreadyMutating) Kind() StartKind  { return StartResultStartAlreadyMutating }
+func (StartAlreadyMutating) Kind() StartKind                  { return StartResultStartAlreadyMutating }
 func (StartAlreadyMutating) Fulfillment() CommandFulfillment {
 	return startFulfillment(StartResultStartAlreadyMutating)
 }
@@ -209,31 +169,48 @@ func (r StartCleanupFailed) UpstreamListCreationWarningDetail() *UpstreamListCre
 }
 func (StartCleanupFailed) startResult() {}
 
-type ManagedPACStartDetail struct {
-	CurrentPACState   []ManagedPACServiceState     `json:"currentPacState"`
-	ObservationIssues []ManagedPACObservationIssue `json:"observationIssues,omitempty"`
-	ServiceSet        []string                     `json:"serviceSet"`
-	CleanupMode       CleanupMode                  `json:"cleanupMode"`
-	Warnings          []ManagedPACWarningDetail    `json:"warnings,omitempty"`
+type SystemPACServiceState struct {
+	Name      string             `json:"name"`
+	URL       string             `json:"url"`
+	Enabled   bool               `json:"enabled"`
+	Ownership SystemPACOwnership `json:"ownership"`
 }
 
-type CleanupMode string
-
-const CleanupModeNoPACRestoration CleanupMode = "no-pac-restoration"
-
-type ManagedPACServiceState = managedpac.AssessedService
-type PACOwnership = managedpac.Ownership
+type SystemPACOwnership string
 
 const (
-	PACOwnershipUnknown = managedpac.OwnershipUnknown
-	PACOwnershipEmpty   = managedpac.OwnershipEmpty
-	PACOwnershipOwned   = managedpac.OwnershipOwned
-	PACOwnershipForeign = managedpac.OwnershipForeign
+	SystemPACOwnershipUnknown SystemPACOwnership = "unknown"
+	SystemPACOwnershipEmpty   SystemPACOwnership = "empty"
+	SystemPACOwnershipOwned   SystemPACOwnership = "owned"
+	SystemPACOwnershipForeign SystemPACOwnership = "foreign"
 )
+
+type SystemPACIssueKind string
+
+const (
+	SystemPACIssueDiscovery    SystemPACIssueKind = "discovery"
+	SystemPACIssueObservation  SystemPACIssueKind = "observation"
+	SystemPACIssueMutation     SystemPACIssueKind = "mutation"
+	SystemPACIssueVerification SystemPACIssueKind = "verification"
+	SystemPACIssueResidue      SystemPACIssueKind = "residue"
+)
+
+type SystemPACIssue struct {
+	Kind        SystemPACIssueKind `json:"kind"`
+	ServiceName string             `json:"serviceName,omitempty"`
+	Cause       string             `json:"cause"`
+}
+
+type SystemPACReport struct {
+	Generation            uint64                  `json:"generation,omitempty"`
+	Services              []SystemPACServiceState `json:"services"`
+	RoutesCurrentEndpoint bool                    `json:"routesCurrentEndpoint"`
+	Issues                []SystemPACIssue        `json:"issues,omitempty"`
+}
 
 type StartGuidance struct {
 	UpstreamLists []UpstreamListSourceDetail `json:"upstreamLists"`
-	ManagedPAC    ManagedPACStartDetail      `json:"managedPac"`
+	SystemPAC     SystemPACReport            `json:"systemPac"`
 	Traffic       TrafficStatusDetail        `json:"traffic"`
 	InstalledCA   InstalledCAStatusDetail    `json:"installedCA"`
 	UserCAIssue   *UserCAAssessmentIssue     `json:"userCAAssessmentIssue,omitempty"`
@@ -281,24 +258,20 @@ type UpstreamListProjectionIssue struct {
 type StopResultKind string
 
 const (
-	StopResultStopped                 StopResultKind = "stopped"
-	StopResultNotRunning              StopResultKind = "not-running"
-	StopResultCleanupFailed           StopResultKind = "cleanup-failed"
-	StopResultNotRunningCleanupFailed StopResultKind = "not-running-cleanup-failed"
+	StopResultStopped    StopResultKind = "stopped"
+	StopResultNotRunning StopResultKind = "not-running"
 )
 
 type StopResult struct {
-	Kind                        StopResultKind
-	Warnings                    []CommandWarning
-	ManagedPACObservationIssues []ManagedPACObservationIssue
-	CleanupFailures             []CleanupFailure
+	Kind               StopResultKind
+	Warnings           []CommandWarning
+	CleanupFulfillment CommandFulfillment
+	SystemPACCleanup   SystemPACReport
+	CleanupFailures    []CleanupFailure
 }
 
 func (r StopResult) Fulfillment() CommandFulfillment {
-	if r.Kind == StopResultStopped || r.Kind == StopResultNotRunning {
-		return CommandFulfilled
-	}
-	return CommandUnfulfilled
+	return CommandFulfilled
 }
 
 type CleanupFailure struct {
@@ -309,7 +282,7 @@ type CleanupFailure struct {
 type CleanupSubjectKind string
 
 const (
-	CleanupSubjectManagedPAC        CleanupSubjectKind = "managed-pac"
+	CleanupSubjectSystemPAC         CleanupSubjectKind = "system-pac"
 	CleanupSubjectGatewayStateCache CleanupSubjectKind = "gateway-state-cache"
 )
 
@@ -400,6 +373,7 @@ type StatusReport struct {
 	State                 GatewayStatusKind       `json:"state"`
 	Owner                 *OwnerStatusDetail      `json:"owner,omitempty"`
 	Runtime               *RuntimeStatusDetail    `json:"runtime,omitempty"`
+	SystemPAC             SystemPACReport         `json:"systemPac"`
 	Cleanup               CleanupStatusDetail     `json:"cleanup"`
 	InstalledCA           InstalledCAStatusDetail `json:"installedCA"`
 	UserCAAssessmentIssue *UserCAAssessmentIssue  `json:"userCAAssessmentIssue,omitempty"`
@@ -417,15 +391,12 @@ type OwnerStatusDetail struct {
 }
 
 type RuntimeStatusDetail struct {
-	ProxyListen                 string                       `json:"proxyListen"`
-	PACListen                   string                       `json:"pacListen"`
-	UpstreamLists               []UpstreamListSourceDetail   `json:"upstreamLists"`
-	UpstreamCount               int                          `json:"upstreamCount"`
-	Traffic                     TrafficStatusDetail          `json:"traffic"`
-	ManagedPACActive            bool                         `json:"managedPacActive"`
-	ManagedPACServices          []string                     `json:"managedPacServices,omitempty"`
-	ManagedPACWarnings          []ManagedPACWarningDetail    `json:"managedPacWarnings,omitempty"`
-	ManagedPACObservationIssues []ManagedPACObservationIssue `json:"managedPacObservationIssues,omitempty"`
+	ProxyListen             string                     `json:"proxyListen"`
+	PACListen               string                     `json:"pacListen"`
+	UpstreamLists           []UpstreamListSourceDetail `json:"upstreamLists"`
+	UpstreamCount           int                        `json:"upstreamCount"`
+	Traffic                 TrafficStatusDetail        `json:"traffic"`
+	LatestSystemPACDelivery *SystemPACReport           `json:"latestSystemPacDelivery,omitempty"`
 }
 
 type TrafficFeatureState string
@@ -453,16 +424,6 @@ type UserCACleanupIssue struct {
 	Cause  string `json:"cause"`
 	Action string `json:"action,omitempty"`
 }
-
-type ManagedPACWarningKind = managedpac.WarningKind
-
-const (
-	ManagedPACWarningDrift        = managedpac.WarningDrift
-	ManagedPACWarningUpdateFailed = managedpac.WarningUpdateFailed
-)
-
-type ManagedPACWarningDetail = managedpac.Warning
-type ManagedPACObservationIssue = managedpac.ObservationIssue
 
 type CleanupStatusDetail struct {
 	State    CleanupStatusState           `json:"state"`
@@ -500,9 +461,9 @@ const (
 
 type lifecycle struct {
 	mu                     sync.Mutex
+	deliveryMu             sync.Mutex
 	caAdmissionMu          sync.Mutex
-	managedPACActivation   managedpac.Activation
-	managedPACFootprint    managedpac.Footprint
+	systemPAC              systempac.Module
 	userCA                 userCAModule
 	userCAState            userCAState
 	userCAAssessmentErr    error
@@ -512,7 +473,6 @@ type lifecycle struct {
 	routerListen           string
 	ownerCache             stateCache
 	startMutating          bool
-	startCleanupComplete   bool
 	startCancel            context.CancelFunc
 	startDone              chan struct{}
 	ownerEnding            bool
@@ -526,7 +486,7 @@ type lifecycle struct {
 
 type activeRuntime struct {
 	engine             *trafficRuntime
-	managedPAC         managedpac.Control
+	latestPACDelivery  *SystemPACReport
 	ctx                context.Context
 	cancel             context.CancelFunc
 	done               chan error
@@ -542,16 +502,16 @@ const (
 	runtimePhaseRunning  runtimePhase = "running"
 )
 
-func newLifecycle(pac managedPACCapabilities, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
+func newLifecycle(pac systempac.Module, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
 	return newLifecycleState(pac, ca, coord, routerListen, true)
 }
 
-func newLifecycleUninspected(pac managedPACCapabilities, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
+func newLifecycleUninspected(pac systempac.Module, ca userCAModule, coord *coordinator, routerListen string) (*lifecycle, error) {
 	return newLifecycleState(pac, ca, coord, routerListen, false)
 }
 
 func newLifecycleState(
-	pac managedPACCapabilities,
+	pac systempac.Module,
 	ca userCAModule,
 	coord *coordinator,
 	routerListen string,
@@ -572,7 +532,7 @@ func newLifecycleState(
 		}
 	}
 	if pac == nil {
-		pac = openSystemManagedPAC()
+		pac = openSystemPAC()
 	}
 	var initial userCAState
 	var assessmentErr error
@@ -580,8 +540,7 @@ func newLifecycleState(
 		initial, assessmentErr = ca.Inspect(context.Background())
 	}
 	return &lifecycle{
-		managedPACActivation:   pac,
-		managedPACFootprint:    pac,
+		systemPAC:              pac,
 		userCA:                 ca,
 		userCAState:            initial,
 		userCAAssessmentErr:    assessmentErr,
@@ -607,22 +566,6 @@ func (f *lifecycle) SetOwnerCache(cache stateCache) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ownerCache = cache
-}
-
-// MarkStartCleanupComplete records direct-start cleanup performed before the
-// owner claimed its cache. Router-hosted starts deliberately do not use it.
-func (f *lifecycle) MarkStartCleanupComplete() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.startCleanupComplete = true
-}
-
-func (f *lifecycle) takeStartCleanupComplete() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	complete := f.startCleanupComplete
-	f.startCleanupComplete = false
-	return complete
 }
 
 func (f *lifecycle) scheduleUserCADeadline(active *activeRuntime, current userCAState) {
@@ -783,7 +726,11 @@ func (f *lifecycle) ExecuteStart(ctx context.Context, request StartRequest) (Sta
 		return StartAlreadyMutating{}, nil
 	}
 	if f.runtime != nil {
+		active := f.runtime
 		f.mu.Unlock()
+		if _, delivered := f.deliverSystemPAC(ctx, active); !delivered {
+			return StartStopCancelled{}, nil
+		}
 		return AlreadyRunning{}, nil
 	}
 	if f.startMutating {
@@ -825,7 +772,6 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	startCancel := f.startCancel
 	startDone := f.startDone
 	active := f.runtime
-	f.runtime = nil
 	ownerCache := f.ownerCache
 	f.mu.Unlock()
 	if startCancel != nil {
@@ -833,44 +779,42 @@ func (f *lifecycle) Stop(ctx context.Context) (StopResult, error) {
 	}
 	if active != nil {
 		f.cancelUserCADeadline(active)
-		if err := active.engine.CloseTraffic(); err != nil {
-			warnings = append(warnings, CommandWarning{Kind: CommandWarningRuntimeCloseFailed, Diagnostic: err.Error()})
-		}
-		active.cancel()
 	}
 	var cleanupFailures []CleanupFailure
-	var observationIssues []ManagedPACObservationIssue
-	var failure *CleanupFailure
-	if active != nil && active.managedPAC != nil {
-		observationIssues, failure = closeManagedPAC(active.managedPAC)
-	}
 	if startDone != nil {
 		<-startDone
 	}
+	f.deliveryMu.Lock()
+	cleanupServices, cleanupErr := f.systemPAC.Cleanup(ctx)
+	if cleanupErr != nil {
+		cleanupFailures = append(cleanupFailures, CleanupFailure{Subject: CleanupSubjectSystemPAC, Diagnostic: cleanupErr.Error()})
+	}
+	f.deliveryMu.Unlock()
+	if active != nil {
+		active.cancel()
+		if err := active.engine.CloseTraffic(); err != nil {
+			warnings = append(warnings, CommandWarning{Kind: CommandWarningRuntimeCloseFailed, Diagnostic: err.Error()})
+		}
+	}
+	f.mu.Lock()
+	if f.runtime == active {
+		f.runtime = nil
+	}
+	f.mu.Unlock()
 	// Once traffic and any preempted Start have settled, wait for admitted
 	// owner-owned CA work before durable footprint cleanup.
 	f.caAdmissionMu.Lock()
 	f.caAdmissionMu.Unlock()
-	if active == nil || active.managedPAC == nil {
-		observationIssues, failure = cleanManagedPAC(ctx, f.managedPACFootprint)
-	}
-	if failure != nil {
-		cleanupFailures = append(cleanupFailures, *failure)
-	}
 	var ownedCache *stateCache
 	if ownerCache.HTTPRouterListen != "" && ownerCache.Token != "" {
 		ownedCache = &ownerCache
 	}
 	cleanupFailures = append(cleanupFailures, cleanGatewayStateCache(f.coord, ownedCache)...)
+	cleanupFulfillment := CommandFulfilled
 	if len(cleanupFailures) > 0 {
-		return StopResult{
-			Kind:                        StopResultCleanupFailed,
-			Warnings:                    warnings,
-			ManagedPACObservationIssues: observationIssues,
-			CleanupFailures:             cleanupFailures,
-		}, nil
+		cleanupFulfillment = CommandUnfulfilled
 	}
-	return StopResult{Kind: StopResultStopped, Warnings: warnings, ManagedPACObservationIssues: observationIssues}, nil
+	return StopResult{Kind: StopResultStopped, Warnings: warnings, CleanupFulfillment: cleanupFulfillment, SystemPACCleanup: cleanupSystemPACReport(cleanupServices, cleanupErr), CleanupFailures: cleanupFailures}, nil
 }
 
 func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error) {
@@ -883,19 +827,24 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 	caMutating := f.caMutating
 	caCleanupIssue := f.userCACleanupIssue
 	var phase runtimePhase
-	var managedPACControl managedpac.Control
+	var latestPACDelivery *SystemPACReport
 	if active != nil {
 		phase = active.phase
-		if active.managedPAC != nil {
-			managedPACControl = active.managedPAC
-		}
+		latestPACDelivery = active.latestPACDelivery
 	}
 	f.mu.Unlock()
+	var endpoint string
+	if active != nil {
+		endpoint = active.engine.PACListen()
+	}
+	pacState, pacErr := f.systemPAC.Observe(ctx, endpoint)
+	currentPAC := systemPACReport(pacState, pacErr)
 	result := StatusResult{
 		Kind: StatusResultReported,
 		StatusReport: StatusReport{
 			State:                 GatewayStatusNotRunning,
-			Cleanup:               f.cleanupStatus(ctx, stale, active != nil, ownerCache),
+			SystemPAC:             currentPAC,
+			Cleanup:               f.cleanupStatus(stale, ownerCache, currentPAC),
 			InstalledCA:           installedCAStatus(caState, caAssessmentErr, caMutating, caCleanupIssue),
 			UserCAAssessmentIssue: userCAAssessmentIssue(caAssessmentErr),
 		},
@@ -912,31 +861,17 @@ func (f *lifecycle) Status(ctx context.Context, stale bool) (StatusResult, error
 			result.State = GatewayStatusStarting
 		}
 		state := active.engine.snapshot()
-		var managedPACState managedpac.ControlState
-		var managedPACObservationIssues []ManagedPACObservationIssue
-		if managedPACControl != nil {
-			observed, observeErr := managedPACControl.Observe()
-			managedPACState = observed
-			if observeErr != nil {
-				managedPACObservationIssues = []ManagedPACObservationIssue{{Diagnostic: observeErr.Error()}}
-			} else {
-				managedPACObservationIssues = observed.ObservationIssues
-			}
-		}
 		if phase == runtimePhaseRunning {
 			result.State = GatewayStatusRunning
 		}
 		result.Owner = &OwnerStatusDetail{RouterListen: f.routerListen}
 		result.Runtime = &RuntimeStatusDetail{
-			ProxyListen:                 state.ProxyListen,
-			PACListen:                   state.PACListen,
-			UpstreamLists:               state.UpstreamLists,
-			UpstreamCount:               state.UpstreamCount,
-			Traffic:                     trafficStatus(state, managedPACState.RoutesCurrentEndpoint),
-			ManagedPACActive:            managedPACControl != nil,
-			ManagedPACServices:          managedPACState.ServiceSet,
-			ManagedPACWarnings:          managedPACState.Warnings,
-			ManagedPACObservationIssues: managedPACObservationIssues,
+			ProxyListen:             state.ProxyListen,
+			PACListen:               state.PACListen,
+			UpstreamLists:           state.UpstreamLists,
+			UpstreamCount:           state.UpstreamCount,
+			Traffic:                 trafficStatus(state, currentPAC.RoutesCurrentEndpoint),
+			LatestSystemPACDelivery: latestPACDelivery,
 		}
 		return result, nil
 	}
@@ -1101,40 +1036,41 @@ func (f *lifecycle) uninstallConsentFingerprint(active *activeRuntime) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// watchRuntimeChanges coordinates facts emitted by the traffic runtime with
-// UserCA reassessment and Managed PAC URL delivery.
+// watchRuntimeChanges coordinates independent runtime requests.
 func (f *lifecycle) watchRuntimeChanges(ctx context.Context, active *activeRuntime) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-active.engine.DeliveryRequests():
-			if active.managedPAC != nil {
-				_, _ = active.managedPAC.Deliver(active.engine.PACListen())
-			}
-		case kind := <-active.engine.RuntimeChanges():
-			if kind == UserCAAssessmentRequested {
-				f.requestUserCAAssessment(active)
-			}
+			_, _ = f.deliverSystemPAC(ctx, active)
+		case <-active.engine.UserCAAssessmentRequests():
+			f.requestUserCAAssessment(active)
 		}
 	}
 }
 
-func managedPACStartDetail(assessment managedpac.Assessment) ManagedPACStartDetail {
-	return ManagedPACStartDetail{
-		CurrentPACState:   assessment.Services,
-		ObservationIssues: assessment.ObservationIssues,
-		ServiceSet:        assessment.ServiceSet,
-		CleanupMode:       CleanupModeNoPACRestoration,
+func (f *lifecycle) deliverSystemPAC(ctx context.Context, active *activeRuntime) (SystemPACReport, bool) {
+	f.deliveryMu.Lock()
+	defer f.deliveryMu.Unlock()
+	f.mu.Lock()
+	admitted := !f.ownerEnding && f.runtime == active
+	f.mu.Unlock()
+	if !admitted {
+		return SystemPACReport{}, false
 	}
+	state, err := f.systemPAC.Deliver(ctx, active.engine.PACListen())
+	report := systemPACReport(state, err)
+	f.mu.Lock()
+	if f.runtime == active && !f.ownerEnding {
+		active.latestPACDelivery = &report
+	}
+	f.mu.Unlock()
+	return report, true
 }
 
-func managedPACObservationIssueDetails(issues []managedpac.ObservationIssue) []ManagedPACObservationIssue {
-	return append([]ManagedPACObservationIssue(nil), issues...)
-}
-
-func (f *lifecycle) cleanupStatus(ctx context.Context, stale bool, runtimeActive bool, ownerCache stateCache) CleanupStatusDetail {
-	return inspectGatewayFootprint(ctx, f.managedPACFootprint, f.coord, stale, runtimeActive, ownerCache)
+func (f *lifecycle) cleanupStatus(stale bool, ownerCache stateCache, pac SystemPACReport) CleanupStatusDetail {
+	return inspectGatewayFootprint(f.coord, stale, ownerCache, pac)
 }
 
 func trafficStatus(state runtimeState, routingReady bool) TrafficStatusDetail {

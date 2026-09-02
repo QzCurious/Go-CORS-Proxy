@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/QzCurious/seamless-cors/internal/managedpac"
+	"github.com/QzCurious/seamless-cors/internal/systempac"
 )
 
 // StartRouterHosted runs the Start Sequence through an existing router-only owner.
@@ -24,31 +24,31 @@ func StartRouterHosted(ctx context.Context, request StartRequest) (StartResult, 
 // Stop discovers and stops the live owner, or cleans the ownerless Gateway
 // Footprint locally when no owner can be reached.
 func Stop(ctx context.Context) (StopResult, error) {
-	return stop(ctx, openSystemManagedPAC())
+	return stop(ctx, openSystemPAC())
 }
 
-func stop(ctx context.Context, pac managedpac.Footprint) (StopResult, error) {
+func stop(ctx context.Context, pac systempac.Module) (StopResult, error) {
 	target, err := discover()
 	if err != nil {
 		return StopResult{}, err
 	}
 	if target.kind != targetActive {
-		issues, failures, err := cleanRuntime(ctx, pac)
+		cleanupReport, failures, err := cleanRuntime(ctx, pac)
 		if err != nil {
 			return StopResult{}, err
 		}
-		result := StopResult{Kind: StopResultNotRunning, ManagedPACObservationIssues: issues}
+		cleanupFulfillment := CommandFulfilled
 		if len(failures) > 0 {
-			result.Kind = StopResultNotRunningCleanupFailed
-			result.CleanupFailures = failures
+			cleanupFulfillment = CommandUnfulfilled
 		}
+		result := StopResult{Kind: StopResultNotRunning, CleanupFulfillment: cleanupFulfillment, SystemPACCleanup: cleanupReport, CleanupFailures: failures}
 		return result, nil
 	}
 	result, err := target.client.Stop(ctx)
 	if err != nil {
 		return StopResult{}, err
 	}
-	if result.Kind == StopResultStopped || result.Kind == StopResultCleanupFailed {
+	if result.Kind == StopResultStopped {
 		waitForStop(target.cache)
 	}
 	return result, nil
@@ -57,10 +57,10 @@ func stop(ctx context.Context, pac managedpac.Footprint) (StopResult, error) {
 // GatewayStatus returns live owner status when available and otherwise
 // inspects local Gateway coordination and OS-managed state.
 func Status(ctx context.Context) (StatusResult, error) {
-	return status(ctx, openSystemManagedPAC(), nil)
+	return status(ctx, openSystemPAC(), nil)
 }
 
-func status(ctx context.Context, pac managedPACCapabilities, ca userCAModule) (StatusResult, error) {
+func status(ctx context.Context, pac systempac.Module, ca userCAModule) (StatusResult, error) {
 	target, err := discover()
 	if err != nil {
 		return StatusResult{}, err
@@ -196,7 +196,7 @@ func runTransient[T any](
 			err = errors.Join(err, lock.Release())
 		}
 	}()
-	owner, err := newTransientOwnerWithCoordinator(openSystemManagedPAC(), ca, coord)
+	owner, err := newTransientOwnerWithCoordinator(openSystemPAC(), ca, coord)
 	if err != nil {
 		return result, nil, err
 	}
